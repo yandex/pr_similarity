@@ -1,0 +1,22 @@
+{
+  "Rules": [
+    {
+      "ID": "viewer-trash-current-90-days",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "trash/"},
+      "Expiration": {"Days": 90}
+    },
+    {
+      "ID": "viewer-trash-noncurrent-cleanup",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "trash/"},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": 1}
+    },
+    {
+      "ID": "viewer-trash-expired-delete-markers",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "trash/"},
+      "Expiration": {"ExpiredObjectDeleteMarker": true}
+    }
+  ]
+}

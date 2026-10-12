@@ -1,0 +1,21 @@
+# First: make auth CONFIG=examples/chatgpt-oauth.yaml
+# The private profile stays outside output and is never archived.
+# Select a model available through your ChatGPT subscription.
+schema_version: 1
+workers: 1
+agent:
+  name: chatgpt-oauth
+  runtime: opencode:v1.18.33
+  auth:
+    mode: chatgpt_oauth
+    profile: ~/.local/share/prsimbm/chatgpt
+  config:
+    opencode_json:
+      model: openai/gpt-5.6-sol
+      permission:
+        '*': allow
+  timeout_seconds: 1800
+  retries:
+    max_retries: 1
+    categories: []
+  credentials: {}

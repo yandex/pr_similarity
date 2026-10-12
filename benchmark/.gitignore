@@ -1,0 +1,17 @@
+.env
+.venv/
+output/
+cache/
+cache.lock
+build/
+dist/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+*.log
+config.local.yaml
+runs/
+artifacts/

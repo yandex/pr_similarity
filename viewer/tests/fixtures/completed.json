@@ -1,0 +1,331 @@
+{
+  "schema_family": "pr_similarity_os.report",
+  "schema_version": 1,
+  "run": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "revision": 2,
+    "status": "completed",
+    "created_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:01:00Z",
+    "finished_at": "2026-09-30T12:01:00Z",
+    "current_invocation_id": "22222222-2222-4222-8222-222222222222",
+    "tags": [],
+    "error": null
+  },
+  "basket": {
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "path": "basket.json",
+    "partial": false,
+    "total_tasks": 1,
+    "omitted_failed_count": 0
+  },
+  "agent": {
+    "name": "baseline",
+    "runtime": "opencode:v1.18.33",
+    "resolved_runtime": {
+      "version": "1.18.33",
+      "asset_name": "opencode-linux-x64.tar.gz",
+      "platform": "linux-x64-glibc",
+      "archive_sha256": "e546123213ae47909a4268692aa4b94950d011afe9cac9938753a2194f1c16d5",
+      "binary_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "receipt": "_meta/runtime.json"
+    },
+    "auth_mode": "api_key"
+  },
+  "config": {
+    "identity_version": 1,
+    "identity_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "identity_path": "config_identity.json"
+  },
+  "metric": {
+    "name": "mlp",
+    "version": "mlp-v1",
+    "weights_sha256": "51ce752bb196c24fd8ad45d064ef7225b1927b39fcee9f9266fa66667d08bbc2",
+    "implementation_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "dependencies_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "pythonhashseed": 42
+  },
+  "summary": {
+    "total_tasks": 1,
+    "completed_tasks": 1,
+    "pending_tasks": 0,
+    "active_tasks": 0,
+    "retry_pending_tasks": 0,
+    "interrupted_tasks": 0,
+    "infrastructure_error_tasks": 0,
+    "timeout_tasks": 0,
+    "error_tasks": 0,
+    "cancelled_tasks": 0,
+    "nonempty_diff_tasks": 1,
+    "empty_diff_tasks": 0,
+    "unknown_diff_tasks": 0,
+    "scored_tasks": 1
+  },
+  "tasks": [
+    {
+      "id": "change:3130fa6dacfd279c7741cf27960c8e69b406d699499bdafcb4b96588664b07ea",
+      "repository": "example/repo",
+      "number": 1,
+      "url": "https://github.com/example/repo/pull/1",
+      "title": "Synthetic review fixture",
+      "before": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "workspace": "src",
+      "agent_task": "Task: Add greeting",
+      "processing_status": "completed",
+      "final_attempt": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "invocation_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "retry_index": 0,
+        "started_at": "2026-09-30T12:00:00Z",
+        "finished_at": "2026-09-30T12:01:00Z"
+      },
+      "setup": {
+        "status": "skipped",
+        "exit_code": null,
+        "duration_seconds": null
+      },
+      "execution": {
+        "status": "completed",
+        "exit_code": 0,
+        "duration_seconds": 60
+      },
+      "infrastructure_error": null,
+      "changes": {
+        "status": "nonempty",
+        "files_count": 1,
+        "diff": "tasks/001-fixture-743601c5/attempts/001/agent.diff"
+      },
+      "scoring": {
+        "status": "available",
+        "error": null,
+        "Mf_mlp": 1.0,
+        "LCf_mlp": 1.0,
+        "counts": {
+          "human_files": 1,
+          "agent_files": 1,
+          "matched_files": 1,
+          "missed_files": 0,
+          "extra_files": 0,
+          "human_loc": 1,
+          "agent_loc": 1,
+          "loc_weight": 1
+        },
+        "files": [
+          {
+            "path": "src/hello.py",
+            "changed_human": true,
+            "changed_agent": true,
+            "human_loc": 1,
+            "agent_loc": 1,
+            "loc_weight": 1,
+            "mlp": 1.0,
+            "branch": "code",
+            "base": "tasks/001-fixture-743601c5/attempts/001/triplets/001/src/hello_base.py",
+            "human": "tasks/001-fixture-743601c5/attempts/001/triplets/001/src/hello_human.py",
+            "ai": "tasks/001-fixture-743601c5/attempts/001/triplets/001/src/hello_agent.py",
+            "exists": {
+              "base": true,
+              "human": true,
+              "ai": true
+            }
+          }
+        ]
+      },
+      "telemetry": {
+        "source": "opencode",
+        "status": "complete",
+        "tokens": {
+          "input": 100,
+          "output": 20,
+          "reasoning": null,
+          "cache_read": null,
+          "cache_write": null,
+          "total": null
+        },
+        "total_source": "unavailable",
+        "cost": {
+          "amount": null,
+          "currency": "USD",
+          "source": "opencode"
+        },
+        "transport": "db",
+        "session_db": {
+          "path": "tasks/001-fixture-743601c5/attempts/001/telemetry/opencode.sqlite.xz",
+          "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "usage_ledger": {
+          "path": "tasks/001-fixture-743601c5/attempts/001/telemetry/usage.json",
+          "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+        },
+        "session_counts": {
+          "root": 1,
+          "subagent": 0,
+          "detached": 0
+        },
+        "diagnostics": [],
+        "api_equivalent": null
+      },
+      "artifacts": {
+        "outcome": "tasks/001-fixture-743601c5/attempts/001/outcome.json",
+        "triplets_manifest": "tasks/001-fixture-743601c5/attempts/001/triplets/index.json",
+        "setup_log": null,
+        "agent_events": "tasks/001-fixture-743601c5/attempts/001/events.jsonl",
+        "agent_log": "tasks/001-fixture-743601c5/attempts/001/agent.log",
+        "effective_config": {
+          "status": "warning",
+          "path": null,
+          "message": "Configuration dump unavailable in this synthetic fixture"
+        }
+      },
+      "kind": "pull_request",
+      "source": {
+        "vcs": "git",
+        "fetch_url": "https://github.com/example/repo.git",
+        "fetch_refs": [
+          "refs/pull/1/head",
+          "refs/heads/main"
+        ]
+      },
+      "diff_policy": "git_source_changes_v1",
+      "before_tree": "dddddddddddddddddddddddddddddddddddddddd",
+      "after_tree": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "ordinal": 1,
+      "directory": "tasks/001-fixture-743601c5",
+      "progress": {
+        "phase": "completed",
+        "updated_at": "2026-09-30T12:01:00Z"
+      },
+      "locations": {
+        "agent_log": "tasks/001-fixture-743601c5/attempts/001/agent.log",
+        "agent_events": "tasks/001-fixture-743601c5/attempts/001/events.jsonl",
+        "runtime_log": "tasks/001-fixture-743601c5/attempts/001/runtime.log",
+        "outcome": "tasks/001-fixture-743601c5/attempts/001/outcome.json",
+        "triplets_manifest": "tasks/001-fixture-743601c5/attempts/001/triplets/index.json"
+      }
+    }
+  ],
+  "last_rescore": null,
+  "last_reprice": null,
+  "inference": {
+    "schema_version": 1,
+    "configured": {
+      "provider": {
+        "status": "unknown",
+        "value": null,
+        "reason": "model_not_configured",
+        "source": {
+          "ref": "config_identity.json",
+          "field": "native_config.model"
+        }
+      },
+      "model": {
+        "status": "unknown",
+        "value": null,
+        "reason": "model_not_configured",
+        "source": {
+          "ref": "config_identity.json",
+          "field": "native_config.model"
+        }
+      },
+      "effort": {
+        "status": "unknown",
+        "value": null,
+        "reason": "model_not_configured",
+        "source": {
+          "ref": "config_identity.json",
+          "field": "native_config.model"
+        }
+      }
+    },
+    "effective": {
+      "attempts": [],
+      "provider": {
+        "status": "unknown",
+        "value": null,
+        "reason": "effective_evidence_unavailable",
+        "source": null
+      },
+      "model": {
+        "status": "unknown",
+        "value": null,
+        "reason": "effective_evidence_unavailable",
+        "source": null
+      },
+      "effort": {
+        "status": "unknown",
+        "value": null,
+        "reason": "effective_evidence_unavailable",
+        "source": null
+      }
+    },
+    "discrepancy": false
+  },
+  "state": {
+    "path": "_meta/state.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "costs": {
+    "final_attempts": {
+      "native_reported": {
+        "status": "unavailable",
+        "currency": "USD",
+        "amount": null,
+        "known_subtotal": "0",
+        "coverage": {
+          "total_attempts": 1,
+          "complete_attempts": 0,
+          "known_attempts": 0,
+          "known_requests": 0,
+          "missing_tasks": 0,
+          "total_requests": null
+        }
+      },
+      "api_equivalent": {
+        "status": "not_requested",
+        "currency": "USD",
+        "amount": null,
+        "known_subtotal": "0",
+        "coverage": {
+          "total_attempts": 1,
+          "complete_attempts": 0,
+          "known_attempts": 0,
+          "known_requests": 0,
+          "missing_tasks": 0,
+          "total_requests": null
+        }
+      }
+    },
+    "all_attempts": {
+      "native_reported": {
+        "status": "unavailable",
+        "currency": "USD",
+        "amount": null,
+        "known_subtotal": "0",
+        "coverage": {
+          "total_attempts": 1,
+          "complete_attempts": 0,
+          "known_attempts": 0,
+          "known_requests": 0,
+          "missing_tasks": 0,
+          "total_requests": null
+        }
+      },
+      "api_equivalent": {
+        "status": "not_requested",
+        "currency": "USD",
+        "amount": null,
+        "known_subtotal": "0",
+        "coverage": {
+          "total_attempts": 1,
+          "complete_attempts": 0,
+          "known_attempts": 0,
+          "known_requests": 0,
+          "missing_tasks": 0,
+          "total_requests": null
+        }
+      }
+    }
+  }
+}

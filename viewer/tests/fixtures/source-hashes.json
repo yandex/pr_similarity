@@ -1,0 +1,50 @@
+{
+  "src/schemas/report-v1.json": {
+    "source": "benchmark/src/schemas/benchmark-report-v1.schema.json",
+    "sha256": "5f32ecfa23b08fe483bf9378e05aefbcbbc08e36404720c5a11ec2c37b5f26b1"
+  },
+  "src/schemas/archive-v1.json": {
+    "source": "benchmark/src/schemas/benchmark-manifest-v1.schema.json",
+    "sha256": "ea6e5b0732a3a42ad49c2885c86341cdf7077360b73e150a7bc3232a14be059c"
+  },
+  "src/schemas/basket-v1.json": {
+    "source": "basket_collector/src/schemas/basket-v1.schema.json",
+    "sha256": "3ac008a0839874f62793445ab4e81e3af577daa3a6a2e9f1e584a468fa54e847"
+  },
+  "tests/fixtures/completed.json": {
+    "source": "benchmark/tests/fixtures/reports/completed.json",
+    "sha256": "282af3854c671de09e958a887d10af6dd7f4a168c37e3e003c7249bb1cfd2500"
+  },
+  "tests/fixtures/basket.json": {
+    "source": "benchmark/tests/fixtures/basket-contract/github.json",
+    "sha256": "9eed8582fe45f19d0a4c6b7210783fd10e27592668945273a85059f58ce5660f"
+  },
+  "src/schemas/run-v1.json": {
+    "source": "benchmark/src/schemas/benchmark-run-v1.schema.json",
+    "sha256": "d8678ab81429eb15d3c129ccdd4b4dd20646661ec79ba514595e423e8c036cd8"
+  },
+  "src/schemas/state-v1.json": {
+    "source": "benchmark/src/schemas/benchmark-state-v1.schema.json",
+    "sha256": "fc55efd153ea6659b47157a0c900acb8a5bcd8da09f8e43c5cbec96e9096bf26"
+  },
+  "src/schemas/usage-v1.json": {
+    "source": "benchmark/src/schemas/benchmark-usage-v1.schema.json",
+    "sha256": "d097ce0aa991160b9af2bdb9c69516234bb3fb6ec684719c7b0688bc9cce37f2"
+  },
+  "src/cost_summary.py": {
+    "source": "benchmark/src/cost_summary.py",
+    "sha256": "9cab898fa6757b740012a12a447ddaed7f2a809a620d837705c952f26f245e9e"
+  },
+  "src/triplet_paths.py": {
+    "source": "benchmark/src/triplet_paths.py",
+    "sha256": "9d61c54286263b27a49719df26882ea9ed3a15cce1266e08ae6e5072a837fe19"
+  },
+  "src/native_inference.py": {
+    "source": "benchmark/src/native_inference.py",
+    "sha256": "7fed6afc576d9edd128158604333e0b475ef7db4aa87740460f37c858b6e8b02"
+  },
+  "tests/fixtures/inference-contract.json": {
+    "source": "benchmark/tests/fixtures/inference-contract.json",
+    "sha256": "0c2f7e5976aea3fb39f3c0ad454259cf2789b74e1525459da29616fda6f2761f"
+  }
+}

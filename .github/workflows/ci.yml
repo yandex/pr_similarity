@@ -1,0 +1,86 @@
+name: Checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  collector:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: basket_collector
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: make setup PYTHON=python3.12
+      - run: make test
+      - run: make smoke
+
+  benchmark:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: benchmark
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: make setup PYTHON=python3.12
+      - name: Prepare sandbox and pinned native runtime
+        run: |
+          .venv/bin/python - <<'PY'
+          import hashlib
+          import subprocess
+          from pathlib import Path
+          from benchmark.bubblewrap import BINARY_SHA256, resolve_bubblewrap
+          from benchmark.provisioning import provision_opencode
+          cache = Path.home() / '.cache/prsimbm'
+          binary = resolve_bubblewrap('bwrap', cache)
+          if not Path('/usr/bin/bwrap').exists():
+              assert hashlib.sha256(binary.read_bytes()).hexdigest() == BINARY_SHA256
+              subprocess.run(['sudo', 'install', '-m', '755', str(binary), '/usr/bin/bwrap'], check=True)
+          runtime = provision_opencode('opencode:v1.18.33', cache).binary
+          with Path(__import__('os').environ['GITHUB_ENV']).open('a') as env:
+              env.write('BENCHMARK_TEST_OPENCODE=' + str(runtime) + '\n')
+          PY
+      - run: make test
+      - run: make smoke
+      - name: Check standalone source export
+        run: |
+          .venv/bin/python ../tools/tests/test_release_export.py
+          .venv/bin/python ../tools/prepare_release.py --source .. --destination "$RUNNER_TEMP/pr-similarity-release"
+          .venv/bin/python ../tools/check_release.py "$RUNNER_TEMP/pr-similarity-release"
+
+  viewer:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: viewer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: make setup PYTHON=python3.12
+      - name: Prepare actual producer for roundtrip checks
+        working-directory: benchmark
+        run: |
+          make setup PYTHON=python3.12
+          .venv/bin/python - <<'PY'
+          import hashlib
+          import subprocess
+          from pathlib import Path
+          from benchmark.bubblewrap import BINARY_SHA256, resolve_bubblewrap
+          binary = resolve_bubblewrap('bwrap', Path.home() / '.cache/prsimbm')
+          if not Path('/usr/bin/bwrap').exists():
+              assert hashlib.sha256(binary.read_bytes()).hexdigest() == BINARY_SHA256
+              subprocess.run(['sudo', 'install', '-m', '755', str(binary), '/usr/bin/bwrap'], check=True)
+          PY
+      - run: .venv/bin/python -m playwright install-deps chromium
+      - run: make browser-setup
+      - run: make test

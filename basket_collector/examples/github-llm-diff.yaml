@@ -1,0 +1,54 @@
+# First LLM run: one merged Python fix; no linked issue is required.
+# https://github.com/pallets/werkzeug/pull/3147
+schema_version: 1
+env_file: ../.env
+dataset:
+  name: werkzeug-llm-diff
+  description: One Werkzeug fix with a task generated from its diff
+  maintainers: [your-github-login]
+output_dir: ../output/examples/github-llm-diff
+cache_dir: ../cache/examples/github-llm-diff
+source:
+  provider: github
+  project: pallets/werkzeug
+  token_env: GITHUB_TOKEN
+collect:
+  selection: change_ids
+  change_ids: [3147]
+  default_branch_only: true
+  max_changes: 1
+filter:
+  workers: 1
+  size:
+    min_lines: 1
+    max_lines: 300
+    max_files: 5
+  files:
+    enabled: true
+    source_extensions: [.py]
+    min_source_proportion: 0.5
+    required_path_patterns: ['^src/werkzeug/']
+  issues:
+    allow_no_issue: true
+    allow_multiple_issues: true
+  selection:
+    shuffle: false
+    limit: 1
+generation:
+  source: llm
+  context: diff
+  workers: 1
+  max_input_chars: 20000
+  templates:
+    system: ../prompts/system.jinja2
+    user: ../prompts/diff.jinja2
+  llm:
+    base_url: https://api.openai.com/v1
+    api: openai_responses
+    model: gpt-4.1-mini
+    api_key_env: OPENAI_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 2048
+export:
+  include_golden_diff: false

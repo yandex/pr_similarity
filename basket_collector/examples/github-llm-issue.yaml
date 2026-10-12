@@ -1,0 +1,45 @@
+# Rewrite the linked issue into a task, without showing the diff to the LLM.
+# https://github.com/pallets/werkzeug/pull/3147 closes issue #3146.
+schema_version: 1
+env_file: ../.env
+dataset:
+  name: werkzeug-llm-issue
+  description: Werkzeug task generated from its linked issue only
+  maintainers: [your-github-login]
+output_dir: ../output/examples/github-llm-issue
+cache_dir: ../cache/examples/github-llm-issue
+source:
+  provider: github
+  project: pallets/werkzeug
+collect:
+  selection: change_ids
+  change_ids: [3147]
+  max_changes: 1
+filter:
+  workers: 1
+  size:
+    max_lines: 300
+    max_files: 5
+  issues:
+    allow_no_issue: false
+    allow_multiple_issues: false
+  selection:
+    shuffle: false
+    limit: 1
+generation:
+  source: llm
+  context: issue
+  workers: 1
+  max_input_chars: 20000
+  templates:
+    system: ../prompts/system.jinja2
+    user: ../prompts/issue.jinja2
+  llm:
+    base_url: https://api.openai.com/v1
+    api: openai_completions
+    model: gpt-4.1-mini
+    parameters:
+      top_p: 0.9
+      max_output_tokens: 3072
+export:
+  include_golden_diff: false

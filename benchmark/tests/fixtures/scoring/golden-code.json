@@ -1,0 +1,162 @@
+[
+  {
+    "language": "python",
+    "extension": ".py",
+    "base": "def total(xs):\n    acc = 0\n    for x in xs:\n        if x > 0:\n            acc = acc + x\n    return acc\n",
+    "human": "def total(xs):\n    acc = 0\n    for x in xs:\n        if x > 0:\n            acc = acc + x * 2\n    return acc\n",
+    "ai": "def total(xs):\n    answer = 0\n    for x in xs:\n        if x > 0:\n            answer = answer + x * 3\n    return answer\n",
+    "expected": {
+      "score": 0.08257398788031808,
+      "branch": "code",
+      "pair_scores": {
+        "base_human": 0.8464725461094558,
+        "base_ai": 0.6441809365362023,
+        "human_ai": 0.7351648504255183
+      }
+    }
+  },
+  {
+    "language": "java",
+    "extension": ".java",
+    "base": "class Sum { static int total(int[] xs) { int acc = 0; for (int x : xs) { if (x > 0) { acc = acc + x; } } return acc; } }",
+    "human": "class Sum { static int total(int[] xs) { int acc = 0; for (int x : xs) { if (x > 0) { acc = acc + x * 2; } } return acc; } }",
+    "ai": "class Sum { static int total(int[] xs) { int answer = 0; for (int x : xs) { if (x > 0) { answer = answer + x * 3; } } return answer; } }",
+    "expected": {
+      "score": 0.13451407863774625,
+      "branch": "code",
+      "pair_scores": {
+        "base_human": 0.8552205976625852,
+        "base_ai": 0.7305253592406437,
+        "human_ai": 0.7945945946142312
+      }
+    }
+  },
+  {
+    "language": "javascript",
+    "extension": ".js",
+    "base": "function total(xs) { let acc = 0; for (let x of xs) { if (x > 0) { acc = acc + x; } } return acc; }",
+    "human": "function total(xs) { let acc = 0; for (let x of xs) { if (x > 0) { acc = acc + x * 2; } } return acc; }",
+    "ai": "function total(xs) { let answer = 0; for (let x of xs) { if (x > 0) { answer = answer + x * 3; } } return answer; }",
+    "expected": {
+      "score": 0.11564631293165537,
+      "branch": "code",
+      "pair_scores": {
+        "base_human": 0.826442539759373,
+        "base_ai": 0.6806641430402081,
+        "human_ai": 0.7655913792606569
+      }
+    }
+  },
+  {
+    "language": "c_sharp",
+    "extension": ".cs",
+    "base": "class Sum { static int Total(int[] xs) { int acc = 0; foreach (int x in xs) { if (x > 0) { acc = acc + x; } } return acc; } }",
+    "human": "class Sum { static int Total(int[] xs) { int acc = 0; foreach (int x in xs) { if (x > 0) { acc = acc + x * 2; } } return acc; } }",
+    "ai": "class Sum { static int Total(int[] xs) { int answer = 0; foreach (int x in xs) { if (x > 0) { answer = answer + x * 3; } } return answer; } }",
+    "expected": {
+      "score": 0.13442786585407993,
+      "branch": "code",
+      "pair_scores": {
+        "base_human": 0.8457677624344282,
+        "base_ai": 0.7211181149668457,
+        "human_ai": 0.7945697963744649
+      }
+    }
+  },
+  {
+    "language": "php",
+    "extension": ".php",
+    "base": "<?php function total($xs) { $acc = 0; foreach ($xs as $x) { if ($x > 0) { $acc = $acc + $x; } } return $acc; }",
+    "human": "<?php function total($xs) { $acc = 0; foreach ($xs as $x) { if ($x > 0) { $acc = $acc + $x * 2; } } return $acc; }",
+    "ai": "<?php function total($xs) { $answer = 0; foreach ($xs as $x) { if ($x > 0) { $answer = $answer + $x * 3; } } return $answer; }",
+    "expected": {
+      "score": 0.1202777492524277,
+      "branch": "code",
+      "pair_scores": {
+        "base_human": 0.8543312591489383,
+        "base_ai": 0.71545373458534,
+        "human_ai": 0.7725259946538985
+      }
+    }
+  },
+  {
+    "language": "c",
+    "extension": ".c",
+    "base": "int total(int *xs, int n) { int acc = 0; for (int i = 0; i < n; i++) { int x = xs[i]; if (x > 0) { acc = acc + x; } } return acc; }",
+    "human": "int total(int *xs, int n) { int acc = 0; for (int i = 0; i < n; i++) { int x = xs[i]; if (x > 0) { acc = acc + x * 2; } } return acc; }",
+    "ai": "int total(int *xs, int n) { int answer = 0; for (int i = 0; i < n; i++) { int x = xs[i]; if (x > 0) { answer = answer + x * 3; } } return answer; }",
+    "expected": {
+      "score": 0.1582769550949179,
+      "branch": "code",
+      "pair_scores": {
+        "base_human": 0.8780562546803542,
+        "base_ai": 0.7786416404560714,
+        "human_ai": 0.8263389072376066
+      }
+    }
+  },
+  {
+    "language": "cpp",
+    "extension": ".cpp",
+    "base": "#include <vector>\nint total(const std::vector<int>& xs) { int acc = 0; for (int x : xs) { if (x > 0) { acc = acc + x; } } return acc; }",
+    "human": "#include <vector>\nint total(const std::vector<int>& xs) { int acc = 0; for (int x : xs) { if (x > 0) { acc = acc + x * 2; } } return acc; }",
+    "ai": "#include <vector>\nint total(const std::vector<int>& xs) { int answer = 0; for (int x : xs) { if (x > 0) { answer = answer + x * 3; } } return answer; }",
+    "expected": {
+      "score": 0.1505294661237452,
+      "branch": "code",
+      "pair_scores": {
+        "base_human": 0.8806477291503947,
+        "base_ai": 0.7613957455594395,
+        "human_ai": 0.8185118423722888
+      }
+    }
+  },
+  {
+    "language": "go",
+    "extension": ".go",
+    "base": "package sample\nfunc total(xs []int) int { acc := 0; for _, x := range xs { if x > 0 { acc = acc + x } }; return acc }",
+    "human": "package sample\nfunc total(xs []int) int { acc := 0; for _, x := range xs { if x > 0 { acc = acc + x * 2 } }; return acc }",
+    "ai": "package sample\nfunc total(xs []int) int { answer := 0; for _, x := range xs { if x > 0 { answer = answer + x * 3 } }; return answer }",
+    "expected": {
+      "score": 0.1417242193426617,
+      "branch": "code",
+      "pair_scores": {
+        "base_human": 0.8834040429313026,
+        "base_ai": 0.7493841462531141,
+        "human_ai": 0.8075901528967037
+      }
+    }
+  },
+  {
+    "language": "ruby",
+    "extension": ".rb",
+    "base": "def total(xs)\n  acc = 0\n  xs.each do |x|\n    if x > 0\n      acc = acc + x\n    end\n  end\n  return acc\nend\n",
+    "human": "def total(xs)\n  acc = 0\n  xs.each do |x|\n    if x > 0\n      acc = acc + x * 2\n    end\n  end\n  return acc\nend\n",
+    "ai": "def total(xs)\n  answer = 0\n  xs.each do |x|\n    if x > 0\n      answer = answer + x * 3\n    end\n  end\n  return answer\nend\n",
+    "expected": {
+      "score": 0.08371064212533982,
+      "branch": "code",
+      "pair_scores": {
+        "base_human": 0.8558722107177587,
+        "base_ai": 0.6526949211857955,
+        "human_ai": 0.7380724953097532
+      }
+    }
+  },
+  {
+    "language": "rust",
+    "extension": ".rs",
+    "base": "fn total(xs: &[i32]) -> i32 { let mut acc = 0; for &x in xs { if x > 0 { acc = acc + x; } } acc }",
+    "human": "fn total(xs: &[i32]) -> i32 { let mut acc = 0; for &x in xs { if x > 0 { acc = acc + x * 2; } } acc }",
+    "ai": "fn total(xs: &[i32]) -> i32 { let mut answer = 0; for &x in xs { if x > 0 { answer = answer + x * 3; } } answer }",
+    "expected": {
+      "score": 0.12696297276377935,
+      "branch": "code",
+      "pair_scores": {
+        "base_human": 0.830189877429547,
+        "base_ai": 0.6986116240678246,
+        "human_ai": 0.7833940079629093
+      }
+    }
+  }
+]

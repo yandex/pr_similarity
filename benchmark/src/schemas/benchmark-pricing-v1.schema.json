@@ -1,0 +1,192 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "currency": {
+      "const": "USD"
+    },
+    "service_tier": {
+      "type": "string",
+      "minLength": 1
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rates": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(0|[1-9]\\d*)(\\.\\d+)?$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "cache_read": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(0|[1-9]\\d*)(\\.\\d+)?$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "cache_write": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(0|[1-9]\\d*)(\\.\\d+)?$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "output": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(0|[1-9]\\d*)(\\.\\d+)?$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "input",
+              "cache_read",
+              "cache_write",
+              "output"
+            ],
+            "additionalProperties": false
+          },
+          "long_context": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "threshold": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "rates": {
+                    "type": "object",
+                    "properties": {
+                      "input": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(0|[1-9]\\d*)(\\.\\d+)?$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "cache_read": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(0|[1-9]\\d*)(\\.\\d+)?$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "cache_write": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(0|[1-9]\\d*)(\\.\\d+)?$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "output": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(0|[1-9]\\d*)(\\.\\d+)?$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "input",
+                      "cache_read",
+                      "cache_write",
+                      "output"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "threshold",
+                  "rates"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "rates",
+          "long_context"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "source",
+    "currency",
+    "service_tier",
+    "models"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "API-equivalent pricing policy v1"
+}

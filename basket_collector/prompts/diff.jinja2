@@ -1,0 +1,10 @@
+Pull request title: {{ pr_title }}
+
+Pull request description:
+{{ pr_body }}
+
+Commit messages:
+{% for item in commit_messages %}- {{ item }}
+{% endfor %}
+Diff:
+{{ diff }}

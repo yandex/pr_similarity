@@ -1,0 +1,8 @@
+{
+  "runtime": "runtime",
+  "admin_token_file": "runtime/admin-token",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "storage": "mock",
+  "limits": {}
+}
