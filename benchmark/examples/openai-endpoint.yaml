@@ -1,0 +1,31 @@
+# Replace baseURL with your OpenAI Responses-compatible endpoint.
+# This native SDK avoids legacy max_tokens requests for reasoning models.
+# Set OPENAI_API_KEY in benchmark/.env or your environment; select the model.
+schema_version: 1
+workers: 1
+agent:
+  name: openai-endpoint
+  runtime: opencode:v1.18.33
+  auth:
+    mode: api_key
+  config:
+    opencode_json:
+      model: openai/gpt-5.6-sol
+      permission:
+        '*': allow
+      provider:
+        openai:
+          npm: '@ai-sdk/openai'
+          options:
+            baseURL: https://your-openai-endpoint.example/v1
+            apiKey: '{env:OPENAI_API_KEY}'
+          models:
+            gpt-5.6-sol:
+              options:
+                reasoningEffort: medium
+  timeout_seconds: 1800
+  retries:
+    max_retries: 1
+    categories: []
+  credentials:
+    OPENAI_API_KEY: OPENAI_API_KEY

@@ -1,0 +1,5 @@
+Solve the provided programming task by editing source files in this workspace.
+Do not use version control commands or change version control metadata.
+Do not search for, download, or copy the original pull request or its solution.
+You may use the network to consult documentation or prepare dependencies.
+Leave all source changes on disk. New nonignored source files are included.

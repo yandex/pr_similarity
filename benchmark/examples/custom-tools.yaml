@@ -1,0 +1,40 @@
+# Complete sandbox CLI integration; run from benchmark/.
+# make auth CONFIG=examples/custom-tools.yaml AUTH_FLOW=headless
+# make run CONFIG=examples/custom-tools.yaml DATASET=/path/to/basket.json WORKERS=1
+schema_version: 1
+workers: 1
+agent:
+  name: chatgpt-doc-search
+  runtime: opencode:v1.18.33
+  auth:
+    mode: chatgpt_oauth
+    profile: ~/.local/share/prsimbm/chatgpt
+  config:
+    opencode_json:
+      model: openai/gpt-5.6-sol
+      permission:
+        '*': allow
+      provider:
+        openai:
+          models:
+            gpt-5.6-sol:
+              options:
+                reasoningEffort: medium
+      instructions:
+        - ./agent-custom-tools.md
+  setup:
+    script: ./setup-custom-tools.sh
+    timeout_seconds: 30
+  timeout_seconds: 1800
+  retries:
+    max_retries: 1
+    categories: []
+  diff_excludes: []
+  env:
+    DOC_SEARCH_ROOT: /repo/docs
+  credentials: {}
+
+sandbox:
+  backend: bubblewrap
+  executable: /usr/bin/bwrap
+  auto_install: false

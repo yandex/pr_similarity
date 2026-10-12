@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pr-similarity-os-benchmark"
+version = "0.1.0"
+description = "Benchmark OpenCode against frozen GitHub pull request tasks."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = []
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "PyYAML>=6,<7", "jsonschema>=4.25,<5", "httpx>=0.28,<1", "python-dotenv>=1,<2",
+    "codebleu @ https://codeload.github.com/k4black/codebleu/zip/b0edb622f6a52fe9d1edc407be5061d3e1462a7f",
+    "tree-sitter==0.23.2", "tree-sitter-python==0.23.6", "tree-sitter-java==0.23.5",
+    "tree-sitter-javascript==0.23.1", "tree-sitter-c-sharp==0.23.0", "tree-sitter-php==0.23.11",
+    "tree-sitter-c==0.23.4", "tree-sitter-cpp==0.23.4", "tree-sitter-go==0.23.4",
+    "tree-sitter-ruby==0.23.1", "tree-sitter-rust==0.23.2", "tqdm==4.70.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "setuptools>=75,<100", "wheel>=0.44,<1"]
+
+[tool.setuptools]
+packages = ["benchmark","benchmark.metrics"]
+package-dir = {"benchmark" = "src"}
+
+[tool.setuptools.package-data]
+benchmark = ["schemas/*.json", "resources/*", "requirements.lock"]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.black]
+line-length = 120
+target-version = ["py312"]
+skip-string-normalization = true
+
+[tool.pyright]
+include = ["src", "tests"]
+extraPaths = ["src"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"

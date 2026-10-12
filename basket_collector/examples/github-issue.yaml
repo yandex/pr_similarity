@@ -1,0 +1,33 @@
+# No LLM calls: copy the issue linked by a real merged fix.
+# https://github.com/pallets/werkzeug/pull/3147 closes issue #3146.
+schema_version: 1
+env_file: ../.env
+dataset:
+  name: werkzeug-issue
+  description: One Werkzeug task copied from its linked issue
+  maintainers: [your-github-login]
+output_dir: ../output/examples/github-issue
+cache_dir: ../cache/examples/github-issue
+source:
+  provider: github
+  project: pallets/werkzeug
+collect:
+  selection: change_ids
+  change_ids: [3147]
+  default_branch_only: true
+  max_changes: 1
+filter:
+  workers: 1
+  size:
+    max_lines: 300
+    max_files: 5
+  issues:
+    allow_no_issue: false
+    allow_multiple_issues: false
+  selection:
+    shuffle: false
+    limit: 1
+generation:
+  source: issue
+export:
+  include_golden_diff: false

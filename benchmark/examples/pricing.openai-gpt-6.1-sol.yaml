@@ -1,0 +1,24 @@
+# USD per 1M tokens; official Standard API rates checked 2026-10-08.
+# https://developers.openai.com/api/docs/pricing
+# https://developers.openai.com/api/docs/changelog (2026-09-29, 272K threshold)
+# API-equivalent estimation, including for OAuth runs; not subscription billing.
+schema_version: 1
+id: openai-standard-gpt-6.1-sol-2026-10-08
+source: https://developers.openai.com/api/docs/pricing
+currency: USD
+service_tier: standard
+models:
+  - provider: openai
+    model: gpt-6.1-sol
+    rates:
+      input: '2.00'
+      cache_read: '0.10'
+      cache_write: '2.50'
+      output: '10.00'
+    long_context:
+      threshold: 272000
+      rates:
+        input: '4.00'
+        cache_read: '0.20'
+        cache_write: '5.00'
+        output: '15.00'

@@ -1,0 +1,183 @@
+{
+  "valid": [
+    "github.json",
+    "gitlab.json"
+  ],
+  "invalid": [
+    {
+      "name": "legacy_collection",
+      "base": "github.json",
+      "path": [
+        "pull_requests"
+      ],
+      "value": []
+    },
+    {
+      "name": "privacy_flag",
+      "base": "github.json",
+      "path": [
+        "meta",
+        "repository",
+        "private"
+      ],
+      "value": true
+    },
+    {
+      "name": "visibility_flag",
+      "base": "github.json",
+      "path": [
+        "meta",
+        "repository",
+        "visibility"
+      ],
+      "value": "private"
+    },
+    {
+      "name": "unknown_provider",
+      "base": "github.json",
+      "path": [
+        "meta",
+        "repository",
+        "provider"
+      ],
+      "value": "other"
+    },
+    {
+      "name": "unknown_vcs",
+      "base": "github.json",
+      "path": [
+        "tasks",
+        0,
+        "source",
+        "vcs"
+      ],
+      "value": "hg"
+    },
+    {
+      "name": "credentials_in_url",
+      "base": "github.json",
+      "path": [
+        "tasks",
+        0,
+        "source",
+        "fetch_url"
+      ],
+      "value": "https://user:secret@example.org/repo.git"
+    },
+    {
+      "name": "url_query",
+      "base": "github.json",
+      "path": [
+        "tasks",
+        0,
+        "source",
+        "fetch_url"
+      ],
+      "value": "https://example.org/repo.git?token=fixture"
+    },
+    {
+      "name": "refspec_injection",
+      "base": "github.json",
+      "path": [
+        "tasks",
+        0,
+        "source",
+        "fetch_refs"
+      ],
+      "value": [
+        "refs/heads/main:refs/replace/x"
+      ]
+    },
+    {
+      "name": "unknown_policy",
+      "base": "github.json",
+      "path": [
+        "tasks",
+        0,
+        "revisions",
+        "policy"
+      ],
+      "value": "merge_result"
+    },
+    {
+      "name": "unknown_diff",
+      "base": "github.json",
+      "path": [
+        "tasks",
+        0,
+        "diff_policy"
+      ],
+      "value": "anything"
+    },
+    {
+      "name": "wrong_tree_sha",
+      "base": "github.json",
+      "path": [
+        "tasks",
+        0,
+        "revisions",
+        "before_tree"
+      ],
+      "value": "no-sha"
+    },
+    {
+      "name": "legacy_request",
+      "base": "github.json",
+      "path": [
+        "tasks",
+        0,
+        "pr"
+      ],
+      "value": {}
+    },
+    {
+      "name": "empty_tasks",
+      "base": "github.json",
+      "path": [
+        "tasks"
+      ],
+      "value": []
+    },
+    {
+      "name": "unknown_field",
+      "base": "github.json",
+      "path": [
+        "tasks",
+        0,
+        "source",
+        "command"
+      ],
+      "value": "fixture"
+    },
+    {
+      "name": "unsupported_version",
+      "base": "github.json",
+      "path": [
+        "meta",
+        "schema_version"
+      ],
+      "value": 2
+    },
+    {
+      "name": "boolean_version",
+      "base": "github.json",
+      "path": [
+        "meta",
+        "schema_version"
+      ],
+      "value": true
+    },
+    {
+      "name": "gitlab_missing_native_diff_version",
+      "base": "gitlab.json",
+      "path": [
+        "tasks",
+        0,
+        "provenance",
+        "source_revisions",
+        "diff_version_id"
+      ],
+      "value": null
+    }
+  ]
+}

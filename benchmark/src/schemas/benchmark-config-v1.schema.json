@@ -1,0 +1,310 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "workers": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtime": {
+          "type": "string",
+          "pattern": "^opencode:v[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "config": {
+          "type": "object",
+          "properties": {
+            "opencode_json": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "opencode_json"
+          ],
+          "additionalProperties": false
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "setup": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "script": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "timeout_seconds": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "script",
+                "timeout_seconds"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instructions_file": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retries": {
+          "type": "object",
+          "properties": {
+            "max_retries": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "categories": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "agent_error",
+                  "timeout_no_changes",
+                  "timeout",
+                  "no_changes"
+                ]
+              }
+            }
+          },
+          "required": [
+            "max_retries",
+            "categories"
+          ],
+          "additionalProperties": false
+        },
+        "diff_excludes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "env": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "credentials": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "enum": [
+                "api_key",
+                "chatgpt_oauth"
+              ]
+            },
+            "profile": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "refresh_timeout_seconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "expiry_margin_seconds": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "mode",
+            "profile",
+            "refresh_timeout_seconds",
+            "expiry_margin_seconds"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "mode": {
+                    "const": "api_key"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "profile": {
+                    "type": "null"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "profile": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "runtime",
+        "config",
+        "timeout_seconds",
+        "setup",
+        "instructions_file",
+        "retries",
+        "diff_excludes",
+        "env",
+        "credentials",
+        "auth"
+      ],
+      "additionalProperties": false
+    },
+    "sandbox": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "const": "bubblewrap"
+        },
+        "executable": {
+          "type": "string",
+          "minLength": 1
+        },
+        "auto_install": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "backend",
+        "executable",
+        "auto_install"
+      ],
+      "additionalProperties": false
+    },
+    "shutdown": {
+      "type": "object",
+      "properties": {
+        "grace_seconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "grace_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "provisioning": {
+      "type": "object",
+      "properties": {
+        "cache_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "download_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "cache_dir",
+        "download_timeout_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "initial_depth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_depth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_transfer_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "timeout_seconds",
+        "initial_depth",
+        "max_depth",
+        "max_transfer_bytes"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "workers",
+    "agent",
+    "sandbox",
+    "shutdown",
+    "provisioning",
+    "git",
+    "tags"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Benchmark v1 fully resolved configuration"
+}

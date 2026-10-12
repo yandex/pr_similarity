@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PR Similarity Viewer</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/account.js" defer></script>
+  <script src="/assets/settings.js" defer></script>
+  <script src="/assets/config.js" defer></script>
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/" aria-label="PR Similarity Viewer home"><img src="/assets/favicon.svg" alt="" class="brand-icon"><span>PR <span class="sim">Similarity</span> Viewer</span></a><span id="page-kind">Runs</span><span id="activity" aria-live="polite"></span><nav id="account" aria-label="Account"></nav></header>
+  <dialog id="account-dialog" aria-labelledby="account-title">
+    <form id="account-form"><h2 id="account-title">Log in</h2>
+      <label><span id="login-label">Login</span><input id="account-login" name="username" autocomplete="username" aria-labelledby="login-label" aria-describedby="account-login-hint" maxlength="64" required><small id="account-login-hint">Contact the server administrator to get a login and password.</small></label>
+      <label><span id="password-label">Password</span><input id="account-password" type="password" autocomplete="current-password" required maxlength="1024"></label>
+      <label id="new-password-label" hidden>New password<input id="account-new-password" type="password" autocomplete="new-password" maxlength="1024"></label>
+      <label id="confirm-password-label" hidden>Confirm new password<input id="account-confirm-password" type="password" autocomplete="new-password" maxlength="1024" aria-describedby="account-confirm-hint"><small id="account-confirm-hint">Type the new password again. Pasting is disabled for this field.</small></label>
+      <p id="account-error" role="alert" hidden></p><div class="account-actions"><button id="account-cancel" type="button">Cancel</button><button id="account-submit" type="submit">Log in</button></div>
+    </form>
+  </dialog>
+  <main>
+    <section class="controls" aria-label="Run filters and aggregation">
+      <div class="selectors">
+        <fieldset id="statuses"><legend>Task statuses</legend>
+          <label><input type="checkbox" value="OK" checked> OK</label>
+          <label><input type="checkbox" value="no-op" checked> No-op</label>
+          <label><input type="checkbox" value="timeout" checked> Timeout</label>
+          <label><input type="checkbox" value="fail"> Fail</label>
+        </fieldset>
+        <label>PR aggregation<select id="pr"><option value="Mpr">Mean</option><option value="FCpr">File-Count-weighted</option><option value="LCpr" selected>LOC-weighted</option></select></label>
+        <label>File aggregation<select id="file"><option value="Mf">Mean</option><option value="LCf" selected>LOC-weighted</option></select></label>
+        <button id="reset">Reset</button>
+      </div>
+      <div id="catalogue-filters" class="filters">
+        <label>Users<select id="filter-user" multiple aria-label="Users"></select></label>
+        <label>Model<select id="filter-model" multiple aria-label="Model filter"></select></label>
+        <label>Setup<select id="filter-setup" multiple aria-label="Setup filter"></select></label>
+        <label>Baskets<select id="filter-basket" multiple aria-label="Baskets"></select></label>
+      </div>
+      <div id="sorting" class="sortbar"><button id="pinned-only" aria-pressed="false">Show Pinned Only</button><label>Sort By<select id="sort">
+        <option value="score">Score</option><option value="f1_files">F1 files</option><option value="display_name">Run name</option>
+        <option value="created_at">Date</option><option value="selected_tasks">Selected tasks</option><option value="time">Median time</option><option value="cost">Cost</option>
+        <option value="total_tokens">Total Tokens</option>
+      </select></label><label>Order<select id="direction"><option value="desc">Descending</option><option value="asc">Ascending</option></select></label><button id="search-toggle" aria-expanded="false" aria-controls="search-fields">Search</button><span id="counts"></span></div>
+        <div id="search-fields" class="search-fields" hidden>
+          <label>Search<input id="search" type="search" placeholder="Name, user, tags or run ID"></label>
+          <label>From (local time)<input id="date-from" type="datetime-local"></label>
+          <label>Until (exclusive, local time)<input id="date-to" type="datetime-local"></label>
+        </div>
+
+      <p class="hint">Task statuses change aggregates. Tasks and files remain available in each run.</p>
+    </section>
+    <p id="error" role="alert" hidden></p>
+    <div id="task-sorting" class="sortbar" hidden>
+      <label>Sort tasks by<select id="task-sort"><option value="score">Score</option><option value="total_tokens">Total Tokens</option><option value="time">Agent Time</option><option value="task_order">Basket order</option></select></label>
+      <label>Order<select id="task-direction"><option value="desc">Descending</option><option value="asc">Ascending</option></select></label>
+      <button id="task-order-reset" type="button">Original task order</button>
+    </div>
+    <section id="content" aria-live="polite"></section>
+  </main>
+  <dialog id="config-dialog" aria-labelledby="config-title">
+    <header><h2 id="config-title">Run config</h2><button id="config-close" type="button" aria-label="Close config" autofocus>×</button></header>
+    <p>Saved semantic identity · selected public fields</p><section id="config-content" aria-live="polite"></section>
+  </dialog>
+  <dialog id="diff-dialog" class="diff-dialog" aria-labelledby="diff-title">
+    <header class="diff-dialog-header"><h2 id="diff-title" tabindex="0"></h2><button id="diff-close" type="button" aria-label="Close diff" autofocus>×</button></header>
+    <div id="diff-content" class="diff-content" aria-live="polite"></div>
+  </dialog>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "runtime": "runtime",
+  "admin_token_file": "runtime/admin-token",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "public_origin": "https://viewer.example.org",
+  "storage": "s3",
+  "bucket": "replace-with-your-private-bucket",
+  "endpoint": null,
+  "region": null,
+  "prefix": "",
+  "limits": {}
+}

@@ -1,0 +1,64 @@
+# One merged Go test fix. GITLAB_TOKEN is required even for this public project.
+# https://gitlab.com/gitlab-org/gitlab-runner/-/merge_requests/7494
+schema_version: 1
+env_file: ../.env
+dataset:
+  name: gitlab-runner-llm-diff
+  description: GitLab Runner task generated from a Go test fix
+  maintainers: [your-gitlab-login]
+output_dir: ../output/examples/gitlab-llm-diff
+cache_dir: ../cache/examples/gitlab-llm-diff
+source:
+  provider: gitlab
+  server_url: https://gitlab.com
+  project: gitlab-org/gitlab-runner
+  token_env: GITLAB_TOKEN
+  requests_per_second: 1
+collect:
+  selection: change_ids
+  change_ids: [7494]
+  default_branch_only: true
+  max_changes: 1
+git:
+  timeout_seconds: 180
+  initial_depth: 1
+  max_depth: 4096
+  max_transfer_bytes: 536870912
+filter:
+  workers: 1
+  scope:
+    enabled: true
+    prefix: functions/concrete
+    subfolders_affected: 1
+  size:
+    min_lines: 1
+    max_lines: 100
+    max_files: 3
+  files:
+    enabled: true
+    source_extensions: [.go]
+    min_source_proportion: 1.0
+    required_path_patterns: ['_test\.go$']
+  issues:
+    allow_no_issue: true
+    allow_multiple_issues: true
+  selection:
+    shuffle: false
+    limit: 1
+generation:
+  source: llm
+  context: diff
+  workers: 1
+  max_input_chars: 20000
+  templates:
+    system: ../prompts/system.jinja2
+    user: ../prompts/diff.jinja2
+  llm:
+    base_url: https://api.openai.com/v1
+    api: openai_responses
+    model: gpt-4.1-mini
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 2048
+export:
+  include_golden_diff: false

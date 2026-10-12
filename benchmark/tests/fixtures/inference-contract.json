@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "missing-native",
+      "identity": {},
+      "effective_configs": [],
+      "expected": {
+        "configured_status": "unknown",
+        "configured_reason": "model_not_configured",
+        "model": null,
+        "effort": null,
+        "effective_effort_status": "unknown",
+        "discrepancy": false
+      }
+    },
+    {
+      "name": "exact-selected-model",
+      "identity": {
+        "identity_version": 1,
+        "native_config": {
+          "model": "openai/selected",
+          "provider": {
+            "openai": {
+              "options": {
+                "reasoningEffort": "high"
+              },
+              "models": {
+                "decoy": {
+                  "options": {
+                    "reasoningEffort": "low"
+                  }
+                },
+                "selected": {
+                  "options": {
+                    "reasoningEffort": "medium"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "effective_configs": [],
+      "expected": {
+        "configured_status": "known",
+        "configured_reason": null,
+        "model": "openai/selected",
+        "effort": "medium",
+        "effort_status": "known",
+        "effort_field": "native_config.provider.openai.models.selected.options.reasoningEffort",
+        "effective_effort_status": "unknown",
+        "discrepancy": false
+      }
+    },
+    {
+      "name": "provider-options-are-sdk-input",
+      "identity": {
+        "native_config": {
+          "model": "openai/selected",
+          "provider": {
+            "openai": {
+              "options": {
+                "reasoningEffort": "high"
+              }
+            }
+          }
+        }
+      },
+      "effective_configs": [],
+      "expected": {
+        "configured_status": "known",
+        "configured_reason": null,
+        "model": "openai/selected",
+        "effort": null,
+        "effort_status": "unsupported",
+        "effort_reason": "provider_effort_options_unsupported",
+        "effort_field": "native_config.provider.openai.options.reasoningEffort",
+        "effective_effort_status": "unknown",
+        "discrepancy": false
+      }
+    },
+    {
+      "name": "variant-unsupported",
+      "identity": {
+        "native_config": {
+          "model": "openai/selected",
+          "provider": {
+            "openai": {
+              "options": {
+                "reasoningEffort": "high"
+              },
+              "models": {
+                "decoy": {
+                  "options": {
+                    "reasoningEffort": "low"
+                  }
+                },
+                "selected": {
+                  "options": {
+                    "reasoningEffort": "medium"
+                  }
+                }
+              }
+            }
+          },
+          "variant": "custom"
+        }
+      },
+      "effective_configs": [],
+      "expected": {
+        "configured_status": "known",
+        "configured_reason": null,
+        "model": "openai/selected",
+        "effort": null,
+        "effort_status": "unsupported",
+        "effort_reason": "variant_or_agent_selection_unsupported",
+        "effort_field": "native_config.variant",
+        "effective_effort_status": "unknown",
+        "discrepancy": false
+      }
+    },
+    {
+      "name": "selected-plan-agent",
+      "identity": {
+        "native_config": {
+          "model": "openai/selected",
+          "provider": {
+            "openai": {
+              "options": {
+                "reasoningEffort": "high"
+              },
+              "models": {
+                "decoy": {
+                  "options": {
+                    "reasoningEffort": "low"
+                  }
+                },
+                "selected": {
+                  "options": {
+                    "reasoningEffort": "medium"
+                  }
+                }
+              }
+            }
+          },
+          "default_agent": "plan"
+        }
+      },
+      "effective_configs": [],
+      "expected": {
+        "configured_status": "known",
+        "configured_reason": null,
+        "model": "openai/selected",
+        "effort": "medium",
+        "effective_effort_status": "unknown",
+        "discrepancy": false
+      }
+    },
+    {
+      "name": "explicit-provider-required",
+      "identity": {
+        "native_config": {
+          "model": "selected"
+        }
+      },
+      "effective_configs": [],
+      "expected": {
+        "configured_status": "unsupported",
+        "configured_reason": "explicit_provider_model_required",
+        "model": null,
+        "effort": null,
+        "effective_effort_status": "unknown",
+        "discrepancy": false
+      }
+    },
+    {
+      "name": "mixed-effective-effort",
+      "identity": {
+        "identity_version": 1,
+        "native_config": {
+          "model": "openai/selected",
+          "provider": {
+            "openai": {
+              "options": {
+                "reasoningEffort": "high"
+              },
+              "models": {
+                "decoy": {
+                  "options": {
+                    "reasoningEffort": "low"
+                  }
+                },
+                "selected": {
+                  "options": {
+                    "reasoningEffort": "medium"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "effective_configs": [
+        {
+          "attempt_id": "1",
+          "source_ref": "tasks/001-fixture/attempts/001/effective_config.json",
+          "config": {
+            "model": "openai/selected",
+            "provider": {
+              "openai": {
+                "models": {
+                  "selected": {
+                    "options": {
+                      "reasoningEffort": "low"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "attempt_id": "2",
+          "source_ref": "tasks/001-fixture/attempts/002/effective_config.json",
+          "config": {
+            "model": "openai/selected",
+            "provider": {
+              "openai": {
+                "models": {
+                  "selected": {
+                    "options": {
+                      "reasoningEffort": "high"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "configured_status": "known",
+        "configured_reason": null,
+        "model": "openai/selected",
+        "effort": "medium",
+        "effort_status": "known",
+        "effective_effort_status": "mixed",
+        "discrepancy": true
+      }
+    }
+  ]
+}

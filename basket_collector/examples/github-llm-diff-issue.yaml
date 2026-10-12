@@ -1,0 +1,53 @@
+# The same fix, now with its linked issue and a reasoning model.
+# https://github.com/pallets/werkzeug/pull/3147 closes issue #3146.
+schema_version: 1
+env_file: ../.env
+dataset:
+  name: werkzeug-llm-diff-issue
+  description: Werkzeug task generated from both the diff and linked issue
+  maintainers: [your-github-login]
+output_dir: ../output/examples/github-llm-diff-issue
+cache_dir: ../cache/examples/github-llm-diff-issue
+source:
+  provider: github
+  project: pallets/werkzeug
+collect:
+  selection: change_ids
+  change_ids: [3147]
+  default_branch_only: true
+  max_changes: 1
+filter:
+  workers: 1
+  size:
+    max_chars: 20000
+    max_lines: 300
+    max_files: 5
+  issues:
+    allow_no_issue: false
+    allow_multiple_issues: true
+  selection:
+    shuffle: false
+    limit: 1
+generation:
+  source: llm
+  context: diff+issue
+  workers: 1
+  request_timeout_seconds: 180
+  max_retries: 2
+  requests_per_second: 1
+  max_input_chars: 40000
+  templates:
+    system: ../prompts/system.jinja2
+    user: ../prompts/diff_issue.jinja2
+  llm:
+    base_url: https://api.openai.com/v1
+    api: openai_responses
+    model: gpt-5-mini
+    parameters:
+      # Reasoning tokens share this budget with the final task text.
+      # GPT-5 mini does not accept temperature or top_p.
+      max_output_tokens: 8192
+      reasoning:
+        effort: low
+export:
+  include_golden_diff: false
