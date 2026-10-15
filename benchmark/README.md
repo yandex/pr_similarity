@@ -22,6 +22,9 @@ Start with [setup and login](#quick-start), then use the guide for your next tas
 - **Bubblewrap** (`bwrap`) with working unprivileged user namespaces. The runner
   checks the sandbox before starting agents. Containers and restricted hosts
   must allow user namespaces; installing the binary alone is insufficient.
+  A discovered `bwrap` must accept every option the sandbox uses; a build that
+  is too old is passed over with a warning and the runner uses its own verified
+  pinned copy instead, so no specific system version is required.
 - Network access to **PyPI**, **GitHub** (dependencies and the pinned OpenCode
   release), your source Git repositories and the configured LLM endpoint.
 - An **API key with model access**, or a **ChatGPT subscription with OpenCode
