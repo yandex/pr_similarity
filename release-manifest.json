@@ -645,8 +645,8 @@
     },
     {
       "path": "benchmark/README.md",
-      "size_bytes": 57539,
-      "sha256": "0534cb9137806dc38bb65b9e05f6f965dd76712fb1918633702cc622ae35a419",
+      "size_bytes": 57764,
+      "sha256": "bca71cc4e7da73511ae50147c7e2a6fe2eac48d71bf3232df1e0db7d427fec50",
       "executable": false
     },
     {
@@ -819,8 +819,8 @@
     },
     {
       "path": "benchmark/src/bubblewrap.py",
-      "size_bytes": 5227,
-      "sha256": "67696573749584c1179b3b90836189ce201bfd7e71b83dd72ff5b737ae3f315c",
+      "size_bytes": 9316,
+      "sha256": "7c70dea2c1ce4ca78059b942c06534c1af492f964e8d404a322a178c78aa2299",
       "executable": false
     },
     {
@@ -849,8 +849,8 @@
     },
     {
       "path": "benchmark/src/coordinator.py",
-      "size_bytes": 37737,
-      "sha256": "80308482a112c11d7b2f684e59ebcad5f54d3942b690334f918054e2fe94811f",
+      "size_bytes": 37817,
+      "sha256": "3b72348d4eb8f87ccfdc280c3b1ef80aa9399a22d8ad24c77e3781c80901ff49",
       "executable": false
     },
     {
@@ -1271,6 +1271,12 @@
       "path": "benchmark/tests/test_basket.py",
       "size_bytes": 2380,
       "sha256": "5b61df1dd0e3511d0e41217aba48308e22655d6caaf16caf8ee7033133ff3968",
+      "executable": false
+    },
+    {
+      "path": "benchmark/tests/test_bubblewrap.py",
+      "size_bytes": 6951,
+      "sha256": "f309b65eabf71e0bd1ecf888624eaff4deb2b03288dfb12a6bf1d2ab979dc645",
       "executable": false
     },
     {
