@@ -1,11 +1,13 @@
-"""Prefer the system bubblewrap, with a pinned unprivileged cache fallback."""
+"""Prefer a capable system bubblewrap, with a pinned unprivileged cache fallback."""
 
 import asyncio
 import hashlib
 import os
 import platform
 import shutil
+import subprocess
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -19,6 +21,25 @@ from benchmark.storage import file_lock
 PACKAGE_URL = 'https://deb.debian.org/debian/pool/main/b/bubblewrap/bubblewrap_0.8.0-2+deb12u1_amd64.deb'
 PACKAGE_SHA256 = '3cc9134a3286ad01a323dcd924ba123eb634cefaeec82d774257e06308aeaadb'
 BINARY_SHA256 = '85580dd52ed366ece8844e90fa75ac7c4de8802963071344e123221fb9f6f11e'
+# Distro builds before this release reject options the sandbox command requires.
+MINIMUM_VERSION = '0.8.0'
+# A parse-only invocation that exercises every namespace option the sandbox command
+# uses, without creating a sandbox: the trailing command has no mounted root to run in.
+CAPABILITY_ARGV = (
+    '--unshare-user',
+    '--unshare-pid',
+    '--unshare-ipc',
+    '--unshare-uts',
+    '--disable-userns',
+    '--cap-drop',
+    'ALL',
+    '--die-with-parent',
+    '--new-session',
+    '--',
+    'true',
+)
+PROBE_TIMEOUT_SECONDS = 10
+_OPTION_REJECTIONS = ('unknown option', 'unrecognized option', 'invalid option')
 
 
 def _valid(path: Path) -> bool:
@@ -31,6 +52,36 @@ def _valid(path: Path) -> bool:
     )
 
 
+def _version(executable: Path, timeout: int) -> str:
+    """Return a printable version for a discovered binary, or an explicit unknown."""
+    try:
+        result = subprocess.run(
+            [str(executable), '--version'], capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 'unknown'
+    reported = f'{result.stdout or ""}{result.stderr or ""}'.strip().splitlines()
+    return reported[0] if reported else 'unknown'
+
+
+def _capable(executable: Path, timeout: int) -> bool:
+    """Report whether one candidate accepts the options the sandbox command requires.
+
+    Only an unknown option is a rejection: a binary that parses the options and then
+    fails for a host reason is still usable, because the preflight probe reports that
+    failure separately. Both output streams are read, because a rejection may arrive
+    on either one while the other carries unrelated diagnostics.
+    """
+    try:
+        result = subprocess.run(
+            [str(executable), *CAPABILITY_ARGV], capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    message = f'{result.stdout or ""}{result.stderr or ""}'.lower()
+    return not any(marker in message for marker in _OPTION_REJECTIONS)
+
+
 def resolve_bubblewrap(
     executable: str,
     cache_dir: Path,
@@ -38,16 +89,45 @@ def resolve_bubblewrap(
     auto_install: bool = True,
     timeout: int = 120,
     cancel: threading.Event | None = None,
+    on_notice: Callable[[str], None] | None = None,
 ) -> Path:
-    """Never replace a custom executable or use a privileged package installation."""
+    """Never replace a custom executable or use a privileged package installation.
+
+    A configured custom name is used as given: the operator owns that choice. The
+    default ``bwrap`` is probed for the options the sandbox command requires, and a
+    build that rejects one is passed over in favor of the verified pinned copy.
+
+    Args:
+        executable: Configured name or path; a custom name is always used as given.
+        cache_dir: Parent directory for the verified pinned fallback.
+        auto_install: Permit provisioning the pinned package when nothing usable exists.
+        timeout: Bound for package work, in seconds.
+        cancel: Cooperative cancellation for provisioning work.
+        on_notice: Optional sink for a substitution warning the caller can present.
+
+    Returns:
+        A bubblewrap executable that accepts the options the sandbox requires.
+
+    """
     check_cancelled(cancel)
-    if executable == 'bwrap' and Path('/usr/bin/bwrap').is_file():
-        return Path('/usr/bin/bwrap')
+    rejected: str | None = None
     found = shutil.which(executable)
     if found:
-        return Path(found).resolve()
+        candidate = Path(found).resolve()
+        if executable != 'bwrap':
+            return candidate
+        if _capable(candidate, min(timeout, PROBE_TIMEOUT_SECONDS)):
+            return candidate
+        rejected = f'{candidate} reports {_version(candidate, PROBE_TIMEOUT_SECONDS)}'
+        if on_notice is not None:
+            on_notice(f'{rejected} and cannot create the required sandbox; using the pinned fallback.')
     if executable != 'bwrap' or not auto_install:
-        raise BenchmarkError('sandbox_missing', 'Install bubblewrap or fix sandbox.executable.', exit_code=1)
+        detail = f' Found: {rejected}.' if rejected is not None else ''
+        raise BenchmarkError(
+            'sandbox_missing',
+            f'Install bubblewrap {MINIMUM_VERSION} or newer, or fix sandbox.executable.{detail}',
+            exit_code=1,
+        )
     if platform.system() != 'Linux' or platform.machine() not in ('x86_64', 'amd64'):
         raise BenchmarkError(
             'sandbox_missing', 'Automatic bubblewrap provisioning supports Linux x64; install it manually.', exit_code=1
@@ -60,8 +140,11 @@ def resolve_bubblewrap(
             return binary
         extractor = shutil.which('dpkg-deb')
         if extractor is None:
+            detail = f' Found: {rejected}.' if rejected is not None else ''
             raise BenchmarkError(
-                'sandbox_missing', 'Automatic setup requires dpkg-deb; install bubblewrap manually.', exit_code=1
+                'sandbox_missing',
+                f'Install bubblewrap {MINIMUM_VERSION} or newer, and dpkg-deb for the automatic setup.{detail}',
+                exit_code=1,
             )
         try:
             with TemporaryDirectory(prefix='install-', dir=directory) as temporary:
