@@ -424,6 +424,7 @@ class Coordinator:
             auto_install=self.config.data['sandbox']['auto_install'],
             timeout=self.config.data['provisioning']['download_timeout_seconds'],
             cancel=self.stop,
+            on_notice=lambda text: self.command.message(text, level='WARNING'),
         )
         with TemporaryDirectory(prefix='benchmark-preflight-') as temporary:
             root = Path(temporary)
