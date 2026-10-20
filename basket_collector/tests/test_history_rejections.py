@@ -17,10 +17,10 @@ from basket_collector.contracts import (
     Repository,
 )
 from basket_collector.filters import compact_rejection
-from basket_collector.git import GitInfrastructureError, GitRepository
+from basket_collector.git import GitFatalError, GitInfrastructureError, GitRepository
 from basket_collector.github_source import GitHubRemoteVCS
 from basket_collector.logs import InvocationLogs
-from basket_collector.pipeline import EmptyStageError, Pipeline, PipelineInterrupted
+from basket_collector.pipeline import Pipeline, PipelineInterrupted
 from basket_collector.remote import RemoteVCS
 from basket_collector.stages.filter import FilterInterrupted
 from basket_collector.storage import StageDocument, StageStore, StorageError, read_checkpoint, read_document
@@ -108,7 +108,7 @@ def test_history_rejection_completes_basket_and_reports_reuse(
     assert filtered.meta.counts.pending == filtered.meta.counts.failed == 0
     assert filtered.meta.status == 'completed' and filtered.meta.error is None
     assert {r.change_request.number for r in basket.tasks} == {1, 2, 3, 4} - bad_numbers
-    assert basket.meta.partial is False and basket.meta.omitted_failed_ids == []
+    assert basket.meta.partial is False and basket.meta.omissions == []
     assert pipeline.shutdown.stop_event.is_set() is False
     console = capsys.readouterr().out
     assert console.count('rejected: source_history_unavailable;') == len(bad_numbers)
@@ -208,7 +208,7 @@ def test_history_rejection_is_durable_beside_infrastructure_failure(
             return history_rejection(record)
         if number == 2:
             assert saved.wait(5)
-            raise GitInfrastructureError('fixture network outage')
+            raise GitFatalError('fixture network outage')
         assert number == 3
         assert pipeline.shutdown.stop_event.wait(5)
         raise FilterInterrupted('fixture active work stopped')
@@ -234,12 +234,11 @@ def test_all_history_rejections_preserve_empty_stage_failure(tmp_path: Path, mon
 
     monkeypatch.setattr('basket_collector.pipeline.process_one', history_filter({1, 2}, []))
     pipeline = Pipeline(config, producer=_producer(), remote=remote, git_repository=FakeGitRepository())
-    with pytest.raises(EmptyStageError, match='source_history_unavailable'):
-        pipeline.run('basket')
+    assert pipeline.run('basket') == 3
     output = Path(config.output_dir)
-    document, _state = read_checkpoint(output / '.work/filter.json', FilterDocument)
+    document = read_document(output / 'filtered.json', FilterDocument)
     assert document.meta.counts.rejected == 2 and document.meta.counts.pending == 0
-    assert document.meta.error is not None and document.meta.error.code == 'empty_stage_output'
+    assert document.meta.error is None and document.meta.status == 'completed'
     assert not (output / 'tasks.json').exists() and not (output / 'basket.json').exists()
 
 

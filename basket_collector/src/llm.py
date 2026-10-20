@@ -15,6 +15,12 @@ from typing import Any
 import httpx
 from basket_collector.config import GenerationConfig
 from basket_collector.contracts import TaskContent, Usage
+from basket_collector.transport_scope import (
+    HTTP_OPERATION_ERRORS,
+    record_owned,
+    reserve_generation_request,
+    retry_after_seconds,
+)
 from pydantic import ValidationError
 
 
@@ -33,12 +39,15 @@ class LLMAuthenticationError(LLMConfigurationError):
 class LLMCallError(Exception):
     """A per-record generation failure with retryability and attempt count."""
 
-    def __init__(self, code: str, message: str, retryable: bool, attempts: int) -> None:
+    def __init__(
+        self, code: str, message: str, retryable: bool, attempts: int, *, retry_after: float | None = None
+    ) -> None:
         """Record the failure code, retryability, and consumed request attempts."""
         super().__init__(message)
         self.code = code
         self.retryable = retryable
         self.attempts = attempts
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -61,8 +70,20 @@ class RateLimiter:
         self._interval = 1.0 / requests_per_second
         self._lock = threading.Lock()
         self._next_at = 0.0
+        self._cooldown_until = 0.0
+        self._cooldown_version = 0
 
-    def acquire(self, stop_event: threading.Event) -> None:
+    def defer(self, delay: float | None) -> None:
+        """Extend the shared request deadline without shortening an existing server cooldown."""
+        if delay is not None:
+            with self._lock:
+                deadline = time.monotonic() + delay
+                if deadline > self._cooldown_until:
+                    self._cooldown_until = deadline
+                    self._cooldown_version += 1
+                    self._next_at = max(self._next_at, deadline)
+
+    def acquire(self, stop_event: threading.Event) -> int:
         """Wait for a request slot, interrupting promptly on shutdown."""
         while True:
             if stop_event.is_set():
@@ -72,9 +93,18 @@ class RateLimiter:
                 remaining = self._next_at - now
                 if remaining <= 0:
                     self._next_at = now + self._interval
-                    return
+                    return self._cooldown_version
             if stop_event.wait(min(remaining, 0.1)):
                 raise GenerationInterrupted()
+
+    def confirm(self, stop_event: threading.Event, version: int) -> None:
+        """Reacquire a slot if a cooldown arrived during durable request reservation."""
+        if stop_event.is_set():
+            raise GenerationInterrupted()
+        with self._lock:
+            unchanged = version == self._cooldown_version
+        if not unchanged:
+            self.acquire(stop_event)
 
 
 def _retry_delay(response: httpx.Response | None, attempt: int, maximum: int) -> float:
@@ -321,33 +351,48 @@ class LLMClient:
         if not key:
             raise LLMAuthenticationError(f'missing API key environment variable {llm.api_key_env}')
         attempts = 0
+        max_retries = 0 if record_owned() else self.config.max_retries
         while True:
             if self._closed:
                 raise RuntimeError('LLM client is closed')
-            self.rate_limiter.acquire(self.stop_event)
+            admission = self.rate_limiter.acquire(self.stop_event)
             if self.stop_event.is_set():
                 raise GenerationInterrupted()
             attempts += 1
             response: httpx.Response | None = None
             try:
+                reserve_generation_request()
+                self.rate_limiter.confirm(self.stop_event, admission)
                 response = asyncio.run(self._request(f'{llm.base_url}{endpoint}', payload, key))
-            except (TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            except HTTP_OPERATION_ERRORS as exc:
                 if self.stop_event.is_set():
                     raise GenerationInterrupted() from exc
-                if attempts > self.config.max_retries:
+                if attempts > max_retries:
                     raise LLMCallError('request_failed', 'LLM request failed after retries', True, attempts) from exc
             else:
+                if response.status_code >= 300:
+                    self.rate_limiter.defer(retry_after_seconds(response.headers))
                 if response.status_code in (408, 409, 429) or 500 <= response.status_code <= 599:
                     if self.stop_event.is_set():
                         raise GenerationInterrupted()
-                    if attempts > self.config.max_retries:
+                    if attempts > max_retries:
                         raise LLMCallError(
-                            'request_failed', f'LLM HTTP {response.status_code} after retries', True, attempts
+                            'request_failed',
+                            f'LLM HTTP {response.status_code} after retries',
+                            True,
+                            attempts,
+                            retry_after=retry_after_seconds(response.headers),
                         )
                 elif response.status_code in (401, 403):
                     raise LLMAuthenticationError(f'LLM API rejected credentials with HTTP {response.status_code}')
                 elif response.status_code >= 300:
-                    raise LLMConfigurationError(f'LLM API rejected request with HTTP {response.status_code}')
+                    raise LLMCallError(
+                        'request_failed',
+                        f'LLM API rejected request with HTTP {response.status_code}',
+                        True,
+                        attempts,
+                        retry_after=retry_after_seconds(response.headers),
+                    )
                 else:
                     try:
                         return _parse_response(response.json(), llm.api, attempts, request_sha256)

@@ -77,6 +77,17 @@ class ReleaseExportTest(unittest.TestCase):
         self.assertEqual(check_release(destination)['version'], '0.1.0')
         self.assertFalse((destination / '.github').exists())
 
+    def test_manifest_binds_the_product_release_version(self):
+        destination = self.root / 'versioned'
+        prepare_release(self.source, destination)
+        path = destination / MANIFEST
+        manifest = json.loads(path.read_bytes())
+        self.assertEqual(manifest['release_version'], '0.1.0')
+        manifest['release_version'] = '0.2.0'
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, 'release version'):
+            check_release(destination)
+
     def test_selected_private_file_and_symlink_are_rejected(self):
         secret = self.write('benchmark/examples/auth.json', 'private')
         with self.assertRaises(ValueError):

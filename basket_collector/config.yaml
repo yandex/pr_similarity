@@ -1,3 +1,4 @@
+schema_version: 2
 # Select a source project; credentials stay in the operator environment.
 env_file: ./.env
 dataset:
@@ -8,12 +9,18 @@ dataset:
 output_dir: ./output
 cache_dir: ./cache
 collect:
+  max_retries: 3
+  retry_delay_seconds: 10
+  max_retry_delay_seconds: 120
   default_branch_only: true
   selection: change_ids
   change_ids:
   - 1
   max_changes: 10
 filter:
+  max_retries: 3
+  retry_delay_seconds: 10
+  max_retry_delay_seconds: 120
   size:
     min_lines: 1
     max_lines: 10000
@@ -45,10 +52,12 @@ filter:
     shuffle: false
     limit: 10
 generation:
+  max_retries: 3
+  retry_delay_seconds: 10
+  max_retry_delay_seconds: 120
   source: issue
 export:
   include_golden_diff: false
-schema_version: 1
 source:
   provider: github
   project: owner/repo

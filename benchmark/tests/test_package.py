@@ -52,6 +52,7 @@ from benchmark.config import load_config
 from benchmark.contracts import document_validator
 for name in ('config', 'report', 'manifest', 'usage', 'pricing', 'basket', 'run', 'state'):
     document_validator(name)
+document_validator('basket', 2)
 assert load_config(Path(sys.argv[2])).identity()['instructions']['protocol'] == 'benchmark_task_v1'
 import benchmark
 assert Path(benchmark.__file__).resolve().is_relative_to(Path(sys.argv[1]))

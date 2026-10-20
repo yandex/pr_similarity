@@ -30,6 +30,7 @@ from benchmark.storage import bytes_sha256, canonical_bytes, read_json, write_js
 from benchmark.triplet_paths import triplet_path
 from benchmark.triplets import read_triplets
 from test_basket import payload
+from test_basket_v2 import payload as payload_v2
 from test_pricing import policy
 from test_workspace import git
 
@@ -118,11 +119,22 @@ def _basket(cache: GitCache, before: str, after: str) -> dict:
     return data
 
 
-def _inputs(root: Path) -> Workflow:
+def _inputs(root: Path, basket_version: int = 1) -> Workflow:
     """Freeze UTF-8 operator config, untouched compact basket bytes and synthetic tariff inputs."""
     cache, before, after = _history(root)
     dataset = root / 'basket.json'
-    dataset.write_bytes(canonical_bytes(_basket(cache, before, after)) + b'\n')
+    data = _basket(cache, before, after)
+    if basket_version == 2:
+        contract = payload_v2()
+        data['meta'].pop('omitted_failed_ids')
+        data['meta']['schema_version'] = 2
+        for field in ('coverage', 'selection', 'omissions'):
+            data['meta'][field] = contract['meta'][field]
+        data['tasks'][0]['provenance']['generation']['input_sha256'] = contract['tasks'][0]['provenance']['generation'][
+            'input_sha256'
+        ]
+        data['tasks'][0]['provenance']['generation']['reused_from'] = None
+    dataset.write_bytes(canonical_bytes(data) + b'\n')
     executable = root / 'controlled-opencode'
     executable.write_bytes((Path(__file__).parent / 'fixtures/native-workflow.py').read_bytes())
     executable.chmod(0o755)
@@ -253,9 +265,12 @@ def _export(directory: Path, archive: Path) -> None:
     )
 
 
-def test_public_runner_native_artifact_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('basket_version', [1, 2])
+def test_public_runner_native_artifact_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, basket_version: int
+) -> None:
     """Execute the public runner and every host operation using real current producer artifacts."""
-    inputs = _inputs(tmp_path)
+    inputs = _inputs(tmp_path, basket_version)
     frozen = inputs.dataset.read_bytes()
     monkeypatch.setattr(coordinator, 'provision_opencode', lambda *_args, **_kwargs: inputs.runtime)
     code, directory = run(inputs.config, inputs.dataset, output=tmp_path / 'runs', progress='off')
@@ -387,12 +402,13 @@ def _crash(root: Path, boundary: str) -> tuple[Path, dict]:
     return Path(notice['run_directory']), notice
 
 
+@pytest.mark.parametrize('basket_version', [1, 2])
 @pytest.mark.parametrize('boundary', ['reserved', 'native', 'seal', 'outcome', 'state'])
 def test_sigkill_recovers_only_state_owned_native_facts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str, basket_version: int
 ) -> None:
     """Real process crashes never replay a complete seal/outcome or double-account saved usage."""
-    inputs = _inputs(tmp_path)
+    inputs = _inputs(tmp_path, basket_version)
     config = inputs.config
     if boundary == 'native':
         path = tmp_path / 'config.yaml'

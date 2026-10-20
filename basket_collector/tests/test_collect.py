@@ -174,16 +174,17 @@ def test_collect_pr_keeps_deleted_author_and_fork_fields() -> None:
     assert reader.requests == [12]
 
 
-def test_explicit_unmerged_pr_stops_collection() -> None:
-    """Stop collection when an explicitly selected PR was not merged."""
+def test_explicit_unmerged_pr_reports_record_failure() -> None:
+    """Report an unmerged PR as a record failure for the stage retry policy."""
     repository = _repository()
-    with pytest.raises(GitHubError, match='merged PR'):
+    with pytest.raises(GitHubError, match='not merged') as exc:
         collect_change(
             FakeReader([], {'number': 1, 'merged_at': None}),
             repository,
             1,
             CollectConfig(selection='change_ids', change_ids=[1]),
         )
+    assert exc.value.code == 'source_not_merged'
 
 
 def test_explicit_other_branch_requires_override() -> None:

@@ -1,6 +1,7 @@
 """Read exact PR revisions and text changes from an isolated bare Git cache."""
 
 import fcntl
+import logging
 import os
 import re
 import signal
@@ -8,8 +9,9 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
@@ -23,13 +25,54 @@ from basket_collector.contracts import (
     SourceRevisions,
 )
 from basket_collector.git_auth import credential_environment, isolated_environment
+from basket_collector.logs import sanitize_git_stderr
 from basket_collector.sources import RetrievalReceipt, SourceDescriptor, source_hash
 from basket_collector.storage import utc_now
 
 _SHA = re.compile(r'[0-9a-f]{40}\Z')
 _UNSHALLOW_MISSING = re.compile(r'fatal: object not found: unshallow ([0-9a-f]{40})')
+_MERGE_BASE_MISSING = re.compile(r'error: Could not read ([0-9a-f]{40})')
+_REMOTE_OVERLOADED = re.compile(
+    r'fatal: remote error: GitLab is currently unable to handle this request due to load ' r'\(ID [A-Za-z0-9-]+\)\.'
+)
 _LFS = b'version https://git-lfs.github.com/spec/v1\n'
 _MODES = {'100644', '100755'}
+_AUTH_FAILURE_MARKERS = (
+    'authentication failed',
+    'could not read username',
+    'could not read password',
+    'access denied',
+    'http 401',
+    'http 403',
+    'requested url returned error: 401',
+    'requested url returned error: 403',
+)
+_REFERENCE_FAILURE_MARKERS = (
+    'not our ref',
+    'couldn\'t find remote ref',
+    'unadvertised object',
+    'does not allow request',
+    'no such ref',
+)
+
+
+@dataclass(frozen=True)
+class GitFailureDetails:
+    """Safe native evidence retained separately from the public error summary."""
+
+    operation: str
+    returncode: int
+    stderr_excerpt: str
+    stderr_truncated: bool
+
+
+@dataclass(frozen=True)
+class GitDiagnosticContext:
+    """One worker's immutable change and descriptor attribution."""
+
+    change_id: str
+    label: str
+    descriptor_hash: str
 
 
 class RejectedChange(Exception):
@@ -50,8 +93,19 @@ class GitInfrastructureError(RuntimeError):
     code = 'git_infrastructure_error'
     retryable = True
 
+    def __init__(self, message: str, *, details: GitFailureDetails | None = None) -> None:
+        """Keep native stderr out of public summaries and saved stage errors."""
+        super().__init__(message)
+        self.details = details
 
-class GitAuthenticationError(GitInfrastructureError):
+
+class GitFatalError(GitInfrastructureError):
+    """The host environment or owned process state prevents safe continuation."""
+
+    fatal = True
+
+
+class GitAuthenticationError(GitFatalError):
     """Host Git credentials were rejected independently of hosting API access."""
 
     code = 'git_auth_error'
@@ -62,9 +116,34 @@ class GitReferenceUnavailable(GitInfrastructureError):
 
     code = 'git_reference_unavailable'
 
+    def __init__(
+        self, message: str, *, details: GitFailureDetails | None = None, confirmed_reference: str | None = None
+    ) -> None:
+        """Separate exact native recovery evidence from the existing broad ref fallback."""
+        super().__init__(message, details=details)
+        self.confirmed_reference = confirmed_reference
+
+
+class GitHistoryObjectMissing(GitInfrastructureError):
+    """A precise merge-base failure that may be recovered once inside resolution."""
+
+    def __init__(
+        self, message: str, missing_commit: str, endpoints: tuple[str, str], *, details: GitFailureDetails | None = None
+    ) -> None:
+        """Retain the exact command endpoints and missing ancestor without substituting SHA."""
+        super().__init__(message, details=details)
+        self.missing_commit = missing_commit
+        self.endpoints = endpoints
+
 
 class GitTimeoutError(GitInfrastructureError):
     """An owned Git child exceeded its configured timeout."""
+
+
+class GitRemoteOverloaded(GitInfrastructureError):
+    """A complete reproduced native fetch response reports server load."""
+
+    reason = 'remote_overloaded'
 
 
 class GitStopRequested(GitInfrastructureError):
@@ -84,6 +163,13 @@ class GitRepository:
         initial_depth: int = 1,
         max_depth: int = 4096,
         max_transfer_bytes: int = 536870912,
+        transfer_state: dict[str, int] | None = None,
+        transfer_callback: Callable[[dict[str, int]], None] | None = None,
+        transfer_kind: Literal['warm', 'cold'] = 'warm',
+        wait_callback: Callable[[str], None] | None = None,
+        warning_callback: Callable[[str], None] | None = None,
+        diagnostic_context: GitDiagnosticContext | None = None,
+        secret_names: tuple[str, ...] = (),
     ) -> None:
         """Configure the cache, source URL, timeout, and cooperative stop signal."""
         self.path = Path(cache_dir)
@@ -92,9 +178,54 @@ class GitRepository:
         self.initial_depth = initial_depth
         self.max_depth = max_depth
         self.max_transfer_bytes = max_transfer_bytes
-        self._received_bytes = 0
+        self._transfer_state = transfer_state if transfer_state is not None else {'warm': 0, 'cold': 0}
+        self._transfer_callback = transfer_callback
+        self._transfer_kind = transfer_kind
+        self._wait_callback = wait_callback
+        self._warning_callback = warning_callback
+        self._received_bytes = self._transfer_state.get(transfer_kind, 0)
         self._stop_event = stop_event if stop_event is not None else threading.Event()
         self._fetch_lock = threading.Lock()
+        self._diagnostic_context = diagnostic_context
+        self._secret_names = secret_names
+
+    def _diagnostic(self, args: tuple[str, ...], returncode: int, stderr: bytes, started: float) -> GitFailureDetails:
+        """Save full cleaned evidence with safe arguments before classification."""
+        cleaned = sanitize_git_stderr(stderr, self._secret_names)
+        refs = [arg for arg in args[1:] if _SHA.fullmatch(arg) or re.fullmatch(r'--depth=[1-9][0-9]*', arg)]
+        for arg in args[1:]:
+            if arg.startswith('refs/'):
+                try:
+                    SourceDescriptor.check_refs([arg])
+                except ValueError:
+                    continue
+                refs.append(arg)
+        context = self._diagnostic_context
+        attribution = (
+            f'{context.label} id={context.change_id} descriptor={context.descriptor_hash}'
+            if context
+            else f'descriptor={self.path.name}'
+        )
+        safe_attribution = sanitize_git_stderr(attribution.encode(), self._secret_names).replace('\n', ' ')
+        safe_refs = sanitize_git_stderr(repr(refs).encode(), self._secret_names).replace('\n', ' ')
+        logging.getLogger('basket_collector.git').debug(
+            'Git failure: %s operation=%s returncode=%s elapsed=%.3fs refs=%s\nstderr:\n%s',
+            safe_attribution,
+            args[0],
+            returncode,
+            time.monotonic() - started,
+            safe_refs,
+            cleaned,
+        )
+        return GitFailureDetails(args[0], returncode, cleaned[:4096], len(cleaned) > 4096)
+
+    def _error_message(self, operation: str, message: str) -> str:
+        """Attach safe worker attribution without exposing native stderr."""
+        context = self._diagnostic_context
+        label = (
+            sanitize_git_stderr(context.label.encode(), self._secret_names).replace('\n', ' ') + ': ' if context else ''
+        )
+        return label + 'Git ' + operation + ': ' + message
 
     def _check_stop(self) -> None:
         """Leave the current PR pending when shutdown has been requested."""
@@ -147,6 +278,7 @@ class GitRepository:
 
         """
         self._check_stop()
+        started = time.monotonic()
         env = isolated_environment()
         is_fetch = args[0] == 'fetch'
         if is_fetch:
@@ -154,9 +286,17 @@ class GitRepository:
                 env = credential_environment(env, self.timeout_seconds, self._stop_event)
             except (OSError, RuntimeError, UnicodeError, subprocess.TimeoutExpired) as exc:
                 self._check_stop()
+                details = self._diagnostic(
+                    ('credential-config',), -1, b'Host credential settings could not be read.', started
+                )
                 raise GitInfrastructureError(
-                    'Cannot read host Git credentials; check the global credential helper/askpass.'
+                    self._error_message(
+                        'credential-config', 'cannot read host credentials; check the global helper/askpass.'
+                    ),
+                    details=details,
                 ) from exc
+        initial_bytes = self._object_bytes() if is_fetch else 0
+        received_before = self._received_bytes
         command = ['git', '--git-dir', str(self.path), '-c', 'core.hooksPath=/dev/null', *args]
         self._check_stop()
         try:
@@ -169,87 +309,129 @@ class GitRepository:
                 start_new_session=True,
             )
         except OSError as exc:
-            raise GitInfrastructureError(f'cannot start Git: {exc.strerror}') from exc
+            details = self._diagnostic(args, -1, (exc.strerror or 'Cannot start Git').encode(), started)
+            raise GitFatalError(
+                self._error_message(args[0], 'cannot start Git; check the executable.'), details=details
+            ) from exc
         deadline = time.monotonic() + self.timeout_seconds
-        high_water = self._object_bytes() if is_fetch else 0
         try:
+            high_water = initial_bytes
             while True:
                 self._check_stop()
                 if is_fetch:
-                    size = self._object_bytes()
-                    self._received_bytes += max(0, size - high_water)
-                    high_water = max(high_water, size)
-                    if self._received_bytes > self.max_transfer_bytes:
-                        raise RejectedChange(
-                            'source_fetch_budget_exceeded',
-                            'Git object transfer exceeded git.max_transfer_bytes; '
-                            'increase the budget or select smaller changes.',
-                            self._received_bytes,
-                            self.max_transfer_bytes,
-                        )
+                    high_water = self._sample_transfer(high_water)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise GitTimeoutError('Git timed out; check the network or increase git.timeout_seconds.')
+                    raise GitTimeoutError(
+                        self._error_message(args[0], 'timed out; inspect DEBUG or increase filter.git.timeout_seconds.')
+                    )
                 try:
                     stdout, stderr = process.communicate(input=input_bytes, timeout=min(0.1, remaining))
                     if is_fetch:
-                        size = self._object_bytes()
-                        self._received_bytes += max(0, size - high_water)
-                        if self._received_bytes > self.max_transfer_bytes:
-                            raise RejectedChange(
-                                'source_fetch_budget_exceeded',
-                                'Git object transfer exceeded git.max_transfer_bytes; '
-                                'increase the budget or select smaller changes.',
-                                self._received_bytes,
-                                self.max_transfer_bytes,
-                            )
+                        stdout, stderr = self._terminate(process)
+                        self._sample_transfer(high_water)
                     break
                 except subprocess.TimeoutExpired:
                     input_bytes = None
-        except BaseException:
-            self._terminate(process)
+        except BaseException as exc:
+            _stdout, stderr = self._terminate(process)
+            details = self._diagnostic(args, process.returncode, stderr, started)
+            if is_fetch:
+                accounted_high_water = initial_bytes + self._received_bytes - received_before
+                self._sample_transfer(accounted_high_water)
+            if isinstance(exc, GitInfrastructureError):
+                exc.details = details
             raise
         if args[:2] == ('merge-base', '--all') and process.returncode == 1 and not stdout and not stderr:
             # Unrelated commits have no merge base; Git reports this with exit 1.
             return stdout
         if process.returncode:
-            self._raise_command_error(args, stderr, is_fetch)
+            details = self._diagnostic(args, process.returncode, stderr, started)
+            self._raise_command_error(
+                args, stderr, is_fetch, returncode=process.returncode, stdout=stdout, details=details
+            )
+        if args[0] == 'cat-file' and stderr:
+            details = self._diagnostic(args, process.returncode, stderr, started)
+            raise GitInfrastructureError(
+                self._error_message(args[0], 'object inspection reported an error; inspect the DEBUG log.'),
+                details=details,
+            )
         return stdout
 
-    def _raise_command_error(self, args: tuple[str, ...], stderr: bytes, is_fetch: bool) -> None:
+    def _sample_transfer(self, high_water: int) -> int:
+        """Charge newly received object bytes to this cache's cumulative transfer budget."""
+        size = self._object_bytes()
+        growth = max(0, size - high_water)
+        self._received_bytes += growth
+        if growth:
+            self._transfer_state[self._transfer_kind] = self._received_bytes
+            if self._transfer_callback is not None:
+                self._transfer_callback(dict(self._transfer_state))
+        if self._received_bytes > self.max_transfer_bytes:
+            raise RejectedChange(
+                'source_fetch_budget_exceeded',
+                'Git object transfer exceeded filter.git.max_transfer_bytes; '
+                'increase the budget or select smaller changes.',
+                self._received_bytes,
+                self.max_transfer_bytes,
+            )
+        return max(high_water, size)
+
+    def _raise_command_error(
+        self,
+        args: tuple[str, ...],
+        stderr: bytes,
+        is_fetch: bool,
+        *,
+        returncode: int = 128,
+        stdout: bytes = b'',
+        details: GitFailureDetails | None = None,
+    ) -> None:
         """Classify native failures without exposing raw Git diagnostics to the console."""
+        operation = args[0]
         detail = stderr.decode('utf-8', errors='replace').strip()
+        if any(message in detail.lower() for message in ('no space left on device', 'read-only file system')):
+            raise GitFatalError(
+                self._error_message(operation, 'host storage is unavailable; inspect DEBUG.'), details=details
+            )
+        missing = _MERGE_BASE_MISSING.fullmatch(detail)
+        if (
+            args[:2] == ('merge-base', '--all')
+            and len(args) == 4
+            and all(_SHA.fullmatch(sha) for sha in args[2:])
+            and returncode == 1
+            and not stdout
+            and missing is not None
+        ):
+            raise GitHistoryObjectMissing(
+                self._error_message('merge-base', 'cannot read a history object; inspect the DEBUG log.'),
+                missing.group(1),
+                (args[2], args[3]),
+                details=details,
+            )
         if is_fetch:
+            if operation == 'fetch' and returncode == 128 and not stdout and _REMOTE_OVERLOADED.fullmatch(detail):
+                raise GitRemoteOverloaded(
+                    self._error_message(operation, 'remote server is overloaded; inspect the DEBUG log.'),
+                    details=details,
+                )
             lower = detail.lower()
-            if any(
-                marker in lower
-                for marker in (
-                    'authentication failed',
-                    'could not read username',
-                    'could not read password',
-                    'access denied',
-                    'http 401',
-                    'http 403',
-                    'requested url returned error: 401',
-                    'requested url returned error: 403',
-                )
-            ):
+            if any(marker in lower for marker in _AUTH_FAILURE_MARKERS):
                 raise GitAuthenticationError(
-                    'Git access denied; configure the host credential helper/askpass '
-                    'and check clone/fetch permissions. '
-                    'Hosting API tokens do not configure Git.'
+                    self._error_message(
+                        args[0],
+                        'access denied; configure the host credential helper/askpass '
+                        'and check clone/fetch permissions. '
+                        'Hosting API tokens do not configure Git.',
+                    ),
+                    details=details,
                 )
-            if any(
-                marker in lower
-                for marker in (
-                    'not our ref',
-                    'couldn\'t find remote ref',
-                    'unadvertised object',
-                    'does not allow request',
-                    'no such ref',
+            if any(marker in lower for marker in _REFERENCE_FAILURE_MARKERS):
+                raise GitReferenceUnavailable(
+                    self._error_message(args[0], 'server did not deliver the requested ref or object.'),
+                    details=details,
+                    confirmed_reference=self._confirmed_unavailable_ref(args, detail, returncode, stdout),
                 )
-            ):
-                raise GitReferenceUnavailable('The Git server no longer delivers the requested ref or object.')
             missing = _UNSHALLOW_MISSING.fullmatch(detail)
             depths = [value for value in args if re.fullmatch(r'--depth=[1-9][0-9]*', value)]
             if missing is not None and len(args) >= 4 and args[0] == 'fetch' and len(depths) == 1:
@@ -273,25 +455,103 @@ class GitRepository:
                         'retrievable frozen Git history',
                     )
             raise GitInfrastructureError(
-                'Git fetch failed; check the fetch URL, host credentials, TLS and network, then resume.'
+                self._error_message(
+                    operation, 'failed with an unclassified native error; inspect the DEBUG log before retrying.'
+                ),
+                details=details,
             )
-        raise GitInfrastructureError('Git ' + args[0] + ' failed; check the local cache and available disk space.')
+        raise GitInfrastructureError(
+            self._error_message(
+                operation, 'failed with an unclassified native error; inspect the DEBUG log before retrying.'
+            ),
+            details=details,
+        )
+
+    def _confirmed_unavailable_ref(
+        self, args: tuple[str, ...], stderr: str, returncode: int, stdout: bytes
+    ) -> str | None:
+        """Allow only the full two-line upload-pack response reproduced by native fixtures."""
+        if (
+            returncode != 128
+            or stdout
+            or len(args) != 6
+            or args[:3] != ('fetch', '--no-tags', '--no-recurse-submodules')
+            or re.fullmatch(r'--depth=[1-9][0-9]*', args[3]) is None
+            or args[4] != self.clone_url
+            or _SHA.fullmatch(args[5]) is None
+        ):
+            return None
+        reference = args[5]
+        expected = (
+            f'fatal: git upload-pack: not our ref {reference}\n'
+            f'fatal: remote error: upload-pack: not our ref {reference}'
+        )
+        return reference if stderr == expected else None
 
     @staticmethod
-    def _terminate(process: subprocess.Popen[bytes]) -> None:
+    def _terminate(process: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
         """Reap the complete owned process group before reporting timeout/cancellation."""
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
         try:
-            process.communicate(timeout=2)
+            output = process.communicate(timeout=2)
         except subprocess.TimeoutExpired:
+            GitRepository._kill_group(process.pid)
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.communicate()
+                output = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired as error:
+                raise GitFatalError('Git cleanup did not finish; inspect the DEBUG log.') from error
+        GitRepository._kill_group(process.pid)
+        deadline = time.monotonic() + 2
+        while GitRepository._group_active(process.pid):
+            if time.monotonic() >= deadline:
+                raise GitFatalError('Git process group cleanup did not finish; retry is disabled.')
+            time.sleep(0.01)
+        return output
+
+    @staticmethod
+    def _kill_group(group: int) -> None:
+        """Terminate remaining group members even when the parent closed its streams."""
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    @staticmethod
+    def _group_active(group: int) -> bool:
+        """Ignore reparented zombies while waiting for owned userspace processes to stop."""
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return False
+        proc = Path('/proc')
+        if not proc.is_dir():
+            return True
+        found = False
+        unreadable = False
+        for entry in proc.iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                fields = (entry / 'stat').read_text().rpartition(')')[2].split()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            except PermissionError:
+                unreadable = True
+                continue
+            if len(fields) >= 3 and int(fields[2]) == group:
+                found = True
+                if fields[0] not in {'Z', 'X'}:
+                    return True
+        if found and not unreadable:
+            return False
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return False
+        return True
 
     def _object_bytes(self) -> int:
         """Count packs, loose objects and temporary downloads for a conservative transfer cap."""
@@ -332,8 +592,26 @@ class GitRepository:
         return self._object_type(sha) == 'commit'
 
     def _fetch(self, reference: str, depth: int) -> None:
-        """Fetch bounded object history without changing the frozen revision identity."""
+        """Execute one fetch; the owning record stage controls every automatic retry."""
+        self._check_stop()
+        if self._wait_callback is not None:
+            self._wait_callback('Git operation')
+        self._fetch_event(reference, depth, 'started')
         self._run('fetch', '--no-tags', '--no-recurse-submodules', '--depth=' + str(depth), self.clone_url, reference)
+        self._fetch_event(reference, depth, 'succeeded')
+
+    def _fetch_event(self, reference: str, depth: int, event: str, *, warning: bool = False) -> None:
+        """Report retry lifecycle using only cleaned attribution and fetch inputs."""
+        message = self._error_message(
+            'fetch', f'{event} reference={reference} depth={depth} timeout={self.timeout_seconds}s'
+        )
+        message = sanitize_git_stderr(message.encode(), self._secret_names).replace('\n', ' ')
+        context = self._diagnostic_context
+        identity = f'id={context.change_id} descriptor={context.descriptor_hash}' if context else ''
+        identity = sanitize_git_stderr(identity.encode(), self._secret_names).replace('\n', ' ')
+        logging.getLogger('basket_collector.git').debug('%s %s', message, identity)
+        if warning and self._warning_callback is not None:
+            self._warning_callback(message)
 
     def fetch_commit(self, sha: str, fetch_refs: list[str] | None = None) -> None:
         """Deliver an exact commit from a URL and neutral ref hints, never substitute a tip."""
@@ -344,8 +622,9 @@ class GitRepository:
                 return
             try:
                 self._fetch(sha, self.initial_depth)
-            except GitReferenceUnavailable:
-                pass
+            except GitReferenceUnavailable as failure:
+                if failure.confirmed_reference != sha:
+                    raise
             if self.has_commit(sha):
                 return
             depth = self.initial_depth
@@ -353,8 +632,9 @@ class GitRepository:
                 for reference in refs:
                     try:
                         self._fetch(reference, depth)
-                    except GitReferenceUnavailable:
-                        pass
+                    except GitReferenceUnavailable as failure:
+                        if failure.confirmed_reference != reference:
+                            raise
                     if self.has_commit(sha):
                         return
                 if depth == self.max_depth:
@@ -407,16 +687,18 @@ class GitRepository:
                     'matching merge base and commit range',
                 )
             depth = min(self.max_depth, depth * 2)
-            with self._cache_lock():
-                for sha in (source.base_sha, source.head_sha):
-                    try:
-                        self._fetch(sha, depth)
-                    except GitReferenceUnavailable:
-                        for reference in fetch_refs:
-                            try:
-                                self._fetch(reference, depth)
-                            except GitReferenceUnavailable:
-                                continue
+            for sha in (source.base_sha, source.head_sha):
+                try:
+                    self._fetch(sha, depth)
+                except GitReferenceUnavailable as failure:
+                    if failure.confirmed_reference != sha:
+                        raise
+                    for reference in fetch_refs:
+                        try:
+                            self._fetch(reference, depth)
+                        except GitReferenceUnavailable as failure:
+                            if failure.confirmed_reference != reference:
+                                raise
 
     def verify_retrieval(self, source: SourceDescriptor, resolved: ResolvedRevisions) -> RetrievalReceipt:
         """Prove commit/tree availability from an empty cache using only exported inputs."""
@@ -429,6 +711,13 @@ class GitRepository:
                 initial_depth=self.initial_depth,
                 max_depth=self.max_depth,
                 max_transfer_bytes=self.max_transfer_bytes,
+                transfer_state=self._transfer_state,
+                transfer_callback=self._transfer_callback,
+                transfer_kind='cold',
+                wait_callback=self._wait_callback,
+                warning_callback=self._warning_callback,
+                diagnostic_context=self._diagnostic_context,
+                secret_names=self._secret_names,
             )
             cold.prepare()
             for sha in (resolved.before, resolved.after):
@@ -486,6 +775,86 @@ class GitRepository:
             GitInfrastructureError: If Git cannot inspect the saved objects.
 
         """
+        with self._cache_lock():
+            try:
+                return self._resolve_revisions(source, api_commits, fetch_refs)
+            except GitHistoryObjectMissing as missing:
+                self._confirm_missing_ancestor(missing, source)
+                try:
+                    self._fetch(missing.missing_commit, self.initial_depth)
+                except GitReferenceUnavailable as failure:
+                    if failure.confirmed_reference != missing.missing_commit:
+                        raise
+                    raise self._history_rejection(missing, source, 'reference_unavailable') from failure
+                except RejectedChange as failure:
+                    if (
+                        failure.code != 'source_history_unavailable'
+                        or not isinstance(failure.observed, dict)
+                        or failure.observed.get('cause') != 'git_unshallow_object_missing'
+                    ):
+                        raise
+                    raise self._history_rejection(missing, source, 'shallow_history_unavailable') from failure
+                if self._object_type(missing.missing_commit) != 'commit':
+                    raise GitInfrastructureError(
+                        self._error_message('fetch', 'recovery did not deliver a commit object.')
+                    )
+                try:
+                    return self._resolve_revisions(source, api_commits, fetch_refs)
+                except GitHistoryObjectMissing as repeated:
+                    self._confirm_missing_ancestor(repeated, source)
+                    raise self._history_rejection(
+                        missing, source, 'object_missing_after_recovery', repeated.missing_commit
+                    ) from repeated
+
+    def _confirm_missing_ancestor(self, missing: GitHistoryObjectMissing, source: SourceRevisions) -> None:
+        """Do not treat an unreadable existing object or a different command as absence."""
+        if missing.endpoints != (source.base_sha, source.head_sha):
+            raise missing
+        for sha in missing.endpoints:
+            if not self.has_commit(sha):
+                raise GitInfrastructureError(
+                    self._error_message('merge-base', 'endpoint disappeared during resolution.')
+                )
+        if self._object_type(missing.missing_commit) is not None:
+            raise GitInfrastructureError(
+                self._error_message('merge-base', 'reported history object exists but cannot be read.')
+            )
+        loose = self.path / 'objects' / missing.missing_commit[:2] / missing.missing_commit[2:]
+        try:
+            loose.stat()
+        except FileNotFoundError:
+            return
+        raise GitInfrastructureError(
+            self._error_message('cat-file', 'an existing loose history object cannot be read.')
+        )
+
+    @staticmethod
+    def _history_rejection(
+        missing: GitHistoryObjectMissing, source: SourceRevisions, outcome: str, repeated_commit: str | None = None
+    ) -> RejectedChange:
+        """Use the existing wire reason with normalized recovery evidence only."""
+        observed: dict[str, JsonValue] = {
+            'cause': 'git_merge_base_object_missing',
+            'operation': 'merge-base',
+            'missing_commit': missing.missing_commit,
+            'base_sha': source.base_sha,
+            'head_sha': source.head_sha,
+            'recovery_attempts': 1,
+            'recovery_outcome': outcome,
+        }
+        if repeated_commit is not None:
+            observed['repeated_missing_commit'] = repeated_commit
+        return RejectedChange(
+            'source_history_unavailable',
+            'Git could not obtain verified frozen history after one recovery fetch.',
+            observed,
+            'retrievable frozen Git history',
+        )
+
+    def _resolve_revisions(
+        self, source: SourceRevisions, api_commits: list[str], fetch_refs: list[str] | None
+    ) -> ResolvedRevisions:
+        """Verify the frozen range while the caller owns the cache lock."""
         if len(api_commits) != source.commits_count or len(set(api_commits)) != len(api_commits):
             raise RejectedChange(
                 'unsupported_history',

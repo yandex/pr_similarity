@@ -20,7 +20,7 @@ def example(name: str = 'github') -> dict:
 def test_both_provider_baskets_use_one_model(provider: str) -> None:
     """Round-trip both project kinds through the same strict producer model."""
     document = BasketDocument.model_validate(example(provider))
-    assert document.meta.schema_version == 1
+    assert document.meta.schema_version == 2
     assert BasketDocument.model_validate(document.model_dump(mode='json')) == document
     assert document.tasks[0].source.vcs == 'git'
 

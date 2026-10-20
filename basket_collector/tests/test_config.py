@@ -17,6 +17,7 @@ from pydantic import ValidationError
 def _base(source: str = 'issue') -> dict[str, Any]:
     """Build the smallest valid collector configuration for a generation source."""
     return {
+        'schema_version': 2,
         'source': {'provider': 'github', 'project': 'owner/repo'},
         'dataset': {'name': 'sample', 'description': 'fixture', 'maintainers': ['alice']},
         'collect': {'selection': 'change_ids', 'change_ids': [2, 1]},
@@ -34,7 +35,12 @@ def test_issue_source_needs_no_llm_or_templates() -> None:
     assert cast(dict[str, Any], effective_settings(config, 'collect'))['collect']['default_branch_only'] is True
     assert effective_settings(config, 'filter')['revision_policy'] == 'change_merge_base_v1'
     assert config.generation.max_retries == 3
-    assert effective_settings(config, 'generate') == {'source': 'issue'}
+    assert effective_settings(config, 'generate') == {
+        'source': 'issue',
+        'max_retries': 3,
+        'retry_delay_seconds': 10,
+        'max_retry_delay_seconds': 120,
+    }
     assert effective_settings(config, 'export')['include_golden_diff'] is False
 
 
@@ -80,7 +86,7 @@ def test_paths_relative_to_yaml_and_selected_template(tmp_path: Path) -> None:
     (prompts / 'custom.jinja2').write_text('Custom', encoding='utf-8')
     config_path = tmp_path / 'my config.yaml'
     config_path.write_text(
-        'dataset: {name: sample, description: fixture, maintainers: [alice]}\n'
+        'schema_version: 2\ndataset: {name: sample, description: fixture, maintainers: [alice]}\n'
         'source: {provider: github, project: owner/repo}\ncollect: {selection: change_ids, change_ids: [2]}\n'
         'generation:\n  source: llm\n  context: issue\n'
         '  llm: {model: model-id}\n  templates: {user: ./prompts/custom.jinja2}\n',
@@ -109,7 +115,7 @@ def test_environment_falls_back_to_file_without_overriding_process(
     """Fill missing environment values from .env without replacing process values."""
     config_path = tmp_path / 'config.yaml'
     config_path.write_text(
-        'dataset: {name: sample, description: fixture, maintainers: [alice]}\n'
+        'schema_version: 2\ndataset: {name: sample, description: fixture, maintainers: [alice]}\n'
         'source: {provider: github, project: owner/repo}\ncollect: {selection: change_ids, change_ids: [1]}\n'
         'generation: {source: issue}\n',
         encoding='utf-8',

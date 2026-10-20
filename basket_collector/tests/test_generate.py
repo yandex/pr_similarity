@@ -14,12 +14,12 @@ from basket_collector.config import (
     load_template_snapshot,
 )
 from basket_collector.contracts import (
-    FailedRecord,
     FilterRecord,
+    RejectedRecord,
     TaskRecord,
     settings_sha256,
 )
-from basket_collector.llm import LLMClient, LLMConfigurationError
+from basket_collector.llm import LLMCallError, LLMClient, LLMConfigurationError
 from basket_collector.stages.generate import generate_record
 from fixture_helpers import descriptor, retrieval, task_identity
 
@@ -155,11 +155,11 @@ def test_issue_source_preserves_all_linked_issues() -> None:
 def test_issue_source_missing_and_invalid_title_are_failed() -> None:
     """Verify missing issues and empty issue titles become per-PR failures."""
     no_issue = generate_record(_record([]), GenerationConfig(source='issue'))
-    assert isinstance(no_issue, FailedRecord) and no_issue.error.code == 'missing_issue'
+    assert isinstance(no_issue, RejectedRecord) and no_issue.reasons[0].code == 'missing_issue'
     issue = _record().model_dump(mode='json')
     issue['issues'][0]['title'] = ' '
     bad_title = generate_record(FilterRecord.model_validate(issue), GenerationConfig(source='issue'))
-    assert isinstance(bad_title, FailedRecord) and bad_title.error.code == 'invalid_issue'
+    assert isinstance(bad_title, RejectedRecord) and bad_title.reasons[0].code == 'invalid_issue'
 
 
 @pytest.mark.parametrize(
@@ -228,24 +228,21 @@ def test_undefined_or_file_loading_template_is_rejected(tmp_path: Path) -> None:
 def test_input_limit_and_missing_issue_do_not_call_api(tmp_path: Path) -> None:
     """Verify local validation failures consume no LLM requests."""
     missing = generate_record(_record([]), _config(tmp_path, 'issue', '{{ issues }}'))
-    assert isinstance(missing, FailedRecord) and missing.error.code == 'missing_issue'
+    assert isinstance(missing, RejectedRecord) and missing.reasons[0].code == 'missing_issue'
     config = _config(tmp_path, 'diff', '{{ diff }}', max_input_chars=1)
     large = generate_record(_record(), config)
-    assert isinstance(large, FailedRecord) and large.error.code == 'input_too_large'
-    assert large.attempts == 0
+    assert isinstance(large, RejectedRecord) and large.reasons[0].code == 'input_too_large'
 
 
-def test_retry_failed_accumulates_actual_requests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify retrying a failed task retains the cumulative request count."""
+def test_transport_failure_reaches_stage_retry_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave the decision to retry or mark failed to the stage operation runner."""
     monkeypatch.setenv('TEST_LLM_KEY', 'secret')
     config = _config(tmp_path, 'diff', '{{ diff }}', max_retries=0)
     with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(503))) as transport:
         with LLMClient(config, http_client=transport) as client:
-            failed = generate_record(_record(), config, llm_client=client, previous_attempts=4)
-    assert isinstance(failed, FailedRecord)
-    assert failed.error.code == 'request_failed'
-    assert failed.error.retryable is True
-    assert failed.attempts == 5
+            with pytest.raises(LLMCallError) as failure:
+                generate_record(_record(), config, llm_client=client)
+    assert failure.value.code == 'request_failed' and failure.value.attempts == 1
 
 
 def test_two_prs_use_one_template_snapshot_when_files_change_mid_run(
@@ -257,6 +254,7 @@ def test_two_prs_use_one_template_snapshot_when_files_change_mid_run(
     generation = _config(tmp_path, 'diff', '{{ pr_title }} original {{ diff }}')
     config = CollectorConfig.model_validate(
         {
+            'schema_version': 2,
             'source': {'provider': 'github', 'project': 'owner/repo'},
             'dataset': {'name': 'fixture', 'description': '', 'maintainers': ['tester']},
             'collect': {'selection': 'change_ids', 'change_ids': [1, 2]},

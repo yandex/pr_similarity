@@ -449,7 +449,7 @@ def test_parallel_fallback_fetch_keeps_each_fetch_head(repo: Path, tmp_path: Pat
         def _run(self, *args: str, input_bytes: bytes | None = None) -> bytes:
             """Force fallback fetches and observe their serialized completion."""
             if args[0] == 'fetch' and args[-1] in {first, second}:
-                raise GitReferenceUnavailable('server requires ref')
+                raise GitReferenceUnavailable('server requires ref', confirmed_reference=args[-1])
             result = super()._run(*args, input_bytes=input_bytes)
             if args[0] == 'fetch' and args[-1] == 'refs/pull/1/head':
                 first_fetched.set()
@@ -613,7 +613,7 @@ def test_shutdown_after_failed_sha_fetch_does_not_start_fallback(
             return original_run(*args, input_bytes=input_bytes)
         called.append(args[-1])
         stop.set()
-        raise GitReferenceUnavailable('server requires ref')
+        raise GitReferenceUnavailable('server requires ref', confirmed_reference=args[-1])
 
     monkeypatch.setattr(cache, '_run', failed_primary)
     with pytest.raises(GitStopRequested):

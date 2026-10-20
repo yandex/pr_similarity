@@ -3,6 +3,9 @@
 Follow the root guide and this README. Use this directory's `.venv` and Make
 interface. Local/mock tests do not authorize deployment, account or storage changes.
 
+- Accept basket v1/v2 and validate their binding to the archived report. Preserve
+  original basket hashes; v1 notices do not require conversion or re-upload.
+  Partial basket omissions are distinct from benchmark execution failures.
 - Preserve publisher API/archive compatibility with benchmark; verify producer
   payloads as well as viewer responses when changing that boundary.
 - Keep public reads, owner operations, user accounts and administrator actions

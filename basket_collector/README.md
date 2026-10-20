@@ -7,10 +7,18 @@ merge requests. Task statements come from linked issues or an LLM. The result,
 `basket.json`, contains the tasks and frozen Git revisions needed to evaluate a
 coding agent against the original changes.
 
+The collector uses **schema v2** for configuration and artifacts. When moving
+from v1, start with a v2 config and a new output directory; v1 stage checkpoints
+cannot be resumed by this collector. Keep existing frozen baskets unchanged.
+Benchmark and viewer accept these exports and retain support for frozen v1
+baskets; the collector itself only accepts v2.
+
 ## Quick start
 
 Before you start, you need:
 
+- **Linux**, the supported platform for the collector in v0.2. Other operating
+  systems are outside this release's supported scope.
 - **Python 3.12** (the current package requires this version), **Make**, and **Git**
   installed and available on `PATH`.
 - **Access to the source repository** through both its hosting API and Git.
@@ -79,30 +87,55 @@ Keep these paths valid if you copy an example elsewhere. The existing
 [config.yaml](config.yaml) is a generic template for your own repository;
 it uses linked issue text by default.
 
-## Continue or rebuild
+## Resume and partial results
 
 Ctrl+C saves progress. Run the same command with the same `CONFIG` to continue.
-For missing credentials, fix the environment and resume. For failed tasks,
-fix the reported cause, then retry:
+Each record has its own retry budget. An exhausted record becomes `failed`;
+other records continue. Fix the reported cause, then retry failed records:
 
 ```bash
 make basket CONFIG=examples/github-llm-diff.yaml RETRY_FAILED=1
 ```
 
-After changing the config, rebuild:
+To proceed with known omissions, use `ALLOW_PARTIAL=1`. If recovered records
+change the selected tasks, use `RESELECT=1` to accept the new selection:
+
+```bash
+make basket CONFIG=examples/github-llm-diff.yaml ALLOW_PARTIAL=1
+make basket CONFIG=examples/github-llm-diff.yaml RETRY_FAILED=1 RESELECT=1
+```
+
+Successful generation is reused when its complete inputs match. The last
+published basket stays available until a new export is ready. Deterministic
+`rejected` records are not repeated by `RETRY_FAILED`.
+
+To intentionally recalculate the whole basket:
 
 ```bash
 make basket CONFIG=examples/github-llm-diff.yaml OVERWRITE=1
 ```
 
-Retries may make new paid LLM requests; rebuilding repeats successful generation
-as well. A run stops if a stage produces no usable changes. If only some tasks
-fail, it can export a partial basket; inspect the output files before using it.
+`OVERWRITE=1` recalculates the command's stages: all stages for `basket`, or the
+named stage for a direct command. It cannot be combined with `RETRY_FAILED` or
+`RESELECT`. Retries and recalculation may incur new model charges.
+
+`RESELECT` applies to `filter` and `basket`; `RETRY_FAILED` applies to every
+record stage and `basket`. An empty basket is never exported. Exit code 3 means
+saved work needs a retry or an explicit partial/selection decision, or that no
+successful records remain. Inspect the reported stage and saved counts before
+choosing a flag. `ALLOW_PARTIAL` does not retry failures or accept a changed
+selection; `RESELECT` does not accept omissions. If both decisions are needed,
+pass both flags deliberately. `RETRY_FAILED` does not apply to `export`.
+
+The presence of `basket.json` after exit code 3 does not prove this invocation
+exported a new basket: it may be the previous publication. Inspect stage status,
+`selection.json`, and the export's lineage, coverage and omissions. Keep the
+previous export intact while deciding how to continue.
 
 ## Choose your basket
 
 The workflow is `collect → filter → generate → export`. You can inspect each
-stage before continuing; only the completed `basket.json` is the benchmark input.
+stage before continuing; `basket.json` is the frozen export boundary.
 For a first run, choose a shipped example rather than filling the whole schema
 from scratch. To keep its relative paths valid while customizing it:
 
@@ -125,17 +158,23 @@ PY
 
 | Config area | Decision |
 |---|---|
+| `schema_version: 2` | Required configuration version |
 | `dataset` | Dataset identity, description and maintainers |
 | `output_dir`, `cache_dir`, `env_file` | Config-relative output/cache/credential-file paths |
 | `source` | GitHub/GitLab host/project and API token variable name |
 | `collect` | Explicit changes or date-range population, default-branch policy and discovery ceiling |
-| `git` | Host Git timeout, depth and transfer-byte cap for revision verification |
+| `filter.git` | Git timeout, depth and transfer-byte limits for revision verification |
 | `filter.scope`, `.size`, `.files`, `.issues` | Which changes are eligible before sampling |
 | `filter.percentile` | Trim size tails after eligibility filters |
 | `filter.selection` | Seeded shuffle and maximum output size |
 | `filter.workers` | Concurrent Git/filter work; discovery has its own API limits |
 | `generation` | Issue text or LLM-generated task; input context, templates, concurrency and API parameters |
 | `export.include_golden_diff` | Whether to include the human diff in the frozen export |
+
+`collect`, `filter` and `generation` each default to `max_retries: 3`,
+`retry_delay_seconds: 10` and `max_retry_delay_seconds: 120`. Retries use
+exponential backoff and respect server cooldowns. Source API request pacing
+stays under `source`; native Git timeout is `filter.git.timeout_seconds`.
 
 The merged date interval is half-open UTC: `merged_from` is included,
 `merged_before` is excluded. Discovery may scan closed-change history beyond
@@ -162,10 +201,11 @@ contains a golden diff.
 
 | File under `output_dir` | What to inspect |
 |---|---|
-| `collected.json` | Discovered successful records, linked issues and collection exclusions |
-| `filtered.json` | Retained records and `rejected[].reasons` |
-| `tasks.json` | Generated tasks and `failed[]` records, attempts/errors |
-| `basket.json` | Exported task statements, frozen revisions/workspaces/source descriptors |
+| `collected.json` | Successful records, exclusions and failed discovery identities |
+| `filtered.json` | All eligible candidates, rejections and failures |
+| `selection.json` | Last accepted ordered selection and generation input fingerprints |
+| `tasks.json` | Selected task outcomes, including failures and generation rejections |
+| `basket.json` | Last published export, with `meta.coverage` and explicit `meta.omissions` |
 | `.work/<stage>.json` | Unfinished stage/checkpoint state; not a completed export |
 | `logs_<timestamp>_*/collector.log` | Per-command DEBUG diagnostics, even at console INFO |
 
@@ -173,6 +213,8 @@ Each stage has `meta.status`, `meta.counts`, settings/hash and predecessor linea
 Read those before assuming the next stage is complete. Changing settings,
 including collector worker settings, can invalidate reuse; benchmark worker
 count has different resume semantics. Do not edit saved hashes/checkpoints.
+Completed record processing can still await permission to select or export.
+Historical revisions and the currently published basket are retained separately.
 
 From this directory, replace the path with your config's output directory:
 
@@ -196,6 +238,8 @@ for name in ('collected.json', 'filtered.json', 'tasks.json', 'basket.json'):
         print('first rejection reasons:', dict(reasons))
     if name == 'basket.json':
         print('exported tasks:', len(doc['tasks']))
+        print('coverage:', doc['meta']['coverage'])
+        print('omissions:', doc['meta']['omissions'])
 PY
 ```
 
@@ -204,11 +248,9 @@ out, not independent counts of every predicate. Compare all four stages to
 separate filtering/sampling losses from LLM generation failures. A partial export
 can be usable but should be reported with its actual coverage.
 
-Ctrl+C saves checkpoints. Resume with the same CONFIG. Fix credentials without
-rebuilding successful work; retry failed generation deliberately with
-`RETRY_FAILED=1`. For an intentional changed-config rebuild use `OVERWRITE=1`,
-which can repeat paid requests, or choose a new output/cache path. Freeze and
-retain the final export and its source config after validation.
+Ctrl+C saves checkpoints. Resume with the same CONFIG. If an interrupted record
+used its last attempt, `RETRY_FAILED=1` explicitly opens a new budget. Preserve
+the final export and its source config after validation.
 
 </details>
 
@@ -218,5 +260,5 @@ retain the final export and its source config after validation.
 offline; `make smoke-live` uses real services and may make model calls.
 [AGENTS.md](AGENTS.md) describes module boundaries;
 [prsim-build-basket](../.agents/skills/prsim-build-basket/SKILL.md) is the operator
-skill. The [benchmark guide](../benchmark/README.md#quick-start) starts from the
-completed export; it does not need intermediate collector files.
+skill. Validate v2 exports with the collector's own models and packaged schema;
+benchmark and viewer independently validate the same frozen export contract.

@@ -2,6 +2,8 @@ PYTHON ?= python
 CONFIG ?= config.yaml
 OVERWRITE ?= 0
 RETRY_FAILED ?= 0
+ALLOW_PARTIAL ?= 0
+RESELECT ?= 0
 LOG_LEVEL ?= INFO
 PROGRESS ?= auto
 export BASKET_CONSOLE_LOG_LEVEL = $(value LOG_LEVEL)
@@ -24,7 +26,7 @@ setup:
 
 collect filter generate export basket:
 	@test -x "$(VENV_PYTHON)" || { printf '%s\n' 'Run make setup first'; exit 2; }
-	@"$(VENV_PYTHON)" -m basket_collector $@ --config "$(CONFIG)" --overwrite "$(OVERWRITE)" --retry-failed "$(RETRY_FAILED)" --log-level "$${BASKET_CONSOLE_LOG_LEVEL}" --progress "$${BASKET_PROGRESS_MODE}"
+	@"$(VENV_PYTHON)" -m basket_collector $@ --config "$(CONFIG)" --overwrite "$(OVERWRITE)" --retry-failed "$(RETRY_FAILED)" --allow-partial "$(ALLOW_PARTIAL)" --reselect "$(RESELECT)" --log-level "$${BASKET_CONSOLE_LOG_LEVEL}" --progress "$${BASKET_PROGRESS_MODE}"
 
 test:
 	@test -x "$(VENV_PYTHON)" || { printf '%s\n' 'Run make setup first'; exit 2; }
@@ -37,7 +39,7 @@ smoke:
 smoke-live: CONFIG = config.smoke-live.yaml
 smoke-live:
 	@test -x "$(VENV_PYTHON)" || { printf '%s\n' 'Run make setup first'; exit 2; }
-	@"$(VENV_PYTHON)" -m basket_collector smoke-live --config "$(CONFIG)" --overwrite "$(OVERWRITE)" --retry-failed "$(RETRY_FAILED)" --log-level "$${BASKET_CONSOLE_LOG_LEVEL}" --progress "$${BASKET_PROGRESS_MODE}"
+	@"$(VENV_PYTHON)" -m basket_collector smoke-live --config "$(CONFIG)" --overwrite "$(OVERWRITE)" --retry-failed "$(RETRY_FAILED)" --allow-partial "$(ALLOW_PARTIAL)" --reselect "$(RESELECT)" --log-level "$${BASKET_CONSOLE_LOG_LEVEL}" --progress "$${BASKET_PROGRESS_MODE}"
 
 help:
 	@printf '%s\n' \
@@ -59,8 +61,10 @@ help:
 	  'Variables:' \
 	  '  PYTHON=python3.12  Interpreter for make setup (default: python)' \
 	  '  CONFIG=<path>     YAML config (default: config.yaml; paths relative to YAML)' \
-	  '  OVERWRITE=1       Rebuild stages; successful LLM tasks may incur new charges' \
+	  '  OVERWRITE=1       Recalculate command stages; may repeat paid generation' \
 	  '  RETRY_FAILED=1    Retry failed tasks while keeping successful ones' \
+	  '  ALLOW_PARTIAL=1   Accept documented omissions after record processing' \
+	  '  RESELECT=1        Accept a changed selection in filter or basket' \
 	  '  LOG_LEVEL=DEBUG   Console verbosity (default: INFO)' \
 	  '  PROGRESS=auto     TTY bars or plain heartbeats; plain/off also accepted' \
 	  '' \

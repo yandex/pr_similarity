@@ -124,7 +124,7 @@ def test_sigint_between_filter_requests_keeps_pending_checkpoint(
         remote=GitHubRemoteVCS(config.source, client=FakeGitHub()),
         git_repository=FakeGitRepository(),
     )
-    assert resumed.run('filter') == 0
+    assert resumed.run('filter', retry_failed=True) == 0
     finished = read_document(Path(config.output_dir) / 'filtered.json', FilterDocument)
     assert finished.meta.counts.succeeded == 1 and finished.meta.counts.pending == 0
 

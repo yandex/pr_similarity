@@ -85,8 +85,10 @@ class GitHubRemoteVCS:
     def get_change_request(self, repository: Repository, number: int) -> CollectRecord:
         """Freeze the original source head, not a synthetic integration commit."""
         raw = self.client.get_pull_request(repository.path, number)
-        if _positive_int(raw.get('number'), 'PR number') != number or raw.get('merged_at') is None:
-            raise GitHubError('Selected change is not the requested merged PR.', code='invalid_source_metadata')
+        if _positive_int(raw.get('number'), 'PR number') != number:
+            raise GitHubError('Source returned another pull request.', code='source_identity_changed')
+        if raw.get('merged_at') is None:
+            raise GitHubError('Selected pull request is not merged.', code='source_not_merged')
         base = _object(raw.get('base'), 'PR base')
         head = _object(raw.get('head'), 'PR head')
         base_repo = _object(base.get('repo'), 'PR target project')
@@ -94,7 +96,7 @@ class GitHubRemoteVCS:
             _string(base_repo.get('full_name'), 'target path').casefold() != repository.path.casefold()
             or str(_positive_int(base_repo.get('id'), 'target project ID')) != repository.project_id
         ):
-            raise GitHubError('Selected PR belongs to another target project.', code='invalid_source_metadata')
+            raise GitHubError('Selected PR belongs to another target project.', code='source_identity_changed')
         head_repo = head.get('repo')
         user = raw.get('user')
         body = raw.get('body') or ''

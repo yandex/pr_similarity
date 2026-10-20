@@ -9,6 +9,11 @@ Read root/benchmark AGENTS.md, the [publication guide](../../../benchmark/README
 and [viewer guide](../../../viewer/README.md#use-the-leaderboard). Use benchmark's
 `.venv` and Make interface. Resolve the exact stopped run and HTTPS origin;
 validate current registry/state and complete native evidence first.
+Both basket v1/v2 are supported; preserve archived basket bytes and hashes.
+Do not substitute a newer collector export or convert v1 to suppress its notice.
+For v2, check report/basket coverage and omissions as well as task identity;
+collector omissions are not failed agent attempts. Confirm the target viewer
+supports v2 before publishing a v2 run to an older deployment.
 
 Diagnosis, config preparation and dry-run do not authorize upload. An explicit
 publication request authorizes that upload without repeated confirmation.

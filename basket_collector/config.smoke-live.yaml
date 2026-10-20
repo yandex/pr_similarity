@@ -1,3 +1,4 @@
+schema_version: 2
 # Select a source project; credentials stay in the operator environment.
 env_file: ./.env
 dataset:
@@ -23,7 +24,6 @@ generation:
   workers: 1
 export:
   include_golden_diff: false
-schema_version: 1
 source:
   provider: github
   project: pallets/werkzeug

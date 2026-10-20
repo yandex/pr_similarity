@@ -6,11 +6,13 @@ import pytest
 from basket_collector.contracts import (
     BasketMeta,
     Counts,
+    Coverage,
     GenerateMeta,
     InputReceipt,
     LineageReceipt,
     Producer,
     Repository,
+    SelectionReceipt,
     StageName,
     TaskRecord,
     TasksDocument,
@@ -18,6 +20,7 @@ from basket_collector.contracts import (
 from basket_collector.stages.export import export_tasks, project_record
 from basket_collector.storage import sha256, stage_sha256
 from fixture_helpers import descriptor, retrieval
+from test_contracts import _selection_receipt
 
 
 def _task_record() -> TaskRecord:
@@ -89,6 +92,7 @@ def _task_record() -> TaskRecord:
                 'response_model': None,
                 'usage': None,
                 'request_sha256': None,
+                'input_sha256': 'd' * 64,
             },
             'source': descriptor('o/r', 1).model_dump(mode='json'),
             'retrieval': retrieval(descriptor('o/r', 1), 'a' * 40, 'b' * 40).model_dump(mode='json'),
@@ -139,6 +143,7 @@ def test_export_rejects_metadata_pointing_to_another_tasks_document() -> None:
         for stage, digest in (('collect', 'c' * 64), ('filter', 'd' * 64))
     ]
     common = {
+        'schema_version': 2,
         'status': 'completed',
         'settings': {},
         'settings_hash': empty_hash,
@@ -151,6 +156,7 @@ def test_export_rejects_metadata_pointing_to_another_tasks_document() -> None:
         'counts': Counts(input=1, succeeded=1, rejected=0, failed=0, pending=0),
     }
     tasks = TasksDocument(
+        selection=SelectionReceipt.model_validate(_selection_receipt(_task_record().id)),
         meta=GenerateMeta(
             **common,
             input=InputReceipt(stage='filter', sha256='d' * 64),
@@ -179,7 +185,17 @@ def test_export_rejects_metadata_pointing_to_another_tasks_document() -> None:
         description='fixture',
         maintainers=['alice'],
         partial=False,
-        omitted_failed_ids=[],
+        omissions=[],
+        selection=tasks.selection,
+        coverage=Coverage.model_validate(
+            {
+                'discovery': {'matched': 1, 'selected': 1, 'capped': False},
+                'collect': tasks.meta.counts,
+                'filter': tasks.meta.counts,
+                'selected': 1,
+                'generate': tasks.meta.counts,
+            }
+        ),
     )
     with pytest.raises(ValueError, match='input|lineage'):
         export_tasks(tasks, basket_meta)

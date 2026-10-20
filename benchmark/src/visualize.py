@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from benchmark.basket import load_basket
 from benchmark.commands import Command
 from benchmark.errors import OPERATION_ERRORS, BenchmarkError
 from benchmark.report import read_report
@@ -224,6 +225,8 @@ def compare(run_dirs: list[Path], *, no_browser: bool = False, level: str = 'INF
     paths = [path.expanduser().resolve() for path in run_dirs]
     with _view_command(paths[0], 'compare', level) as command:
         reports = [read_report(path) for path in paths]
+        for path in paths:
+            command.warn_basket(load_basket(path / 'basket.json'))
         names = [report['agent']['name'] + ' / ' + report['run']['id'][:8] for report in reports]
         intro = (
             '<ul>'

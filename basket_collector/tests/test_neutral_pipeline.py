@@ -155,6 +155,7 @@ def test_mocked_issue_pipeline_exports_neutral_basket(
     git('update-ref', 'refs/merge-requests/42/head', after)
     config = CollectorConfig.model_validate(
         {
+            'schema_version': 2,
             'dataset': {'name': 'fixture', 'description': 'Fixture', 'maintainers': ['test']},
             'source': {'provider': provider, 'project': 'owner/repo'},
             'collect': {'selection': 'change_ids', 'change_ids': [42]},
@@ -190,7 +191,7 @@ def test_mocked_issue_pipeline_exports_neutral_basket(
         assert row.workspace == '.' and row.diff_policy == 'git_source_changes_v1'
         assert row.provenance.generation.attempts == 0
         assert row.provenance.retrieval.before_tree == row.revisions.before_tree
-        schema = json.loads(files('basket_collector').joinpath('schemas/basket-v1.schema.json').read_text())
+        schema = json.loads(files('basket_collector').joinpath('schemas/basket-v2.schema.json').read_text())
         jsonschema.Draft202012Validator(schema).validate(basket.model_dump(mode='json'))
     finally:
         native.close()

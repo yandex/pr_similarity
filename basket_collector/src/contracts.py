@@ -1,4 +1,4 @@
-"""The sole persisted JSON and generated-task contracts for basket collector v1."""
+"""The sole persisted JSON and generated-task contracts for basket collector v2."""
 
 import hashlib
 import json
@@ -45,7 +45,14 @@ PositiveInt = Annotated[StrictInt, Field(gt=0)]
 NonnegativeInt = Annotated[StrictInt, Field(ge=0)]
 
 
-class CollectCheckpoint(StrictModel):
+class RecordCheckpoint(StrictModel):
+    """Persist record attempt histories independently from semantic stage content."""
+
+    attempts: dict[StrictStr, dict[str, JsonValue]] = Field(default_factory=dict)
+    retry_ids: list[StrictStr] = Field(default_factory=list)
+
+
+class CollectCheckpoint(RecordCheckpoint):
     """Preserve discovery cursor and the complete frozen collection queue."""
 
     phase: Literal['repository', 'discovery', 'records', 'ready']
@@ -81,17 +88,16 @@ class CollectCheckpoint(StrictModel):
         return value
 
 
-class FilterCheckpoint(StrictModel):
+class FilterCheckpoint(RecordCheckpoint):
     """Distinguish per-PR filtering, population selection and publication."""
 
     phase: Literal['local', 'selection', 'ready']
 
 
-class GenerateCheckpoint(StrictModel):
+class GenerateCheckpoint(RecordCheckpoint):
     """Retain previous per-PR attempts while processing or publishing tasks."""
 
     phase: Literal['records', 'ready'] = 'records'
-    retry_attempts: dict[StrictStr, NonnegativeInt] = Field(default_factory=dict)
 
 
 class ExportCheckpoint(StrictModel):
@@ -224,7 +230,7 @@ class Meta(StrictModel):
     """Describe the stage state, counts, settings, and complete lineage."""
 
     schema_family: Literal['pr_similarity_os.collector'] = 'pr_similarity_os.collector'
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2]
     stage: Literal['collect', 'filter', 'generate']
     status: StageStatus
     input: InputReceipt | None
@@ -242,9 +248,9 @@ class Meta(StrictModel):
     @field_validator('schema_version', mode='before')
     @classmethod
     def validate_schema_version(cls, value: object) -> int:
-        """Require integer version one before Literal validation can coerce it."""
-        if type(value) is not int or value != 1:
-            raise ValueError('schema_version must be the integer 1')
+        """Require explicit integer version two without legacy coercions."""
+        if type(value) is not int or value != 2:
+            raise ValueError('schema_version must be the integer 2')
         return value
 
     @field_validator('settings_hash')
@@ -328,8 +334,83 @@ class GenerateMeta(Meta):
     stage: Literal['generate'] = 'generate'
 
 
+class Omission(StrictModel):
+    """Identify a known unprocessed candidate or an unsuccessful selected task."""
+
+    id: StrictStr
+    stage: Literal['collect', 'filter', 'generate']
+    kind: Literal['failed', 'rejected']
+    code: StrictStr
+    result_sha256: Sha256
+
+    @model_validator(mode='after')
+    def check_omission(self) -> 'Omission':
+        """Keep eligibility rejections out of incomplete-population coverage."""
+        if re.fullmatch(r'change:[0-9a-f]{64}', self.id) is None:
+            raise ValueError('invalid omitted change identity')
+        _sha(self.result_sha256, 64)
+        if self.kind == 'rejected' and self.stage != 'generate':
+            raise ValueError('only selected generation rejections are omissions')
+        return self
+
+
+class SelectionReceipt(StrictModel):
+    """Bind generation to an ordered selection and its complete per-task inputs."""
+
+    schema_version: Literal[2]
+    sha256: Sha256
+    input_sha256: Sha256
+    fingerprint: Sha256
+    selected_ids: list[StrictStr]
+    generation_keys: dict[StrictStr, Sha256]
+
+    @field_validator('schema_version', mode='before')
+    @classmethod
+    def validate_schema_version(cls, value: object) -> int:
+        """Require an explicit integer v2 on independently stored selection receipts."""
+        if type(value) is not int or value != 2:
+            raise ValueError('selection schema_version must be the integer 2')
+        return value
+
+    @model_validator(mode='after')
+    def check_selection(self) -> 'SelectionReceipt':
+        """Require exact keys and a stable ordered generation-input fingerprint."""
+        for digest in (self.sha256, self.input_sha256, self.fingerprint, *self.generation_keys.values()):
+            _sha(digest, 64)
+        _check_ids(self.selected_ids)
+        if set(self.selected_ids) != set(self.generation_keys):
+            raise ValueError('selection generation keys differ from selected IDs')
+        expected = settings_sha256(
+            {'tasks': [[identity, self.generation_keys[identity]] for identity in self.selected_ids]}
+        )
+        if self.fingerprint != expected:
+            raise ValueError('selection fingerprint differs from ordered inputs')
+        return self
+
+
+class Coverage(StrictModel):
+    """Preserve the complete discovered and processed population behind an export."""
+
+    discovery: Discovery
+    collect: Counts
+    filter: Counts
+    selected: StrictInt = Field(ge=0)
+    generate: Counts
+
+    @model_validator(mode='after')
+    def check_coverage(self) -> 'Coverage':
+        """Ensure downstream queues contain only successful predecessor records."""
+        if self.collect.input != self.discovery.selected or self.filter.input != self.collect.succeeded:
+            raise ValueError('coverage predecessor populations disagree')
+        if self.selected > self.filter.succeeded or self.generate.input != self.selected:
+            raise ValueError('coverage selected population disagrees')
+        if self.collect.pending or self.filter.pending or self.generate.pending:
+            raise ValueError('a frozen export cannot omit pending records')
+        return self
+
+
 class BasketMeta(Meta):
-    """Describe the exported basket and any omitted failed tasks."""
+    """Describe the v2 export, selected population and explicit omissions."""
 
     schema_family: Literal['pr_similarity_os.basket'] = 'pr_similarity_os.basket'
     stage: Literal['export'] = 'export'
@@ -337,21 +418,26 @@ class BasketMeta(Meta):
     description: StrictStr
     maintainers: list[StrictStr]
     partial: StrictBool
-    omitted_failed_ids: list[StrictStr]
+    omissions: list[Omission]
+    coverage: Coverage
+    selection: SelectionReceipt
 
     @model_validator(mode='after')
     def check_export(self) -> 'BasketMeta':
-        """Check export lineage, partial state, and output counts.
-
-        The input must be the generate receipt, partial must reflect omitted
-        failures, and every exported input must have succeeded.
-        """
-        if [item.stage for item in self.lineage] != ['collect', 'filter', 'generate']:
-            raise ValueError('export lineage must contain collect, filter, generate')
-        if self.input is None or self.input.stage != 'generate' or self.input.sha256 != self.lineage[-1].sha256:
-            raise ValueError('export input must match generate receipt')
-        if self.partial != bool(self.omitted_failed_ids):
-            raise ValueError('partial must agree with omitted failed IDs')
+        """Verify coverage and omissions rather than inferring completeness from task count."""
+        if self.partial != bool(self.omissions):
+            raise ValueError('partial must agree with omissions')
+        _check_ids([item.id for item in self.omissions])
+        if self.coverage.selected != len(self.selection.selected_ids):
+            raise ValueError('selection count differs from coverage')
+        for stage in ('collect', 'filter', 'generate'):
+            counts = getattr(self.coverage, stage)
+            if sum(item.stage == stage and item.kind == 'failed' for item in self.omissions) != counts.failed:
+                raise ValueError('failed omissions differ from coverage')
+        if sum(item.kind == 'rejected' for item in self.omissions) != self.coverage.generate.rejected:
+            raise ValueError('selected rejections differ from coverage')
+        if self.coverage.generate.succeeded != self.counts.succeeded:
+            raise ValueError('exported count differs from generation coverage')
         if (
             self.counts.rejected
             or self.counts.failed
@@ -723,13 +809,15 @@ class Generation(StrictModel):
     """Record task provenance, attempts, and optional API details."""
 
     issue_ids: list[StrictStr]
+    input_sha256: Sha256 | None = None
+    reused_from: Sha256 | None = None
     attempts: StrictInt = Field(ge=0)
     response_id: StrictStr | None
     response_model: StrictStr | None
     usage: Usage | None
     request_sha256: Sha256 | None
 
-    @field_validator('request_sha256')
+    @field_validator('request_sha256', 'input_sha256', 'reused_from')
     @classmethod
     def validate_hash(cls, value: str | None) -> str | None:
         """Require a SHA-256 digest for a present API request."""
@@ -759,100 +847,148 @@ class TaskRecord(FilterRecord):
         return self
 
 
+class RecordIdentity(StrictModel):
+    """The known identity of a discovered record before a complete API snapshot exists."""
+
+    id: StrictStr
+    kind: Literal['pull_request', 'merge_request']
+    repository: StrictStr
+    number: StrictInt = Field(gt=0)
+
+
+class CollectFailure(StrictModel):
+    """Keep an exhausted collection failure without inventing a source snapshot."""
+
+    identity: RecordIdentity
+    error: StageError
+    attempts: StrictInt = Field(gt=0)
+
+
+class FilterFailure(StrictModel):
+    """Retain the exact collected input of an exhausted filter operation."""
+
+    record: CollectRecord
+    error: StageError
+    attempts: StrictInt = Field(gt=0)
+
+
 class FailedRecord(StrictModel):
-    """Keep a filtered PR and its generation failure for retry."""
+    """Retain the exact selected input of an exhausted generation operation."""
 
     record: FilterRecord
     error: StageError
-    attempts: StrictInt = Field(ge=0)
+    attempts: StrictInt = Field(gt=0)
+
+
+class SelectionSnapshot(SelectionReceipt):
+    """Preserve population exclusions and explicit approval for upstream omissions."""
+
+    settings: dict[str, JsonValue]
+    generation_settings_sha256: Sha256
+    excluded: list[RejectedRecord]
+    omissions: list[Omission]
+
+    @model_validator(mode='after')
+    def check_snapshot(self) -> 'SelectionSnapshot':
+        """Verify the complete immutable snapshot digest and disjoint populations."""
+        _sha(self.generation_settings_sha256, 64)
+        _check_ids([*self.selected_ids, *(item.id for item in self.excluded), *(item.id for item in self.omissions)])
+        if any(item.stage == 'generate' for item in self.omissions):
+            raise ValueError('selection cannot approve future generation omissions')
+        if self.sha256 != settings_sha256(self.model_dump(mode='json', exclude={'sha256'})):
+            raise ValueError('selection snapshot digest mismatch')
+        return self
 
 
 class CollectDocument(StrictModel):
-    """Persist successful PR snapshots and candidate-local collection exclusions."""
+    """Persist successful snapshots, deterministic exclusions and exhausted API failures."""
 
     meta: CollectMeta
     tasks: list[CollectRecord]
     rejected: list[RejectedRecord] = Field(default_factory=list)
-
-    @model_serializer(mode='wrap')
-    def serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
-        """Keep the previous wire shape and hashes when no candidate was rejected."""
-        payload = handler(self)
-        if not self.rejected:
-            payload.pop('rejected', None)
-        return payload
+    failed: list[CollectFailure] = Field(default_factory=list)
 
     @model_validator(mode='after')
     def check_records(self) -> 'CollectDocument':
-        """Require unique IDs, one repository, and matching collect counts."""
-        _check_ids([item.id for item in self.tasks] + [item.id for item in self.rejected])
-        _check_records(
-            self.meta.repository,
-            [(item.id, item.change_request) for item in self.tasks]
-            + [(item.id, item.change_request) for item in self.rejected],
-        )
-        if self.meta.counts.succeeded != len(self.tasks):
-            raise ValueError('collect succeeded count does not match records')
-        if self.meta.counts.rejected != len(self.rejected) or self.meta.counts.failed:
-            raise ValueError('collect rejected count does not match records or has failures')
-        if self.meta.counts.input != self.meta.discovery.selected:
+        """Validate disjoint identities without requiring data from a failed API call."""
+        rows = [(item.id, item.change_request) for item in [*self.tasks, *self.rejected]]
+        rows.extend((item.identity.id, item.identity) for item in self.failed)
+        _check_ids([identity for identity, _ in rows])
+        _check_records(self.meta.repository, rows)
+        counts = self.meta.counts
+        if (counts.succeeded, counts.rejected, counts.failed) != (
+            len(self.tasks),
+            len(self.rejected),
+            len(self.failed),
+        ):
+            raise ValueError('collect counts do not match records')
+        if counts.input != self.meta.discovery.selected:
             raise ValueError('collect input count does not match discovery selected')
         return self
 
 
 class FilterDocument(StrictModel):
-    """Persist accepted and rejected PRs with filter metadata."""
+    """Retain all individually accepted candidates separately from population selection."""
 
     meta: FilterMeta
     tasks: list[FilterRecord]
     rejected: list[RejectedRecord]
+    failed: list[FilterFailure] = Field(default_factory=list)
+    selection: SelectionSnapshot | None = None
 
     @model_validator(mode='after')
     def check_records(self) -> 'FilterDocument':
-        """Require disjoint identities and matching filter counts.
-
-        Accepted and rejected records must belong to the metadata repository.
-        """
-        _check_ids([item.id for item in self.tasks] + [item.id for item in self.rejected])
-        _check_records(
-            self.meta.repository,
-            [(item.id, item.change_request) for item in self.tasks]
-            + [(item.id, item.change_request) for item in self.rejected],
-        )
-        if (
-            self.meta.counts.succeeded != len(self.tasks)
-            or self.meta.counts.rejected != len(self.rejected)
-            or self.meta.counts.failed
+        """Verify candidate outcomes and the complete selected/excluded partition."""
+        rows = [(item.id, item.change_request) for item in [*self.tasks, *self.rejected]]
+        rows.extend((item.record.id, item.record.change_request) for item in self.failed)
+        _check_ids([identity for identity, _ in rows])
+        _check_records(self.meta.repository, rows)
+        counts = self.meta.counts
+        if (counts.succeeded, counts.rejected, counts.failed) != (
+            len(self.tasks),
+            len(self.rejected),
+            len(self.failed),
         ):
             raise ValueError('filter counts do not match records')
+        if self.selection is not None:
+            selected = set(self.selection.selected_ids)
+            excluded = {item.id for item in self.selection.excluded}
+            if selected | excluded != {item.id for item in self.tasks} or selected & excluded:
+                raise ValueError('selection does not partition accepted filter candidates')
         return self
 
 
 class TasksDocument(StrictModel):
-    """Persist successful and failed generated tasks."""
+    """Persist outcomes for exactly the accepted selection snapshot."""
 
     meta: GenerateMeta
+    selection: SelectionReceipt
     tasks: list[TaskRecord]
     failed: list[FailedRecord]
+    rejected: list[RejectedRecord] = Field(default_factory=list)
 
     @model_validator(mode='after')
     def check_records(self) -> 'TasksDocument':
-        """Require disjoint identities and matching generation counts.
-
-        Successful and failed records must belong to the metadata repository.
-        """
-        _check_ids([item.id for item in self.tasks] + [item.record.id for item in self.failed])
-        _check_records(
-            self.meta.repository,
-            [(item.id, item.change_request) for item in self.tasks]
-            + [(item.record.id, item.record.change_request) for item in self.failed],
-        )
-        if (
-            self.meta.counts.succeeded != len(self.tasks)
-            or self.meta.counts.failed != len(self.failed)
-            or self.meta.counts.rejected
+        """Require selected identities and exact generation inputs for successful records."""
+        rows = [(item.id, item.change_request) for item in [*self.tasks, *self.rejected]]
+        rows.extend((item.record.id, item.record.change_request) for item in self.failed)
+        identities = [identity for identity, _ in rows]
+        _check_ids(identities)
+        _check_records(self.meta.repository, rows)
+        if set(identities) - set(self.selection.selected_ids):
+            raise ValueError('generation result is outside selection')
+        for record in self.tasks:
+            if record.generation.input_sha256 != self.selection.generation_keys[record.id]:
+                raise ValueError('generation result input differs from selection')
+        counts = self.meta.counts
+        if counts.input != len(self.selection.selected_ids):
+            raise ValueError('generation input differs from selection size')
+        if (counts.succeeded, counts.rejected, counts.failed) != (
+            len(self.tasks),
+            len(self.rejected),
+            len(self.failed),
         ):
-            raise ValueError('generate counts do not match records')
+            raise ValueError('generation counts do not match outcomes')
         return self
 
 
@@ -1035,10 +1171,17 @@ class BasketDocument(StrictModel):
         Every record belongs to the metadata repository. golden_diff must
         appear exactly when include_golden_diff is true and cannot be null.
         """
-        _check_ids([item.id for item in self.tasks] + self.meta.omitted_failed_ids)
+        _check_ids([item.id for item in self.tasks] + [item.id for item in self.meta.omissions])
         _check_records(self.meta.repository, [(item.id, item.change_request) for item in self.tasks])
         if self.meta.counts.succeeded != len(self.tasks):
             raise ValueError('export count does not match records')
+        generated = {item.id for item in self.meta.omissions if item.stage == 'generate'}
+        selected = self.meta.selection.selected_ids
+        if [item.id for item in self.tasks] != [identity for identity in selected if identity not in generated]:
+            raise ValueError('export task order or generation omissions differ from selection')
+        for record in self.tasks:
+            if record.provenance.generation.input_sha256 != self.meta.selection.generation_keys[record.id]:
+                raise ValueError('export generation input differs from selection')
         include = self.meta.settings.get('include_golden_diff')
         if type(include) is not bool:
             raise ValueError('export settings need include_golden_diff bool')
@@ -1056,7 +1199,8 @@ def _check_ids(ids: list[str]) -> None:
 
 
 def _check_records(
-    repository: Repository, records: Sequence[tuple[str, ChangeRequest | RejectedChangeRequest | BasketChangeRequest]]
+    repository: Repository,
+    records: Sequence[tuple[str, ChangeRequest | RejectedChangeRequest | BasketChangeRequest | RecordIdentity]],
 ) -> None:
     """Bind each normalized task to the immutable project in stage metadata."""
     for identity, request in records:

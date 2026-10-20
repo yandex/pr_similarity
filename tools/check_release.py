@@ -115,6 +115,8 @@ def check_release(root: Path) -> dict:
             raise ValueError('Module license metadata differs: ' + module)
     if len(versions) != 1:
         raise ValueError('Module release versions disagree.')
+    if manifest.get('release_version') != next(iter(versions)):
+        raise ValueError('Manifest release version differs from module metadata.')
     for family in ('run', 'report', 'state', 'usage'):
         source = root / 'benchmark/src/schemas' / ('benchmark-' + family + '-v1.schema.json')
         target = root / 'viewer/src/schemas' / (family + '-v1.json')

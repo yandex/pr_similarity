@@ -148,11 +148,26 @@ class GitConfig(ConfigModel):
     def check_depths(self) -> 'GitConfig':
         """Keep the first retrieval within the configured total history bound."""
         if self.initial_depth > self.max_depth:
-            raise ValueError('git.initial_depth exceeds git.max_depth')
+            raise ValueError('filter.git.initial_depth exceeds filter.git.max_depth')
         return self
 
 
-class CollectConfig(ConfigModel):
+class RetryPolicy(ConfigModel):
+    """Bound additional record attempts and interruptible exponential backoff."""
+
+    max_retries: StrictInt = Field(default=3, ge=0)
+    retry_delay_seconds: StrictInt = Field(default=10, gt=0)
+    max_retry_delay_seconds: StrictInt = Field(default=120, gt=0)
+
+    @model_validator(mode='after')
+    def check_retry_delays(self) -> 'RetryPolicy':
+        """Reject reversed delay bounds independently of whether retries are enabled."""
+        if self.retry_delay_seconds > self.max_retry_delay_seconds:
+            raise ValueError('retry_delay_seconds exceeds max_retry_delay_seconds')
+        return self
+
+
+class CollectConfig(RetryPolicy):
     """Repository and mutually exclusive PR selection settings."""
 
     selection: Literal['date_range', 'change_ids'] = 'date_range'
@@ -312,8 +327,10 @@ class SelectionConfig(ConfigModel):
     limit: StrictInt | None = Field(default=100, gt=0)
 
 
-class FilterConfig(ConfigModel):
+class FilterConfig(RetryPolicy):
     """Combined scope, size, file, issue, and selection policies."""
+
+    git: GitConfig = Field(default_factory=GitConfig)
 
     workers: StrictInt = Field(default=4, gt=0)
     scope: ScopeConfig = Field(default_factory=ScopeConfig)
@@ -396,16 +413,14 @@ class LLMConfig(ConfigModel):
         return value
 
 
-class GenerationConfig(ConfigModel):
+class GenerationConfig(RetryPolicy):
     """Task generation source, templates, retry limits, and LLM setup."""
 
     source: Literal['issue', 'llm'] = 'llm'
     context: Literal['diff', 'issue', 'diff+issue'] = 'diff+issue'
     workers: StrictInt = Field(default=2, gt=0)
-    max_retries: StrictInt = Field(default=3, ge=0)
     request_timeout_seconds: StrictInt = Field(default=120, gt=0)
     requests_per_second: StrictInt = Field(default=1, gt=0)
-    max_retry_delay_seconds: StrictInt = Field(default=120, gt=0)
     max_input_chars: StrictInt = Field(default=1200000, gt=0)
     templates: TemplatesConfig = Field(default_factory=TemplatesConfig)
     llm: LLMConfig | None = None
@@ -431,9 +446,8 @@ class CollectorConfig(ConfigModel):
     env_file: StrictStr | None = './.env'
     output_dir: StrictStr = './output'
     cache_dir: StrictStr = './cache'
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2]
     source: SourceConfig
-    git: GitConfig = Field(default_factory=GitConfig)
     collect: CollectConfig
     filter: FilterConfig = Field(default_factory=FilterConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
@@ -443,8 +457,8 @@ class CollectorConfig(ConfigModel):
     @classmethod
     def check_version(cls, value: object) -> int:
         """Reject bool/float and pre-release formats before any external operation."""
-        if type(value) is not int or value != 1:
-            raise ValueError('schema_version must be integer 1; rebuild pre-release config')
+        if type(value) is not int or value != 2:
+            raise ValueError('schema_version must be integer 2; only collector v2 configuration is supported')
         return value
 
 
@@ -562,15 +576,19 @@ def effective_settings(
         return {'collect': config.collect.model_dump(mode='json'), 'source': config.source.model_dump(mode='json')}
     if stage == 'filter':
         return {
-            'filter': config.filter.model_dump(mode='json'),
-            'git': config.git.model_dump(mode='json'),
+            'filter': config.filter.model_dump(mode='json', exclude={'selection', 'percentile'}),
             'source': config.source.model_dump(mode='json'),
             'revision_policy': 'change_merge_base_v1',
             'diff_policy': 'git_source_changes_v1',
         }
     if stage == 'generate':
         generation = config.generation
-        result: dict[str, JsonValue] = {'source': generation.source}
+        result: dict[str, JsonValue] = {
+            'source': generation.source,
+            'max_retries': generation.max_retries,
+            'retry_delay_seconds': generation.retry_delay_seconds,
+            'max_retry_delay_seconds': generation.max_retry_delay_seconds,
+        }
         if generation.source == 'issue':
             return result
         if generation.llm is None or generation.templates.user is None:

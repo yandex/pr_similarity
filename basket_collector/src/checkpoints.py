@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from basket_collector.attempts import AttemptJournal
 from basket_collector.config import CollectConfig
 from basket_collector.contracts import (
     BasketDocument,
@@ -24,24 +25,34 @@ def _validate_collect(document: CollectDocument, state: CollectCheckpoint) -> No
     counts = document.meta.counts
     discovery = document.meta.discovery
     if state.phase in ('repository', 'discovery'):
-        if numbers or counts.input or discovery.matched or discovery.selected or document.tasks or document.rejected:
+        if (
+            numbers
+            or counts.input
+            or discovery.matched
+            or discovery.selected
+            or document.tasks
+            or document.rejected
+            or document.failed
+        ):
             raise ValueError('unfrozen checkpoint phase must have zero progress and no queue')
         if state.phase == 'repository' and (state.matches or state.next_page != 1):
             raise ValueError('repository checkpoint cannot contain discovery progress')
     else:
         if len(numbers) != counts.input or len(numbers) != discovery.selected:
             raise ValueError('checkpoint queue length differs from input or discovery selected')
-        saved_numbers = [record.change_request.number for record in document.tasks]
-        rejected_numbers = [record.change_request.number for record in document.rejected]
-        saved_set, rejected_set = set(saved_numbers), set(rejected_numbers)
-        prefix = numbers[: len(saved_numbers) + len(rejected_numbers)]
-        if (
-            saved_set & rejected_set
-            or saved_set | rejected_set != set(prefix)
-            or saved_numbers != [number for number in prefix if number in saved_set]
-            or rejected_numbers != [number for number in prefix if number in rejected_set]
-        ):
-            raise ValueError('checkpoint saved PRs must follow the frozen queue order')
+        groups = [
+            [record.change_request.number for record in document.tasks],
+            [record.change_request.number for record in document.rejected],
+            [record.identity.number for record in document.failed],
+        ]
+        observed: set[int] = set()
+        for numbers_in_group in groups:
+            selected = set(numbers_in_group)
+            if numbers_in_group != [number for number in numbers if number in selected] or observed & selected:
+                raise ValueError('checkpoint outcomes differ from frozen queue order')
+            observed.update(selected)
+        if counts.pending == 0 and observed != set(numbers):
+            raise ValueError('completed record pass does not partition its queue')
         if state.phase == 'ready' and counts.pending:
             raise ValueError('ready checkpoint has pending PRs')
         if config.selection == 'change_ids':
@@ -74,6 +85,8 @@ def validate_checkpoint(
         ValueError: State fields, phase, queue or saved progress are inconsistent.
 
     """
+    _validate_attempts(state)
+    _validate_outcome_journals(document, state)
     if isinstance(document, CollectDocument):
         checkpoint = CollectCheckpoint.model_validate(state)
         _validate_collect(document, checkpoint)
@@ -85,8 +98,6 @@ def validate_checkpoint(
         return filtered.model_dump(mode='json')
     if isinstance(document, TasksDocument):
         generated = GenerateCheckpoint.model_validate(state)
-        if any(re.fullmatch(r'change:[0-9a-f]{64}', identity) is None for identity in generated.retry_attempts):
-            raise ValueError('retry_attempts contains an invalid change identity')
         if generated.phase == 'ready' and document.meta.counts.pending:
             raise ValueError('ready checkpoint has pending tasks')
         return generated.model_dump(mode='json', exclude_unset=True)
@@ -94,3 +105,49 @@ def validate_checkpoint(
     if document.meta.counts.pending:
         raise ValueError('ready checkpoint has pending basket records')
     return exported.model_dump(mode='json')
+
+
+def _validate_attempts(state: dict[str, Any]) -> None:
+    """Validate attempt journals before resuming or creating an external client."""
+    attempts = state.get('attempts', {})
+    if not isinstance(attempts, dict):
+        raise ValueError('invalid attempt journals')
+    for identity, value in attempts.items():
+        if not isinstance(identity, str) or re.fullmatch(r'change:[0-9a-f]{64}', identity) is None:
+            raise ValueError('invalid attempt identity')
+        AttemptJournal.model_validate(value)
+    retry_ids = state.get('retry_ids', [])
+    if not isinstance(retry_ids, list) or len(retry_ids) != len(set(retry_ids)) or set(retry_ids) - set(attempts):
+        raise ValueError('retry pass identities differ from attempt journals')
+
+
+def _validate_outcome_journals(
+    document: CollectDocument | FilterDocument | TasksDocument | BasketDocument,
+    state: dict[str, Any],
+) -> None:
+    """Prevent saved terminal outcomes from contradicting their acknowledged operation history."""
+    if isinstance(document, BasketDocument):
+        return
+    journals = state.get('attempts', {})
+    outcomes = {item.id: 'succeeded' for item in document.tasks}
+    outcomes.update({item.id: 'rejected' for item in document.rejected})
+    if isinstance(document, CollectDocument):
+        outcomes.update({item.identity.id: 'failed' for item in document.failed})
+    else:
+        outcomes.update({item.record.id: 'failed' for item in document.failed})
+    reused = (
+        {item.id for item in document.tasks if item.generation.reused_from}
+        if isinstance(document, TasksDocument)
+        else set()
+    )
+    for identity, outcome in outcomes.items():
+        saved = journals.get(identity)
+        if saved is None:
+            if journals and identity not in reused:
+                raise ValueError('saved outcome has no attempt journal')
+            continue
+        journal = AttemptJournal.model_validate(saved)
+        if not journal.current.attempts or journal.current.attempts[-1].outcome != outcome:
+            raise ValueError('saved outcome disagrees with attempt journal')
+        if outcome == 'failed' and not journal.current.exhausted:
+            raise ValueError('failed record has an unexhausted attempt budget')

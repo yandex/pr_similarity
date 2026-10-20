@@ -26,26 +26,24 @@ from basket_collector.contracts import (
     CollectDocument,
     CollectRecord,
     CommitMessage,
-    FailedRecord,
     FilterDocument,
     FilterRecord,
     FilterRevisions,
     InputReceipt,
     Issue,
     Producer,
+    RejectedRecord,
     Repository,
     ResolvedRevisions,
-    StageError,
     TaskRecord,
     TasksDocument,
 )
 from basket_collector.git import GitRepository
 from basket_collector.github import GitHubClient, GitHubError
 from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.llm import LLMAuthenticationError, LLMClient
+from basket_collector.llm import LLMAuthenticationError, LLMCallError, LLMClient
 from basket_collector.pipeline import Pipeline, PipelineInterrupted, Shutdown, main
 from basket_collector.progress import Progress
-from basket_collector.remote import RemoteError
 from basket_collector.stages.filter import RemoteVCS, SourceChangedError
 from basket_collector.stages.generate import generate_record as real_generate_record
 from basket_collector.storage import (
@@ -78,12 +76,14 @@ def _config(tmp_path: Path) -> CollectorConfig:
     """Build the minimal issue-backed collector configuration."""
     return CollectorConfig.model_validate(
         {
+            'schema_version': 2,
             'source': {'provider': 'github', 'project': 'owner/repo'},
             'dataset': {'name': 'test basket', 'description': 'offline', 'maintainers': ['alice']},
             'output_dir': str(tmp_path / 'output'),
             'cache_dir': str(tmp_path / 'cache'),
-            'collect': {'selection': 'change_ids', 'change_ids': [1]},
-            'generation': {'source': 'issue'},
+            'collect': {'selection': 'change_ids', 'change_ids': [1], 'max_retries': 0},
+            'filter': {'max_retries': 0},
+            'generation': {'source': 'issue', 'max_retries': 0},
         }
     )
 
@@ -291,17 +291,26 @@ def test_progress_modes_preserve_recovery_artifacts(
         github = FakeGitHub()
         calls: list[int] = []
 
-        def generate(record: FilterRecord, generation_config: GenerationConfig, **kwargs: Any):
+        def generate(
+            record: FilterRecord,
+            generation_config: GenerationConfig,
+            *,
+            llm_client: LLMClient | None = None,
+            stop_event: threading.Event | None = None,
+            template_snapshot: TemplateSnapshot | None = None,
+        ) -> TaskRecord | RejectedRecord:
             """Make one deterministic retryable failure before successful recovery."""
             number = record.change_request.number
             calls.append(number)
             if transition == 'retry_failed' and number == 2 and calls.count(2) == 1:
-                return FailedRecord(
-                    record=record,
-                    error=StageError(code='request_failed', message='fixture', retryable=True),
-                    attempts=2,
-                )
-            return real_generate_record(record, generation_config, **kwargs)
+                raise LLMCallError('request_failed', 'fixture', True, 1)
+            return real_generate_record(
+                record,
+                generation_config,
+                llm_client=llm_client,
+                stop_event=stop_event,
+                template_snapshot=template_snapshot,
+            )
 
         monkeypatch.setattr('basket_collector.pipeline.generate_record', generate)
 
@@ -333,7 +342,7 @@ def test_progress_modes_preserve_recovery_artifacts(
             with pytest.raises(PipelineInterrupted):
                 interrupted.run('filter')
             checkpoint, state = read_checkpoint(output / '.work' / 'filter.json', FilterDocument)
-            assert checkpoint.meta.status == 'interrupted' and state['phase'] == 'ready'
+            assert checkpoint.meta.status == 'interrupted' and state['phase'] == 'selection'
             recovery_hash = stage_sha256(checkpoint)
             assert pipeline().run('filter') == 0
             assert pipeline().run('generate') == 0
@@ -381,7 +390,7 @@ def test_changed_predecessor_blocks_downstream(tmp_path: Path, monkeypatch: pyte
     payload = json.loads(collected_path.read_text(encoding='utf-8'))
     payload['tasks'][0]['change_request']['body'] = 'edited'
     collected_path.write_text(json.dumps(payload), encoding='utf-8')
-    with pytest.raises(StorageError, match='input|lineage'):
+    with pytest.raises(StorageError, match='input|lineage|digest'):
         Pipeline(config, producer=_producer(), remote=GitHubRemoteVCS(config.source, client=FakeGitHub())).run(
             'generate'
         )
@@ -400,17 +409,18 @@ def test_explicit_other_branch_checkpoints_and_override_rebuilds(tmp_path: Path)
             return row
 
     config = _config(tmp_path)
-    with pytest.raises(RemoteError, match='another branch'):
+    assert (
         Pipeline(config, producer=_producer(), remote=GitHubRemoteVCS(config.source, client=BackportGitHub())).run(
             'collect'
         )
-    checkpoint, state = read_checkpoint(
-        Path(config.output_dir) / '.work' / 'collect.json',
+        == 3
+    )
+    checkpoint = read_document(
+        Path(config.output_dir) / 'collected.json',
         CollectDocument,
     )
     assert checkpoint.meta.repository.default_branch == 'develop'
-    assert checkpoint.meta.error is not None and checkpoint.meta.error.code == 'non_default_branch'
-    assert state['numbers'] == [1]
+    assert checkpoint.meta.error is None and checkpoint.failed[0].error.code == 'non_default_branch'
     override = config.model_copy(update={'collect': config.collect.model_copy(update={'default_branch_only': False})})
     with pytest.raises(StorageError, match='OVERWRITE=1'):
         Pipeline(override, producer=_producer(), remote=GitHubRemoteVCS(override.source, client=BackportGitHub())).run(
@@ -624,21 +634,17 @@ def test_retry_failed_reprocesses_only_failures(tmp_path: Path, monkeypatch: pyt
         *,
         llm_client: LLMClient | None = None,
         stop_event: threading.Event | None = None,
-        previous_attempts: int = 0,
         template_snapshot: TemplateSnapshot | None = None,
-    ) -> TaskRecord | FailedRecord:
+    ) -> TaskRecord | RejectedRecord:
         """Fail one task on its first attempt and generate the others."""
         calls.append(record.change_request.number)
         if record.change_request.number == 2 and calls.count(2) == 1:
-            return FailedRecord(
-                record=record, error=StageError(code='request_failed', message='fixture', retryable=True), attempts=2
-            )
+            raise LLMCallError('request_failed', 'fixture', True, 1)
         return real_generate_record(
             record,
             generation_config,
             llm_client=llm_client,
             stop_event=stop_event,
-            previous_attempts=previous_attempts,
             template_snapshot=template_snapshot,
         )
 
@@ -677,7 +683,7 @@ def test_cli_loads_env_file_before_creating_clients(
     """Load the local environment file before constructing stage clients."""
     config_path = tmp_path / 'config.yaml'
     config_path.write_text(
-        'dataset: {name: sample, description: fixture, maintainers: [alice]}\n'
+        'schema_version: 2\ndataset: {name: sample, description: fixture, maintainers: [alice]}\n'
         'source: {provider: github, project: owner/repo}\ncollect: {selection: change_ids, change_ids: [1]}\n'
         'generation: {source: issue}\n',
         encoding='utf-8',
@@ -810,7 +816,9 @@ def test_auth_failure_resumes_collected_records_after_token_repair(tmp_path: Pat
 
     repaired = RepairedTokenGitHub()
     assert (
-        Pipeline(config, producer=_producer(), remote=GitHubRemoteVCS(config.source, client=repaired)).run('collect')
+        Pipeline(config, producer=_producer(), remote=GitHubRemoteVCS(config.source, client=repaired)).run(
+            'collect', retry_failed=True
+        )
         == 0
     )
     assert repaired.requested == [2]
@@ -1093,6 +1101,15 @@ def test_missing_llm_key_has_retryable_auth_checkpoint_code(
     )
     config = config.model_copy(update={'generation': generation})
     monkeypatch.delenv('BASKET_TEST_UNSET_KEY', raising=False)
+    assert (
+        Pipeline(
+            config,
+            producer=_producer(),
+            remote=GitHubRemoteVCS(config.source, client=FakeGitHub()),
+            git_repository=FakeGitRepository(),
+        ).run('filter', overwrite=True)
+        == 0
+    )
     with pytest.raises(LLMAuthenticationError, match='missing API key'):
         Pipeline(config, producer=_producer()).run('generate')
     checkpoint, _ = read_checkpoint(
@@ -1149,7 +1166,7 @@ def test_stop_before_filter_publish_resumes_without_refiltering(
     with pytest.raises(PipelineInterrupted):
         pipeline.run('filter')
     checkpoint, state = read_checkpoint(Path(config.output_dir) / '.work' / 'filter.json', FilterDocument)
-    assert checkpoint.meta.status == 'interrupted' and state['phase'] == 'ready'
+    assert checkpoint.meta.status == 'interrupted' and state['phase'] == 'selection'
     resumed = Pipeline(
         config,
         producer=_producer(),
@@ -1228,8 +1245,9 @@ def test_filter_selection_is_not_reapplied_after_predecessor_verification_failur
     collected_path.write_bytes(original)
     checkpoint, state = read_checkpoint(Path(config.output_dir) / '.work' / 'filter.json', FilterDocument)
     assert state['phase'] == 'ready'
-    assert checkpoint.meta.counts.succeeded == 6
-    assert checkpoint.meta.counts.rejected == 4
+    assert checkpoint.meta.counts.succeeded == 10
+    assert checkpoint.meta.counts.rejected == 0
+    assert checkpoint.selection is not None and len(checkpoint.selection.selected_ids) == 6
     assert (
         Pipeline(
             config,
@@ -1240,6 +1258,7 @@ def test_filter_selection_is_not_reapplied_after_predecessor_verification_failur
         == 0
     )
     filtered = read_document(Path(config.output_dir) / 'filtered.json', FilterDocument)
-    assert filtered.meta.counts.succeeded == 6
-    assert filtered.meta.counts.rejected == 4
+    assert filtered.meta.counts.succeeded == 10
+    assert filtered.meta.counts.rejected == 0
+    assert filtered.selection is not None and len(filtered.selection.selected_ids) == 6
     assert len(calls) == 10

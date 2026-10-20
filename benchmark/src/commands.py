@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from benchmark.basket import Basket, load_basket
 from benchmark.errors import OPERATION_ERRORS, BenchmarkError
 from benchmark.progress import Progress
 from benchmark.storage import utc_now, write_json
@@ -95,6 +96,7 @@ class Command:
         self.level = level
         self.path = self.logs_dir / 'invocation.json'
         self.presentation_warnings: list[str] = []
+        self._warned_baskets: set[str] = set()
         self._secrets = list(secrets or [])
         self._phase_observer = phase_observer
         self._task_labels: dict[str, tuple[int, int]] = {}
@@ -144,9 +146,19 @@ class Command:
                 )
             self.update()
             self._human_log(f'Invocation {kind} started')
+            basket_path = run_dir / 'basket.json'
+            if basket_path.is_file():
+                self.warn_basket(load_basket(basket_path))
         except OPERATION_ERRORS:
             self.close()
             raise
+
+    def warn_basket(self, basket: Basket) -> None:
+        """Emit each frozen basket's warnings only once in this invocation."""
+        if basket.sha256 not in self._warned_baskets:
+            self._warned_baskets.add(basket.sha256)
+            for warning in basket.warnings():
+                self.message(warning, level='WARNING')
 
     def update(self) -> None:
         """Persist the current invocation metadata."""
@@ -365,7 +377,7 @@ class Command:
         self.metadata.update(status=status, finished_at=utc_now())
         try:
             self.update()
-            self._human_log(f'Invocation {self.metadata["kind"]} {status}')
+            self._human_log(f'Invocation {self.metadata['kind']} {status}')
             if self.progress is not None:
                 self.progress.finish(status, render=False)
         finally:

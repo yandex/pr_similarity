@@ -9,13 +9,47 @@ import sys
 import traceback
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO
+from typing import TextIO
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
+from basket_collector.progress import Progress
 from pydantic import ValidationError
 
-if TYPE_CHECKING:
-    from basket_collector.progress import Progress
+
+def sanitize_git_stderr(stderr: bytes, secret_names: tuple[str, ...] = ()) -> str:
+    """Clean native diagnostics before logging or retaining an exception excerpt."""
+    rendered = stderr.decode('utf-8', errors='replace')
+    secrets = [
+        value
+        for key, value in os.environ.items()
+        if value and (key in secret_names or re.search(r'TOKEN|PASSWORD|PASSWD|SECRET|API_KEY|ACCESS_KEY', key, re.I))
+    ]
+
+    def clean_url(match: re.Match[str]) -> str:
+        """Remove credentials and opaque query/fragment data from any URL scheme."""
+        try:
+            url = urlsplit(match.group())
+            return urlunsplit((url.scheme, url.netloc.rsplit('@', 1)[-1], url.path, '', ''))
+        except ValueError:
+            return '<redacted-url>'
+
+    rendered = re.sub(r'[a-zA-Z][a-zA-Z0-9+.-]*://[^\s\x00-\x1f<>\"\']+', clean_url, rendered)
+    for secret in sorted(secrets, key=len, reverse=True):
+        rendered = rendered.replace(secret, '<redacted>')
+    lines = []
+    for line in rendered.split('\n'):
+        if re.search(
+            r'authorization\s*:|(?:set-)?cookie\s*:|credential[.\s=:]|password|passwd|'
+            r'(?:token|secret|api[_-]?key|access[_-]?key)\s*[=:]',
+            line,
+            re.I,
+        ):
+            line = '<redacted credential line>'
+        lines.append(
+            ''.join(f'\\x{ord(char):02x}' if ord(char) < 32 or 127 <= ord(char) <= 159 else char for char in line)
+        )
+    return '\n'.join(lines)
 
 
 def _validation_error(error: BaseException) -> ValidationError | None:

@@ -2,113 +2,58 @@
 
 import fcntl
 import hashlib
-import json
-import os
 import subprocess
 import sys
-import tempfile
 from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, TypeVar, cast
 
+from basket_collector.artifact_io import (
+    StorageError,
+    _fsync_directory,
+    atomic_write,
+    durable_directory,
+    read_json,
+    sha256,
+    stage_sha256,
+)
+from basket_collector.artifact_io import canonical_bytes as canonical_bytes
+from basket_collector.artifact_io import utc_now as utc_now
 from basket_collector.checkpoints import validate_checkpoint
 from basket_collector.contracts import (
     BasketDocument,
     CollectDocument,
     FilterDocument,
     InputReceipt,
-    JsonValue,
     LineageReceipt,
     Producer,
+    StageName,
     TasksDocument,
-    settings_sha256,
 )
-from pydantic import BaseModel
+from basket_collector.publication import STAGE_FILES, PublicationStore
 
 StageDocument = CollectDocument | FilterDocument | TasksDocument | BasketDocument
 DocumentT = TypeVar('DocumentT', bound=StageDocument)
-STAGE_FILES = {
-    'collect': 'collected.json',
-    'filter': 'filtered.json',
-    'generate': 'tasks.json',
-    'export': 'basket.json',
-}
-_TIMING_FIELDS = ('started_at', 'updated_at', 'completed_at')
 
-
-class StorageError(ValueError):
-    """An artifact is damaged or belongs to another input/configuration."""
-
-
-def utc_now() -> str:
-    """Return the current UTC time as an RFC 3339 string ending in ``Z``."""
-    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-
-
-def _plain(value: BaseModel | dict[str, Any]) -> dict[str, Any]:
-    """Convert a Pydantic document to JSON-compatible data if needed."""
-    return value.model_dump(mode='json') if isinstance(value, BaseModel) else value
-
-
-def canonical_bytes(value: object) -> bytes:
-    """Encode data as deterministic, compact UTF-8 JSON bytes."""
-    if isinstance(value, BaseModel):
-        value = value.model_dump(mode='json')
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
-
-
-def sha256(value: object) -> str:
-    """Hash data using the canonical settings hash for dictionaries."""
-    if isinstance(value, dict):
-        return settings_sha256(cast(dict[str, JsonValue], value))
-    return hashlib.sha256(canonical_bytes(value)).hexdigest()
-
-
-def stage_sha256(document: BaseModel | dict[str, Any]) -> str:
-    """Hash a stage document without timing or checkpoint state.
-
-    The resulting digest identifies semantic stage content across resumes.
-    """
-    payload = _plain(document)
-    payload = dict(payload)
-    meta = dict(payload['meta'])
-    for key in _TIMING_FIELDS:
-        meta.pop(key, None)
-    payload['meta'] = meta
-    payload.pop('checkpoint', None)
-    return sha256(payload)
-
-
-def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Build a JSON object while rejecting duplicate keys."""
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise StorageError(f'duplicate JSON key: {key}')
-        result[key] = value
-    return result
-
-
-def read_json(path: Path) -> dict[str, Any]:
-    """Read a strict JSON object from a stage artifact.
-
-    Raises:
-        StorageError: The file is unreadable, malformed, or not an object.
-
-    """
-    try:
-        payload = json.loads(
-            path.read_text(encoding='utf-8'),
-            object_pairs_hook=_unique_keys,
-            parse_constant=lambda value: (_ for _ in ()).throw(StorageError(f'non-finite JSON number: {value}')),
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StorageError(f'cannot read {path}: {exc}') from exc
-    if not isinstance(payload, dict):
-        raise StorageError(f'{path}: expected JSON object')
-    return payload
+__all__ = [
+    'StageDocument',
+    'StageStore',
+    'StorageError',
+    'atomic_write',
+    'canonical_bytes',
+    'current_producer',
+    'expected_input',
+    'read_checkpoint',
+    'read_document',
+    'read_json',
+    'receipt',
+    'sha256',
+    'single_writer',
+    'stage_sha256',
+    'utc_now',
+    'verify_identity',
+]
 
 
 def read_document(path: Path, model: type[DocumentT]) -> DocumentT:
@@ -151,39 +96,6 @@ def read_checkpoint(path: Path, model: type[DocumentT]) -> tuple[DocumentT, dict
     return document, checkpoint
 
 
-def atomic_write(path: Path, payload: dict[str, Any]) -> None:
-    """Durably replace a JSON artifact via a same-directory temporary file.
-
-    The file and containing directory are synced before returning.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8') + b'\n'
-    temporary_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode='wb', prefix=f'.{path.name}.', suffix='.tmp', dir=path.parent, delete=False
-        ) as stream:
-            temporary_name = stream.name
-            stream.write(encoded)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary_name, path)
-        temporary_name = None
-        _fsync_directory(path.parent)
-    finally:
-        if temporary_name is not None:
-            Path(temporary_name).unlink(missing_ok=True)
-
-
-def _fsync_directory(path: Path) -> None:
-    """Sync directory metadata after an atomic rename."""
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 @contextmanager
 def single_writer(output_dir: Path) -> Iterator[None]:
     """Hold a nonblocking exclusive lock on the collector output directory.
@@ -192,7 +104,7 @@ def single_writer(output_dir: Path) -> Iterator[None]:
         StorageError: Another collector already holds the lock.
 
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    durable_directory(output_dir)
     path = output_dir / '.collector.lock'
     with path.open('a+b') as handle:
         try:
@@ -227,7 +139,7 @@ def current_producer(project_dir: Path | None = None) -> Producer:
     lock_data = (source_dir / 'requirements.lock').read_bytes()
     version_result = subprocess.run(['git', '--version'], check=True, capture_output=True, text=True, timeout=10)
     return Producer(
-        version='0.1.1',
+        version='0.2.0',
         implementation_sha256=inventory.hexdigest(),
         dependencies_sha256=hashlib.sha256(lock_data).hexdigest(),
         python_version=f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',
@@ -294,8 +206,9 @@ class StageStore:
         """
         if stage not in STAGE_FILES:
             raise ValueError(f'unknown stage: {stage}')
-        self.stage = stage
-        self.path = output_dir / STAGE_FILES[stage]
+        self.stage: StageName = cast(StageName, stage)
+        self.publication = PublicationStore(output_dir)
+        self.path = output_dir / STAGE_FILES[self.stage]
         self.work_path = output_dir / '.work' / f'{stage}.json'
 
     def load(
@@ -306,7 +219,6 @@ class StageStore:
         producer: Producer,
         input_receipt: InputReceipt | None,
         overwrite: bool = False,
-        allow_empty_retry: bool = False,
         validate_loaded: Callable[[DocumentT, dict[str, Any] | None], None] | None = None,
     ) -> tuple[DocumentT | None, dict[str, Any] | None]:
         """Reuse matching completed work or return a resumable checkpoint.
@@ -324,65 +236,74 @@ class StageStore:
             StorageError: Saved state is damaged, mismatched, or not resumable.
 
         """
+        self.publication.check_layout()
         if overwrite:
             return None, None
         if self.work_path.exists():
             payload = read_json(self.work_path)
-            if 'checkpoint' not in payload:
+            if payload.get('meta', {}).get('status') == 'completed':
+                state = payload.pop('checkpoint', {})
                 try:
-                    completed = model.model_validate(payload)
-                except Exception as exc:
-                    raise StorageError(f'{self.work_path}: invalid completed work: {exc}') from exc
-                if completed.meta.status != 'completed':
-                    raise StorageError(f'{self.work_path}: work without checkpoint is not completed')
+                    document = model.model_validate(payload)
+                except ValueError as error:
+                    raise StorageError(f'invalid completed checkpoint: {error}') from error
                 verify_identity(
-                    completed,
-                    stage=self.stage,
-                    settings=settings,
-                    producer=producer,
-                    input_receipt=input_receipt,
+                    document, stage=self.stage, settings=settings, producer=producer, input_receipt=input_receipt
                 )
                 if validate_loaded is not None:
-                    validate_loaded(completed, None)
-                self._promote()
-                return completed, None
-            document, checkpoint = read_checkpoint(self.work_path, model)
+                    validate_loaded(document, None)
+                self.publication.commit(document, state)
+                self.work_path.unlink()
+                _fsync_directory(self.work_path.parent)
+                return document, None
+            document, state = read_checkpoint(self.work_path, model)
+            if document.meta.error is not None and not document.meta.error.retryable:
+                raise StorageError(f'{document.meta.error.code}: checkpoint requires OVERWRITE=1')
             verify_identity(
-                document,
-                stage=self.stage,
-                settings=settings,
-                producer=producer,
-                input_receipt=input_receipt,
+                document, stage=self.stage, settings=settings, producer=producer, input_receipt=input_receipt
             )
             if validate_loaded is not None:
-                validate_loaded(document, checkpoint)
-            recover_empty = (
-                allow_empty_retry
-                and self.stage == 'generate'
-                and document.meta.error is not None
-                and document.meta.error.code == 'empty_stage_output'
-            )
-            if document.meta.error is not None and not document.meta.error.retryable and not recover_empty:
-                raise StorageError(
-                    f'{self.stage}: {document.meta.error.code}: '
-                    f'{document.meta.error.message}; rebuild source and use OVERWRITE=1'
-                )
-            return document, checkpoint
-        if self.path.exists():
-            document = read_document(self.path, model)
-            verify_identity(
-                document,
-                stage=self.stage,
-                settings=settings,
-                producer=producer,
-                input_receipt=input_receipt,
-            )
-            if document.meta.status != 'completed':
-                raise StorageError(f'{self.path}: only completed results may be reused')
-            if validate_loaded is not None:
-                validate_loaded(document, None)
-            return document, None
-        return None, None
+                validate_loaded(document, state)
+            return document, state
+        payload = self.publication.load(self.stage)
+        if payload is None:
+            return None, None
+        document = model.model_validate(payload)
+        verify_identity(document, stage=self.stage, settings=settings, producer=producer, input_receipt=input_receipt)
+        if document.meta.status != 'completed':
+            raise StorageError('only completed stage heads may be reused')
+        if validate_loaded is not None:
+            validate_loaded(document, None)
+        return document, None
+
+    def prior(
+        self,
+        model: type[DocumentT],
+        *,
+        settings: dict[str, Any],
+        producer: Producer,
+        overwrite: bool = False,
+        validate_loaded: Callable[[DocumentT, dict[str, Any] | None], None] | None = None,
+    ) -> tuple[DocumentT | None, dict[str, Any] | None]:
+        """Load a validated older input revision before explicitly reconciling per-record inputs."""
+        self.publication.check_layout()
+        if overwrite:
+            return None, None
+        if self.work_path.exists():
+            payload = read_json(self.work_path)
+        else:
+            payload = self.publication.load(self.stage)
+        if payload is None:
+            return None, None
+        raw_input = payload.get('meta', {}).get('input')
+        previous_input = InputReceipt.model_validate(raw_input) if raw_input is not None else None
+        return self.load(
+            model, settings=settings, producer=producer, input_receipt=previous_input, validate_loaded=validate_loaded
+        )
+
+    def operation_state(self) -> dict[str, Any]:
+        """Read the journal associated with the current completed stage revision."""
+        return self.publication.journal(self.stage)
 
     def checkpoint(self, document: StageDocument, state: dict[str, Any]) -> None:
         """Persist unfinished stage output with its resume state.
@@ -391,6 +312,7 @@ class StageStore:
             StorageError: The document is completed or belongs to another stage.
 
         """
+        self.publication.check_layout()
         if document.meta.stage != self.stage or document.meta.status == 'completed':
             raise StorageError('checkpoint requires unfinished document of matching stage')
         payload = document.model_dump(mode='json')
@@ -400,7 +322,13 @@ class StageStore:
             raise StorageError(f'invalid checkpoint state: {exc}') from exc
         atomic_write(self.work_path, payload)
 
-    def publish(self, document: StageDocument, *, current_input: InputReceipt | None = None) -> None:
+    def publish(
+        self,
+        document: StageDocument,
+        *,
+        current_input: InputReceipt | None = None,
+        operation_state: dict[str, Any] | None = None,
+    ) -> None:
         """Publish a completed stage after checking its current input.
 
         Raises:
@@ -411,11 +339,28 @@ class StageStore:
             raise StorageError('publish requires completed document of matching stage')
         if current_input is not None and document.meta.input != current_input:
             raise StorageError('input_changed: stage input changed before publication')
-        atomic_write(self.work_path, document.model_dump(mode='json'))
+        self.publication.check_layout()
+        state: dict[str, Any] = {}
+        if self.work_path.exists():
+            state = read_json(self.work_path).get('checkpoint', {})
+        if operation_state is not None:
+            state = validate_checkpoint(document, operation_state)
+        payload = document.model_dump(mode='json')
+        payload['checkpoint'] = state
+        atomic_write(self.work_path, payload)
         self._promote()
 
     def _promote(self) -> None:
-        """Move completed work into place and sync both directories."""
-        os.replace(self.work_path, self.path)
+        """Commit completed work through the single authoritative publication pointer."""
+        payload = read_json(self.work_path)
+        state = payload.pop('checkpoint', {})
+        models = {
+            'collect': CollectDocument,
+            'filter': FilterDocument,
+            'generate': TasksDocument,
+            'export': BasketDocument,
+        }
+        document = models[self.stage].model_validate(payload)
+        self.publication.commit(document, state)
+        self.work_path.unlink()
         _fsync_directory(self.work_path.parent)
-        _fsync_directory(self.path.parent)

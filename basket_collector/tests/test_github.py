@@ -6,12 +6,22 @@ import json
 import threading
 import time
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from basket_collector.config import GitHubConfig
 from basket_collector.github import GitHubClient, GitHubError, GitHubInterrupted
 from basket_collector.sources import issue_id
+
+
+@pytest.fixture(autouse=True)
+def isolate_provider_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep virtual provider pacing from freezing the HTTP runtime's asyncio clock."""
+    monkeypatch.setattr(
+        'basket_collector.github.time',
+        SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=time.sleep),
+    )
 
 
 @pytest.mark.parametrize('token', [None, ''])
@@ -375,7 +385,7 @@ def test_request_timeout_is_overall_deadline_for_slow_response_body() -> None:
     'status,headers,expected_code,retryable,expected_attempts',
     [
         (403, {'X-RateLimit-Remaining': '0', 'Retry-After': '0'}, 'github_rate_limited', True, 2),
-        (403, {}, 'github_auth_error', False, 1),
+        (403, {}, 'github_access_denied', False, 1),
         (401, {}, 'github_auth_error', False, 1),
         (404, {}, 'github_not_found', False, 1),
         (429, {'Retry-After': '0'}, 'github_rate_limited', True, 2),
@@ -863,3 +873,25 @@ def test_prebooked_worker_observes_later_shared_cooldown(monkeypatch: pytest.Mon
         assert not worker.is_alive()
     assert failures == []
     assert second_sent.is_set()
+
+
+@pytest.mark.parametrize('status', [429, 503])
+def test_server_cooldown_applies_to_next_github_record(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    """The final attempt still postpones subsequent records on the same API client."""
+    clock = [100.0]
+    sent: list[float] = []
+    monkeypatch.setattr('basket_collector.github.time.monotonic', lambda: clock[0])
+    monkeypatch.setattr('basket_collector.github.time.sleep', lambda delay: clock.__setitem__(0, clock[0] + delay))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return one server cooldown followed by a successful next record."""
+        sent.append(clock[0])
+        if len(sent) == 1:
+            return httpx.Response(status, headers={'Retry-After': '60'})
+        return httpx.Response(200, json={'number': 2})
+
+    with GitHubClient(GitHubConfig(max_retries=0), transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(GitHubError):
+            client.get_pull_request('o/r', 1)
+        assert client.get_pull_request('o/r', 2)['number'] == 2
+    assert sent == [100, 160]

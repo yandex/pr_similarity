@@ -59,7 +59,7 @@ def initial_report(config: RunConfig, basket: Basket, run_id: str, invocation_id
             'path': 'basket.json',
             'partial': basket.data['meta']['partial'],
             'total_tasks': len(basket.rows),
-            'omitted_failed_count': len(basket.data['meta']['omitted_failed_ids']),
+            'omitted_failed_count': basket.failed_count,
         },
         'agent': {
             'name': config.data['agent']['name'],
@@ -307,12 +307,6 @@ class Coordinator:
             f'Setup={baseline['run']['tags']}; tasks={len(self.basket.rows)} workers={self.config.data['workers']}.'
         )
         self.command.message(f'Report: {self.run_dir / 'report.json'}; logs: {self.command.logs_dir}.')
-        if self.basket.data['meta']['partial']:
-            self.command.message(
-                f'Partial basket: all {len(self.basket.rows)} exported tasks are included; '
-                f'{len(self.basket.data['meta']['omitted_failed_ids'])} collector failures stay outside this run.',
-                level='WARNING',
-            )
 
     def resume_plan(self) -> None:
         """Explain reused, host-only and new native work plus known previous spend before issuance."""

@@ -2,9 +2,11 @@
 
 import asyncio
 import json
+import queue
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -15,7 +17,9 @@ from basket_collector.llm import (
     LLMCallError,
     LLMClient,
     LLMConfigurationError,
+    RateLimiter,
 )
+from basket_collector.transport_scope import generation_requests, record_scope
 
 
 def _config(api: str = 'openai_responses', **overrides: object) -> GenerationConfig:
@@ -353,3 +357,172 @@ def test_stop_during_terminal_retryable_http_error_leaves_request_pending(
             with pytest.raises(GenerationInterrupted):
                 client.generate('system', 'user')
     assert calls == 1
+
+
+@pytest.mark.parametrize('status', [429, 503])
+def test_retry_after_delays_next_record_after_exhaustion(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    """An exhausted record leaves a shared uncapped cooldown for the next record."""
+    clock = [100.0]
+    monkeypatch.setattr('basket_collector.llm.time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setenv('TEST_LLM_KEY', 'fixture')
+    sent: list[float] = []
+
+    class ClockEvent(threading.Event):
+        """Advance virtual time only when the limiter actually waits."""
+
+        def wait(self, timeout: float | None = None) -> bool:
+            """Simulate an uninterrupted wait without delaying the test."""
+            assert timeout is not None
+            clock[0] += timeout
+            return False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Fail each record on its only allowed attempt."""
+        sent.append(clock[0])
+        return httpx.Response(status, headers={'Retry-After': '60'})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        with LLMClient(_config(requests_per_second=100), http_client=transport, stop_event=ClockEvent()) as client:
+            for _ in range(2):
+                with record_scope(), pytest.raises(LLMCallError) as failure:
+                    client.generate('system', 'user')
+                assert failure.value.retry_after == 60
+    assert sent[1] >= sent[0] + 60
+
+
+@pytest.mark.parametrize('error', [httpx.LocalProtocolError, httpx.UnsupportedProtocol, RuntimeError])
+def test_local_llm_request_defects_are_not_record_failures(
+    monkeypatch: pytest.MonkeyPatch, error: type[Exception]
+) -> None:
+    """Do not normalize programming or request configuration defects into retryable external failures."""
+    monkeypatch.setenv('TEST_LLM_KEY', 'fixture')
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Fail before receiving any remote response."""
+        raise error('fixture local defect')
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        with LLMClient(_config(), http_client=transport) as client, pytest.raises(error):
+            client.generate('system', 'user')
+
+
+def test_shared_limiter_rechecks_extended_cooldown_for_parallel_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Waiting workers share extensions and wake promptly on cancellation without consuming slots."""
+    clock = [100.0]
+    monkeypatch.setattr('basket_collector.llm.time', SimpleNamespace(monotonic=lambda: clock[0]))
+    limiter = RateLimiter(100)
+    limiter.defer(60)
+    limiter.defer(5)
+    observations: queue.Queue[tuple[int, float]] = queue.Queue()
+
+    class ObservedEvent(threading.Event):
+        """Observe actual limiter waits without advancing virtual time."""
+
+        def wait(self, timeout: float | None = None) -> bool:
+            """Expose the requesting thread and its current virtual timestamp."""
+            observations.put((threading.get_ident(), clock[0]))
+            return super().wait(0.01)
+
+    stop = ObservedEvent()
+    entered = threading.Barrier(3)
+    admitted: list[float] = []
+    cancelled: list[bool] = []
+
+    def worker() -> None:
+        """Wait for shared admission, recording interruption instead of issuing a request."""
+        entered.wait(timeout=2)
+        try:
+            limiter.acquire(stop)
+            admitted.append(clock[0])
+        except GenerationInterrupted:
+            cancelled.append(True)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    entered.wait(timeout=2)
+    seen = set()
+    while len(seen) < 2:
+        identity, instant = observations.get(timeout=2)
+        assert instant == 100
+        seen.add(identity)
+    assert admitted == []
+    clock[0] = 150
+    limiter.defer(60)
+    clock[0] = 170
+    seen.clear()
+    while len(seen) < 2:
+        identity, instant = observations.get(timeout=2)
+        if instant == 170:
+            seen.add(identity)
+    assert admitted == []
+    stop.set()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+    assert cancelled == [True, True] and admitted == []
+    clock[0] = 210
+    limiter.acquire(threading.Event())
+
+
+def test_cooldown_arriving_during_durable_request_reservation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A worker delayed by fsync must honor another worker's Retry-After before sending HTTP."""
+    clock = [100.0]
+    monkeypatch.setattr('basket_collector.llm.time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setenv('TEST_LLM_KEY', 'fixture')
+    reserved, release, waiting = threading.Event(), threading.Event(), threading.Event()
+    sent: list[float] = []
+    errors: list[BaseException] = []
+    reservations: list[bool] = []
+
+    class ObservedEvent(threading.Event):
+        """Expose final admission waiting while keeping cancellation functional."""
+
+        def wait(self, timeout: float | None = None) -> bool:
+            """Signal a wait without advancing the shared virtual clock."""
+            waiting.set()
+            return super().wait(0.01)
+
+    def reserve() -> None:
+        """Block one worker's durable launch acknowledgement."""
+        reservations.append(True)
+        reserved.set()
+        assert release.wait(2)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return rate limiting to the other worker while the first saves its reservation."""
+        sent.append(clock[0])
+        if len(sent) == 1:
+            return httpx.Response(429, headers={'Retry-After': '60'})
+        return httpx.Response(200, json=_response('openai_responses'))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        stop = ObservedEvent()
+        with LLMClient(_config(requests_per_second=100), http_client=transport, stop_event=stop) as client:
+
+            def worker() -> None:
+                """Run an actual record request with a slow coordinator acknowledgement."""
+                try:
+                    with record_scope(), generation_requests(reserve):
+                        client.generate('system', 'blocked worker')
+                except BaseException as error:
+                    errors.append(error)
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            try:
+                assert reserved.wait(2)
+                clock[0] = 101
+                with record_scope(), pytest.raises(LLMCallError):
+                    client.generate('system', 'rate limited worker')
+                release.set()
+                assert waiting.wait(2)
+                assert sent == [101]
+                clock[0] = 161
+                thread.join(2)
+                assert not thread.is_alive() and not errors
+                assert sent == [101, 161] and reservations == [True]
+            finally:
+                release.set()
+                stop.set()
+                thread.join(2)

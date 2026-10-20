@@ -1,41 +1,27 @@
 """Package-local consumer schemas and arithmetic/reference invariants."""
 
 import math
-from viewer.agent_input import validate_agent_input
 import re
 from collections.abc import Callable
-from functools import lru_cache
-from importlib.resources import files
 
-from jsonschema import Draft202012Validator, FormatChecker
-from jsonschema.exceptions import ValidationError
+from viewer.agent_input import validate_agent_input
+from viewer.basket import validate_basket_report
 from viewer.cost_summary import CostEvidenceError, build_cost_summary
 from viewer.errors import ViewerError
 from viewer.inference import build_inference, public_inference
 from viewer.operations import OperationStore
+from viewer.schema import validate_document as validate_document
+from viewer.schema import validator as validator
 from viewer.triplet_paths import triplet_path
 from viewer.util import digest, json_bytes, parse_json, safe_path
+
+__all__ = ['require', 'validate_document', 'validate_identity', 'validate_report', 'validator']
 
 
 def require(condition: object, code: str = 'invalid_contract') -> None:
     """Reject inconsistent public artifacts with a safe stable error code."""
     if not condition:
         raise ViewerError(code, 'Uploaded documents or artifacts are inconsistent.')
-
-
-@lru_cache(maxsize=6)
-def validator(name: str) -> Draft202012Validator:
-    """Load the package-owned schema for an explicit consumer contract."""
-    schema = parse_json(files('viewer').joinpath('schemas', name + '-v1.json').read_bytes())
-    return Draft202012Validator(schema, format_checker=FormatChecker())
-
-
-def validate_document(name: str, value: object) -> None:
-    """Reject unsupported schema shapes without exposing submitted field values."""
-    try:
-        validator(name).validate(value)
-    except (ValidationError, RecursionError):
-        raise ViewerError('invalid_' + name, 'Unsupported or invalid ' + name + ' contract.') from None
 
 
 def validate_report(report: dict) -> None:
@@ -140,16 +126,12 @@ def validate_identity(
 ) -> None:
     """Bind untrusted archive documents to frozen input, native evidence and exact role receipts."""
     validate_report(report)
-    validate_document('basket', basket)
+    validate_basket_report(basket, report)
     validate_document('archive', manifest)
     require(manifest['complete'] and not any(x['required'] for x in manifest['missing_artifacts']))
     require(manifest['run_id'] == report['run']['id'] and manifest['report_revision'] == report['run']['revision'])
     require(manifest['report_sha256'] == inventory['report.json']['sha256'])
     require(report['basket']['sha256'] == digest(basket_bytes))
-    require(basket['meta']['stage'] == 'export' and basket['meta']['status'] == 'completed')
-    require(basket['meta']['partial'] == report['basket']['partial'])
-    require(len(basket['meta']['omitted_failed_ids']) == report['basket']['omitted_failed_count'])
-    require([t['id'] for t in basket['tasks']] == [t['id'] for t in report['tasks']])
     for name in (
         'run.json',
         '_meta/state.json',
@@ -167,8 +149,8 @@ def validate_identity(
     validate_inference_evidence(report, identity, inventory, read_file)
     _validate_runtime_receipt(report, inventory, read_file)
     _reference(report['config']['identity_path'], inventory)
-    for task, source in zip(report['tasks'], basket['tasks']):
-        _validate_archive_task(task, source, report, inventory, read_file)
+    for task in report['tasks']:
+        _validate_archive_task(task, report, inventory, read_file)
     for key in ('last_rescore', 'last_reprice'):
         entry = report[key]
         if entry:
@@ -512,15 +494,11 @@ def _reference(path: str | None, inventory: dict[str, dict]) -> None:
 
 def _validate_archive_task(
     task: dict,
-    source: dict,
     report: dict,
     inventory: dict[str, dict],
     read_file: Callable[[str], bytes],
 ) -> None:
     """Check frozen task ownership and all selected native/public artifact references."""
-    require(all(task[k] == source[k] for k in ('workspace', 'agent_task', 'source', 'diff_policy')))
-    require(all(task[k] == source['change_request'][k] for k in ('repository', 'number', 'url', 'title', 'kind')))
-    require(all(task[k] == source['revisions'][k] for k in ('before', 'after', 'before_tree', 'after_tree')))
     _reference(task['changes']['diff'], inventory)
     for key in (
         'outcome',
@@ -709,15 +687,21 @@ def _sealed_config(
     require(re.fullmatch(r'agent/effective/[0-9a-f]{64}\.json', ref) is not None, 'invalid_inference')
     require(ref in inventory and ref.split('/')[-1] == inventory[ref]['sha256'] + '.json', 'invalid_inference')
     state = _evidence_document('_meta/state.json', inventory, read_file)
-    matches = [item for row in state['tasks'] if row['id'] == task['id']
-               for item in [*row['history'], row]
-               if item.get('attempt') is not None and item['attempt']['id'] == claim['attempt_id']]
+    matches = [
+        item
+        for row in state['tasks']
+        if row['id'] == task['id']
+        for item in [*row['history'], row]
+        if item.get('attempt') is not None and item['attempt']['id'] == claim['attempt_id']
+    ]
     require(len(matches) == 1, 'invalid_inference')
     selected = matches[0]
     sequence = selected['attempt']['sequence']
     prefix = task['directory'] + f'/attempts/{sequence:03d}/'
-    require(selected['start']['path'] == prefix + 'start.json'
-            and selected['seal']['path'] == prefix + 'seal.json', 'invalid_inference')
+    require(
+        selected['start']['path'] == prefix + 'start.json' and selected['seal']['path'] == prefix + 'seal.json',
+        'invalid_inference',
+    )
     final = task['final_attempt']
     require(isinstance(final, dict) and sequence <= final['sequence'], 'invalid_inference')
     if sequence == final['sequence']:

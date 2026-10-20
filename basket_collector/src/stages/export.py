@@ -15,6 +15,7 @@ from basket_collector.contracts import (
     TasksDocument,
     format_agent_task,
 )
+from basket_collector.selection import omissions
 from basket_collector.storage import expected_input, receipt
 
 
@@ -81,9 +82,10 @@ def export_tasks(tasks: TasksDocument, meta: BasketMeta) -> BasketDocument:
     successful = tasks.tasks
     if not successful:
         raise ValueError('cannot export empty basket')
-    failed_ids = [entry.record.id for entry in tasks.failed]
-    if meta.omitted_failed_ids != failed_ids or meta.partial != bool(failed_ids):
-        raise ValueError('basket partial metadata does not match failed tasks')
+    if [item for item in meta.omissions if item.stage == 'generate'] != omissions(tasks):
+        raise ValueError('basket generation omissions do not match task outcomes')
+    if meta.selection != tasks.selection or meta.coverage.generate != tasks.meta.counts:
+        raise ValueError('basket selection or coverage differs from tasks')
     include_golden_diff = meta.settings.get('include_golden_diff')
     if type(include_golden_diff) is not bool:
         raise ValueError('export settings need include_golden_diff boolean')

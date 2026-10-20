@@ -1,6 +1,6 @@
 # Collect a fixed month, filter locally, then generate at most five tasks.
 # Repository: https://github.com/pallets/werkzeug
-schema_version: 1
+schema_version: 2
 env_file: ../.env
 dataset:
   name: werkzeug-april-2026

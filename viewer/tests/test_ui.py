@@ -45,7 +45,11 @@ def browser_page(tmp_path):
                     report['config']['identity_sha256']=digest(json_bytes(identity))
                     report['run']['tags']=[*['setup: long environment setting '+str(i) for i in range(8)],'sys:pinned']
                     source['meta']['name']=basket
-                    source['tasks'][0]['agent_task']='<script>window.__viewerInjected = true</script>'
+                    source['tasks'][0]['task'] = {
+                        'task': '<script>window.__viewerInjected = true</script>',
+                        'subtasks': [],
+                    }
+                    source['tasks'][0]['agent_task'] = 'Task: <script>window.__viewerInjected = true</script>'
                     report['tasks'][0]['agent_task']=source['tasks'][0]['agent_task']
                     files['basket.json']=json_bytes(source)
                     report['basket']['sha256']=digest(files['basket.json'])
@@ -294,7 +298,11 @@ def test_pagination_keeps_baskets_and_unknown_inference(browser_page,tmp_path):
         def change(report,source,files):
             report['agent']['name']='Bulk '+str(i)
             source['meta']['name']='Basket A'
-            source['tasks'][0]['agent_task']='<script>window.__viewerInjected = true</script>'
+            source['tasks'][0]['task'] = {
+                'task': '<script>window.__viewerInjected = true</script>',
+                'subtasks': [],
+            }
+            source['tasks'][0]['agent_task'] = 'Task: <script>window.__viewerInjected = true</script>'
             report['tasks'][0]['agent_task']=source['tasks'][0]['agent_task']
             files['basket.json']=json_bytes(source);report['basket']['sha256']=digest(files['basket.json'])
             report['tasks'][0]['scoring'].update(Mf_mlp=.3,LCf_mlp=.3);report['tasks'][0]['scoring']['files'][0]['mlp']=.3
