@@ -98,7 +98,7 @@ def test_repeated_stop_drains_and_keeps_pending_pr(tmp_path: Path) -> None:
             raise AssertionError('resume must use the default branch saved in the checkpoint')
 
     resumed = Pipeline(config, producer=producer, remote=GitHubRemoteVCS(config.source, client=RefetchForbidden()))
-    assert resumed.run('collect') == 0
+    assert resumed.run('collect', retry_failed=True) == 0
     collected = Path(config.output_dir) / 'collected.json'
     assert collected.exists()
     assert read_document(collected, CollectDocument).meta.repository.default_branch == 'develop'

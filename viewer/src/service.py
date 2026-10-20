@@ -9,10 +9,11 @@ import uuid
 from copy import deepcopy
 from pathlib import Path
 
-from viewer.contracts import require, validate_document, validate_report
-from viewer.inference import public_inference
+from viewer.basket import validate_basket_report
+from viewer.contracts import require, validate_report
 from viewer.database import LOGIN
 from viewer.errors import StorageError, ViewerError
+from viewer.inference import public_inference
 from viewer.metrics import DEFAULT_STATUSES, STATUSES, aggregate, aggregate_snapshot, tag_groups
 from viewer.presentation import basket_metadata, wall_time
 from viewer.util import digest, json_bytes, parse_json, safe_path, utc_now, utc_timestamp
@@ -73,7 +74,8 @@ class ViewerService:
         basket_bytes=self.store.get(prefix+'data/basket.json',self.config.limits.json_bytes)
         require(digest(report_bytes)==marker['report_sha256'] and digest(basket_bytes)==marker['basket_sha256'],'stored_digest_mismatch')
         report,basket=parse_json(report_bytes),parse_json(basket_bytes)
-        validate_report(report);validate_document('basket',basket)
+        validate_report(report)
+        validate_basket_report(basket, report)
         require('inference' in report,'invalid_report')
         try:inference=public_inference(report['inference'])
         except ValueError:raise ViewerError('invalid_report','Unsupported or invalid inference contract.') from None

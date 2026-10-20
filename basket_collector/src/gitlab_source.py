@@ -79,7 +79,7 @@ class GitLabRemoteVCS:
             default_branch=text_field(project.get('default_branch'), 'default branch'),
         )
         if locator.isascii() and locator.isdecimal() and locator != identity:
-            raise RemoteError('GitLab returned another project ID.', code='invalid_source_metadata')
+            raise RemoteError('GitLab returned another project ID.', code='source_identity_changed')
         self.projects[identity] = repository
         self.projects[repository.path] = repository
         self.fetch_urls[identity] = https_url(text_field(project.get('http_url_to_repo'), 'Git fetch URL'))
@@ -147,7 +147,7 @@ class GitLabRemoteVCS:
             or str(positive_id(request.get('target_project_id'), 'target project ID')) != repository.project_id
         ):
             raise RemoteError(
-                'GitLab returned another merge request or target project.', code='invalid_source_metadata'
+                'GitLab returned another merge request or target project.', code='source_identity_changed'
             )
         if request.get('state') != 'merged' or request.get('merged_at') is None:
             raise RemoteError('Selected GitLab merge request is not merged.', code='invalid_source_metadata')
@@ -261,7 +261,7 @@ class GitLabRemoteVCS:
         raw, _headers = self.client.request('projects/' + project_id)
         metadata = object_field(raw, 'issue project')
         if str(positive_id(metadata.get('id'), 'issue project ID')) != project_id:
-            raise RemoteError('GitLab returned another issue project ID.', code='invalid_source_metadata')
+            raise RemoteError('GitLab returned another issue project ID.', code='source_identity_changed')
         return text_field(metadata.get('path_with_namespace'), 'issue project path')
 
     def get_closing_issues(self, record: CollectRecord) -> list[Issue]:

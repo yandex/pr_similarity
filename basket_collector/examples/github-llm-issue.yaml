@@ -1,6 +1,6 @@
 # Rewrite the linked issue into a task, without showing the diff to the LLM.
 # https://github.com/pallets/werkzeug/pull/3147 closes issue #3146.
-schema_version: 1
+schema_version: 2
 env_file: ../.env
 dataset:
   name: werkzeug-llm-issue

@@ -9,6 +9,11 @@ Read root/benchmark AGENTS.md and the [benchmark guide](../../../benchmark/READM
 Use `benchmark/`, its `.venv` and `make help`. Resolve the complete frozen DATASET,
 exact native provider/model/effort, pinned runtime/access mode, workers and run path.
 Load config/basket without printing credential values before any authorized run.
+Accept frozen basket v1/v2 without conversion; v1's upgrade notice is not a failed
+validation. Report v2 coverage/omissions separately from execution failures and
+run all exported tasks. Verify that a collector output is the intended publication:
+a blocked retry may have left the previous basket in place. A new export requires
+a new run; resume always uses the original basket bytes.
 
 `agent.name` and top-level YAML `tags` freeze local labels at creation. Setup keeps
 strings/order/duplicates as-is. Model displays `model [effort]` for a known
@@ -41,3 +46,9 @@ Check receipts/coverage, not exit code alone. Return run path, actual counts,
 independent execution/change/scoring states and final/all native/API cost coverage.
 Generate HTML or publish only when explicitly requested. OAuth cleanup needs its
 own authorization and stopped users of the profile.
+
+Included 2026H1 v2 baskets live in `benchmark/examples/baskets/pandas/` and
+`benchmark/examples/baskets/opensearch/`, with 1, 5, 10, 25 and 100 tasks each.
+Use the [basket catalog](../../../benchmark/examples/baskets/README.md) to select
+a size; baskets within each repository are disjoint, not nested. Historical v1
+examples remain under `benchmark/examples/baskets/legacy/`.

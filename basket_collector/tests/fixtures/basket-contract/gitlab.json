@@ -1,7 +1,7 @@
 {
   "meta": {
     "schema_family": "pr_similarity_os.basket",
-    "schema_version": 1,
+    "schema_version": 2,
     "stage": "export",
     "status": "completed",
     "input": {
@@ -85,7 +85,48 @@
       "test"
     ],
     "partial": false,
-    "omitted_failed_ids": []
+    "omissions": [],
+    "selection": {
+      "schema_version": 2,
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "selected_ids": [
+        "change:5e768fd90f7ef447c59a93a3a0157dc47cc12e58134b78c4882f916dfd81762d"
+      ],
+      "generation_keys": {
+        "change:5e768fd90f7ef447c59a93a3a0157dc47cc12e58134b78c4882f916dfd81762d": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "fingerprint": "1b84d7326f865c2459f3d276c185f812ee45a7f5e40123244b96b18c57a556e3"
+    },
+    "coverage": {
+      "discovery": {
+        "matched": 1,
+        "selected": 1,
+        "capped": false
+      },
+      "collect": {
+        "input": 1,
+        "succeeded": 1,
+        "rejected": 0,
+        "failed": 0,
+        "pending": 0
+      },
+      "filter": {
+        "input": 1,
+        "succeeded": 1,
+        "rejected": 0,
+        "failed": 0,
+        "pending": 0
+      },
+      "selected": 1,
+      "generate": {
+        "input": 1,
+        "succeeded": 1,
+        "rejected": 0,
+        "failed": 0,
+        "pending": 0
+      }
+    }
   },
   "tasks": [
     {
@@ -132,7 +173,8 @@
           "response_id": null,
           "response_model": null,
           "usage": null,
-          "request_sha256": null
+          "request_sha256": null,
+          "input_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
         },
         "retrieval": {
           "checked_at": "2026-10-02T00:00:00Z",

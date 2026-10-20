@@ -3,6 +3,10 @@
 Follow the root guide and this README. Use the module's `.venv` and Make interface.
 `DATASET` supplies a frozen basket; agent YAML does not select the basket.
 
+- Accept basket v1/v2 without conversion. Resume needs the original basket bytes;
+  use a new run for a new export. Report v2 coverage/omissions separately from
+  execution failures; all exported tasks, including partial baskets, are inputs.
+
 - Preserve before-only source isolation, private HOME, exact runtime and durable
   attempt evidence. Never expose after-revision, host credentials or host HOME
   to an agent as a workaround for setup/MCP problems.

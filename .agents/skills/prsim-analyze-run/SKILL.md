@@ -11,6 +11,10 @@ Analysis is read-only. Rescore/reprice, HTML generation, publication and new mod
 calls are separate actions requiring the corresponding request.
 
 Start at `report.json`: record frozen basket/run identity and actual coverage.
+Read the run's frozen basket, not a newer collector output. Both v1/v2 are valid
+inputs; never convert them during analysis. For v2, inspect `meta.coverage` and
+`meta.omissions`, separating failed collector records and generation rejections
+from agent execution failures. Exported tasks are the benchmark population.
 Select by task `ordinal`/PR number and `directory`; follow its selected final
 attempt and score/price refs in `_meta/state.json`. For an explicitly requested
 older attempt, find its sequence in that registered task's current/history refs and

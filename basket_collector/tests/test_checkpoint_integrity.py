@@ -36,7 +36,7 @@ class _FailSecondPR(FakeGitHub):
     def get_pull_request(self, repository: str, number: int) -> dict[str, Any]:
         """Fail the second operation so the first record is durably saved."""
         if number == 2:
-            raise GitHubError('temporary fixture failure', retryable=True)
+            raise GitHubError('temporary fixture failure', code='github_auth_error', retryable=True)
         return super().get_pull_request(repository, number)
 
 
@@ -136,7 +136,7 @@ def test_saved_records_must_follow_frozen_queue(tmp_path: Path) -> None:
     payload['tasks'].insert(0, second)
     payload['meta']['counts'].update(succeeded=2, pending=0)
     atomic_write(work, payload)
-    with pytest.raises(StorageError, match='frozen queue order'):
+    with pytest.raises(StorageError, match='frozen queue order|attempt journal'):
         Pipeline(config, producer=_producer(), remote=GitHubRemoteVCS(config.source, client=FakeGitHub())).run(
             'collect'
         )
@@ -211,7 +211,7 @@ def test_valid_collect_phases_preserve_resumable_state(tmp_path: Path, phase: st
     store.checkpoint(document, state)
     restored, restored_state = read_checkpoint(store.work_path, CollectDocument)
     assert restored == document
-    assert restored_state == state
+    assert restored_state == {**state, 'attempts': {}, 'retry_ids': []}
 
 
 @pytest.mark.parametrize(
@@ -269,10 +269,11 @@ def test_writer_rejects_invalid_state_without_replacing_checkpoint(tmp_path: Pat
     assert store.work_path.read_bytes() == original
 
 
-def test_generate_defaults_keep_current_writer_shape() -> None:
-    """Validate legacy omitted phases without introducing extra disk fields."""
+def test_generate_requires_v2_attempt_state() -> None:
+    """Reject obsolete retry counters and retain explicit v2 phases."""
     document = TasksDocument.model_validate(_tasks())
-    assert validate_checkpoint(document, {'retry_attempts': {}}) == {'retry_attempts': {}}
+    with pytest.raises(ValueError):
+        validate_checkpoint(document, {'retry_attempts': {}})
     assert validate_checkpoint(document, {'phase': 'ready'}) == {'phase': 'ready'}
 
 
@@ -415,7 +416,7 @@ def test_invalid_completed_work_is_not_promoted(
     store = StageStore(Path(config.output_dir), stage)
     original = None
     if existing_result:
-        atomic_write(store.path, payload)
+        store.path.symlink_to(store.publication._alias_target(store.stage))
         original = store.path.read_bytes()
     payload['tasks'][0]['change_request']['title'] = 'Tampered completed work'
     atomic_write(work, payload)
@@ -454,4 +455,28 @@ def test_ready_export_rejects_changed_workspace(tmp_path: Path, monkeypatch: pyt
             git_repository=FakeGitRepository(),
         ).run('export')
     assert github.calls == 0
+    assert not StageStore(Path(config.output_dir), 'export').path.exists()
+
+
+@pytest.mark.parametrize('stage', ['collect', 'filter'])
+def test_ready_export_upstream_coverage_matches_frozen_predecessors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """Reject arithmetically valid coverage edits before publishing a resumed export."""
+    config, work = _ready_checkpoint(tmp_path, monkeypatch, 'export')
+    payload = json.loads(work.read_text())
+    coverage = payload['meta']['coverage']
+    coverage['discovery']['matched'] += 1
+    coverage['discovery']['selected'] += 1
+    coverage['collect']['input'] += 1
+    if stage == 'collect':
+        coverage['collect']['rejected'] += 1
+    else:
+        coverage['collect']['succeeded'] += 1
+        coverage['filter']['input'] += 1
+        coverage['filter']['rejected'] += 1
+    BasketDocument.model_validate({key: value for key, value in payload.items() if key != 'checkpoint'})
+    atomic_write(work, payload)
+    with pytest.raises(StorageError, match='coverage'):
+        Pipeline(config, producer=_producer()).run('export')
     assert not StageStore(Path(config.output_dir), 'export').path.exists()

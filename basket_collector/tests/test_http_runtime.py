@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -87,7 +88,7 @@ def test_cancel_reaps_response_stream() -> None:
     class Stream(httpx.AsyncByteStream):
         """Hold the body until runtime cancellation."""
 
-        async def __aiter__(self):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
             """Wait without completing the HTTP body."""
             entered.set()
             await asyncio.sleep(60)
@@ -159,7 +160,7 @@ def test_owner_loop_call_is_rejected() -> None:
 def test_loop_startup_failure_is_reported_without_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """A failed loop constructor wakes the caller and leaves no owned thread."""
 
-    def broken_loop():
+    def broken_loop() -> asyncio.AbstractEventLoop:
         """Simulate a sandbox rejecting the event loop's socket pair."""
         raise OSError('fixture loop setup failed')
 
@@ -209,7 +210,7 @@ def test_slow_stream_cleanup_preserves_provider_timeout(provider: str, pending_b
     class SlowClose(httpx.AsyncByteStream):
         """Delay cleanup beyond the old hardcoded one-second reap wait."""
 
-        async def __aiter__(self):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
             """Keep the body pending until the overall request deadline."""
             if pending_body:
                 await asyncio.sleep(60)
@@ -260,7 +261,7 @@ def test_close_waits_for_inflight_stream_cleanup(cancel_body: bool) -> None:
     class Stream(httpx.AsyncByteStream):
         """Exercise both normal and cancellation-driven slow close."""
 
-        async def __aiter__(self):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
             """Optionally keep the body pending until cancellation."""
             entered.set()
             if cancel_body:
@@ -380,3 +381,37 @@ def test_keepalive_reuses_real_tcp_connection() -> None:
         server.server_close()
         thread.join(2)
     assert not runtime.is_alive and not thread.is_alive()
+
+
+@pytest.mark.parametrize('provider', ['github', 'gitlab'])
+@pytest.mark.parametrize('failure', ['gzip', 'proxy', 'local_protocol', 'unsupported_protocol', 'programming'])
+def test_provider_normalizes_only_expected_external_failures(provider: str, failure: str) -> None:
+    """Keep corrupt responses retryable while local request defects still escape the adapter."""
+    errors = {
+        'proxy': httpx.ProxyError,
+        'local_protocol': httpx.LocalProtocolError,
+        'unsupported_protocol': httpx.UnsupportedProtocol,
+        'programming': RuntimeError,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Exercise actual response decoding or an explicit HTTP transport failure."""
+        if failure == 'gzip':
+            return httpx.Response(200, headers={'Content-Encoding': 'gzip'}, content=b'broken gzip')
+        raise errors[failure]('fixture failure')
+
+    transport = httpx.MockTransport(handler)
+    expected = RemoteError if failure in ('gzip', 'proxy') else errors[failure]
+    if provider == 'github':
+        with GitHubClient(GitHubConfig(max_retries=0), transport=transport) as client:
+            with pytest.raises(expected):
+                client.get_pull_request('o/r', 1)
+    else:
+        client = GitLabClient(
+            SourceConfig(provider='gitlab', project='o/r', max_retries=0), transport=transport, token='fixture'
+        )
+        try:
+            with pytest.raises(expected):
+                client.request('projects/1')
+        finally:
+            client.close()

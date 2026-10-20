@@ -13,6 +13,7 @@ import httpx
 from basket_collector.config import SourceConfig
 from basket_collector.http_runtime import HTTPRuntime
 from basket_collector.remote import RemoteError, RemoteInterrupted
+from basket_collector.transport_scope import HTTP_OPERATION_ERRORS, record_owned, retry_after_seconds
 
 
 class GitLabClient:
@@ -68,7 +69,7 @@ class GitLabClient:
             self._check_stop()
             with self.rate_lock:
                 remaining = max(reserved, self.cooldown_until) - time.monotonic()
-            if remaining > self.config.max_retry_delay_seconds:
+            if remaining > self.config.max_retry_delay_seconds and not record_owned():
                 raise RemoteError(
                     'GitLab cooldown exceeds the configured retry delay; resume later.',
                     code='source_rate_limited',
@@ -101,8 +102,8 @@ class GitLabClient:
         finally:
             self._notify('')
 
-    def _request(self, path: str, params: dict[str, str | int] | None = None) -> tuple[object, httpx.Headers]:
-        """Retry transient failures only; authentication and inaccessible resources remain explicit."""
+    def _check_request(self, path: str) -> None:
+        """Validate shared credentials and resource ownership before any request attempt."""
         self._check_stop()
         if not self.token or not self.token.strip():
             raise RemoteError(
@@ -114,7 +115,12 @@ class GitLabClient:
             )
         if path.startswith('/') or '://' in path or any(part in ('.', '..') for part in path.split('/')):
             raise ValueError('GitLab API path must be a relative resource path')
-        for attempt in range(self.config.max_retries + 1):
+
+    def _request(self, path: str, params: dict[str, str | int] | None = None) -> tuple[object, httpx.Headers]:
+        """Use the stage retry owner for records and source request policy for discovery."""
+        self._check_request(path)
+        max_retries = 0 if record_owned() else self.config.max_retries
+        for attempt in range(max_retries + 1):
             self._throttle()
             try:
                 self._notify('HTTP request')
@@ -126,8 +132,8 @@ class GitLabClient:
                     timeout_seconds=self.config.request_timeout_seconds,
                     check_stop=self._check_stop,
                 )
-            except (httpx.HTTPError, TimeoutError) as exc:
-                if attempt == self.config.max_retries:
+            except HTTP_OPERATION_ERRORS as exc:
+                if attempt == max_retries:
                     raise RemoteError(
                         'Cannot reach GitLab API; check instance URL, TLS and network.',
                         code='source_transport_error',
@@ -179,12 +185,14 @@ class GitLabClient:
                         'GitLab requested a longer cooldown; resume after Retry-After.',
                         code='source_rate_limited',
                         retryable=True,
+                        retry_after=delay,
                     )
-                if attempt == self.config.max_retries:
+                if attempt == max_retries:
                     raise RemoteError(
                         'GitLab rate limit or server failure; retry later with the saved checkpoint.',
                         code='source_rate_limited' if limited else 'source_server_error',
                         retryable=True,
+                        retry_after=delay,
                     )
                 self._retry_wait(delay)
                 continue
@@ -193,6 +201,7 @@ class GitLabClient:
                     'GitLab API operation failed; check server API capabilities and permissions.',
                     code='source_bad_request' if status == 400 else 'source_api_error',
                     retryable=False,
+                    retry_after=retry_after_seconds(response.headers),
                 )
             try:
                 return response.json(), response.headers

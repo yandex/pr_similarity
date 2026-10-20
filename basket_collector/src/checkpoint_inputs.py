@@ -1,9 +1,7 @@
 """Cross-stage checkpoint validation against verified predecessor snapshots."""
 
-import hashlib
 from typing import Any
 
-from basket_collector.config import FilterConfig
 from basket_collector.contracts import (
     BasketDocument,
     CollectDocument,
@@ -11,6 +9,7 @@ from basket_collector.contracts import (
     FilterRecord,
     TasksDocument,
 )
+from basket_collector.selection import selected_records, selection_receipt
 from basket_collector.stages.export import export_tasks
 from basket_collector.storage import StorageError, receipt
 
@@ -38,23 +37,25 @@ def _check_filter(document: FilterDocument, source: CollectDocument, state: dict
     if document.meta.counts.input != len(inputs):
         raise ValueError('filter input count differs from collected predecessor')
     complete = state is None or state['phase'] in ('selection', 'ready')
-    accepted_order = list(inputs)
-    if state is None or state['phase'] == 'ready':
-        config = FilterConfig.model_validate(document.meta.settings.get('filter'))
-        if config.selection.shuffle:
-            seed = config.selection.seed
-            accepted_order.sort(
-                key=lambda identity: (hashlib.sha256(f'{seed}\n{identity}'.encode()).hexdigest(), identity)
-            )
     _check_partition(
         list(inputs),
-        [[record.id for record in document.tasks], [record.id for record in document.rejected]],
+        [
+            [record.id for record in document.tasks],
+            [record.id for record in document.rejected],
+            [failure.record.id for failure in document.failed],
+        ],
         complete,
-        accepted_order,
     )
+    for failure in document.failed:
+        if failure.record != inputs[failure.record.id]:
+            raise ValueError('failed filter record differs from collected predecessor')
     for record in document.tasks:
         original = inputs[record.id]
-        if record.change_request != original.change_request or record.revisions.source != original.revisions.source:
+        if (
+            record.change_request != original.change_request
+            or record.revisions.source != original.revisions.source
+            or record.source != original.source
+        ):
             raise ValueError('accepted record source differs from collected predecessor')
     for rejected in document.rejected:
         original_pr = inputs[rejected.id].change_request.model_dump(
@@ -66,13 +67,19 @@ def _check_filter(document: FilterDocument, source: CollectDocument, state: dict
 
 def _check_generate(document: TasksDocument, source: FilterDocument, state: dict[str, Any] | None) -> None:
     """Verify task outcomes and retry identities retain their filtered source."""
-    inputs = {record.id: record for record in source.tasks}
+    inputs = {record.id: record for record in selected_records(source)}
+    if source.selection is None or document.selection != selection_receipt(source.selection):
+        raise ValueError('generation selection differs from filtered predecessor')
     if document.meta.counts.input != len(inputs):
         raise ValueError('generation input count differs from filtered predecessor')
     complete = state is None or state.get('phase') == 'ready'
     _check_partition(
         list(inputs),
-        [[record.id for record in document.tasks], [record.record.id for record in document.failed]],
+        [
+            [record.id for record in document.tasks],
+            [record.record.id for record in document.failed],
+            [record.id for record in document.rejected],
+        ],
         complete,
     )
     for record in document.tasks:
@@ -82,8 +89,14 @@ def _check_generate(document: TasksDocument, source: FilterDocument, state: dict
     for failed in document.failed:
         if failed.record != inputs[failed.record.id]:
             raise ValueError('failed task source differs from filtered predecessor')
-    if state is not None and set(state.get('retry_attempts', {})) - set(inputs):
-        raise ValueError('retry_attempts PR is absent from generation input')
+    for rejected in document.rejected:
+        original = inputs[rejected.id].change_request.model_dump(
+            mode='json', include=set(type(rejected.change_request).model_fields)
+        )
+        if rejected.change_request.model_dump(mode='json') != original:
+            raise ValueError('rejected generation record differs from filtered predecessor')
+    if state is not None and set(state.get('attempts', {})) - set(inputs):
+        raise ValueError('attempt journal record is absent from generation input')
 
 
 def validate_checkpoint_input(

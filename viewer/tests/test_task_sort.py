@@ -1,14 +1,27 @@
 """Task ordering is global, stable and independent of catalogue aggregation filters."""
 from copy import deepcopy
+
 import pytest
-from starlette.datastructures import QueryParams
-from test_api import client,create_user
-from test_metrics import task
 from helpers import archive_fixture
+from starlette.datastructures import QueryParams
+from test_api import client as client
+from test_api import create_user
+from test_metrics import task
 from viewer.archive import validate_archive
-from viewer.presentation import TaskQuery,public_task
-from viewer.util import digest
-from viewer.util import json_bytes,parse_json
+from viewer.basket_sources import task_identity
+from viewer.presentation import TaskQuery, public_task
+from viewer.util import digest, json_bytes, parse_json
+
+__all__ = [
+    'client',
+    'test_null_last_raw_precision_zero_and_stable_ties',
+    'test_unavailable_score_is_null_and_file_aggregation_changes_sort',
+    'prepare_tasks',
+    'publish_tasks',
+    'test_global_sort_before_pagination_default_order_and_report_binding',
+    'test_same_report_overwrite_with_new_triplets_is_a_new_publication',
+]
+
 
 @pytest.mark.parametrize('key',['score','total_tokens','time'])
 def test_null_last_raw_precision_zero_and_stable_ties(key):
@@ -38,7 +51,7 @@ def prepare_tasks(count):
             if isinstance(value,list):return [remap(v,new_root) for v in value]
             return value
         for i in range(count):
-            id='change:'+digest(('sorting-task-'+str(i)).encode())
+            id = task_identity(basket['meta']['repository'], source['change_request']['kind'], i + 1)
             root='attempts/'+digest(id.encode())+'/'+original['final_attempt']['id']+'/'
             row=remap(deepcopy(original),root);entry=deepcopy(source);row['id']=entry['id']=id
             row['number']=entry['change_request']['number']=i+1
@@ -49,6 +62,7 @@ def prepare_tasks(count):
             rows.append(row);sources.append(entry)
         rows[-1]['execution']['status']='error'
         report['tasks']=rows;basket['tasks']=sources;report['basket']['total_tasks']=count
+        basket['meta']['counts'].update(input=count, succeeded=count)
         report['summary'].update(total_tasks=count,completed_tasks=count,nonempty_diff_tasks=count,scored_tasks=count,error_tasks=1)
     return prepare
 

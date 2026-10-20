@@ -35,8 +35,9 @@ Start with [setup and login](#quick-start), then use the guide for your next tas
   by the benchmark itself.
 
 OpenCode does not need a separate installation: the runner downloads the exact
-`agent.runtime` version from GitHub and caches it. The examples pin **1.18.33**,
-which is the version validated for DB telemetry.
+`agent.runtime` version from GitHub and caches it. The examples pin **1.18.33**.
+Live basket v1/v2 smoke runs also cover **1.19.3**; the exact selected runtime and
+its digest remain frozen with each run.
 
 ## Quick start
 
@@ -81,11 +82,11 @@ if you want to remove the private login after your batch.
 
 ### Select tasks and retain the run path
 
-Use the included [OpenSearch-10 or pandas-25 baskets](examples/baskets/README.md)
+Use the included [2026H1 pandas and OpenSearch baskets](examples/baskets/README.md)
 to run without collecting or generating new tasks:
 
 ```bash
-make run CONFIG=examples/chatgpt-oauth.yaml DATASET=examples/baskets/pandas-25.json OUTPUT=./output
+make run CONFIG=examples/chatgpt-oauth.yaml DATASET=examples/baskets/pandas/pandas-2026H1-25.json OUTPUT=./output
 ```
 
 Or replace `/path/to/basket.json` with a completed collector export. One config
@@ -932,9 +933,15 @@ The checks run offline; the smoke also builds and installs a wheel, then loads
 its schemas and task instructions outside the source checkout.
 
 Use [basket_collector](../basket_collector/README.md) to prepare `basket.json`.
-The benchmark independently validates that frozen v1 contract: `tasks`, opaque
+The benchmark independently validates frozen v1 and v2 baskets: `tasks`, opaque
 change IDs, source fetch URL/ref hints, exact commit/tree IDs and collector-selected
-workspace. It imports no collector code and calls no GitHub/GitLab APIs. Each
+workspace. V2 also validates selection, stage coverage and known omissions. All
+exported tasks run, including those in a partial basket; rejected omissions are
+reported separately from failed records. V1 remains supported with an upgrade
+notice. Resume always requires the original basket bytes; use a new run for a
+new export. A collector retry can leave the previous published basket in place;
+check the collector's export lineage before starting a run on its output path.
+It imports no collector code and calls no GitHub/GitLab APIs. Each
 attempt downloads source objects using its own Git adapter; ref tips can deliver
 historical objects but never replace the saved before/after revisions.
 [config.yaml](config.yaml) shows the single-agent run configuration;
@@ -1115,8 +1122,8 @@ DB telemetry includes root, subagent and detached sessions without retaining
 raw message/tool bodies or credential tables. Optional API-equivalent pricing
 uses saved request-level usage and frozen policy/calculator snapshots; original
 OpenCode cost stays separate. Unknown usage or pricing remains `null`. The native DB billing adapter is
-validated for OpenCode 1.18.33; other exact runtime versions require separate
-adapter compatibility checks.
+covered by live smoke runs on OpenCode 1.18.33 and 1.19.3; other exact runtime
+versions require separate adapter compatibility checks.
 
 Source code lives directly in `src/`; packaging maps it to the owning Python
 namespace. Schemas and conformance fixtures belong to this project.

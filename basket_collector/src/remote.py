@@ -12,11 +12,14 @@ from basket_collector.sources import Repository
 class RemoteError(RuntimeError):
     """Preserve the cause and bounded recovery semantics of a hosting operation."""
 
-    def __init__(self, message: str, *, code: str = 'source_error', retryable: bool = False) -> None:
+    def __init__(
+        self, message: str, *, code: str = 'source_error', retryable: bool = False, retry_after: float | None = None
+    ) -> None:
         """Store a safe user-facing error without retaining credentials or payload bodies."""
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.retry_after = retry_after
 
 
 class ChangeRejected(RemoteError):

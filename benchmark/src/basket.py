@@ -33,13 +33,58 @@ class Basket:
         """Return the complete exported task queue."""
         return self.data['tasks']
 
+    @property
+    def schema_version(self) -> int:
+        """Return the validated input format without rewriting the document."""
+        return self.data['meta']['schema_version']
 
-def _require(condition: bool) -> None:
+    @property
+    def failed_count(self) -> int:
+        """Count known failed omissions, excluding selected generation rejections."""
+        meta = self.data['meta']
+        if self.schema_version == 1:
+            return len(meta['omitted_failed_ids'])
+        return sum(item['kind'] == 'failed' for item in meta['omissions'])
+
+    @property
+    def rejected_count(self) -> int:
+        """Count recorded selected rejections; v1 has no such omission records."""
+        if self.schema_version == 1:
+            return 0
+        return sum(item['kind'] == 'rejected' for item in self.data['meta']['omissions'])
+
+    def warnings(self) -> list[str]:
+        """Describe legacy format and known omissions once per user invocation."""
+        messages = []
+        if self.schema_version == 1:
+            messages.append(
+                'Basket schema v1 is deprecated; use a schema v2 export for new runs. '
+                'This frozen v1 basket remains supported.'
+            )
+        if self.data['meta']['partial']:
+            message = (
+                f'Partial basket: all {len(self.rows)} exported tasks are included; '
+                f'{self.failed_count} failed and {self.rejected_count} rejected records stay outside this run.'
+            )
+            if self.schema_version == 2:
+                coverage = self.data['meta']['coverage']
+                message += (
+                    ' Omissions: '
+                    + '; '.join(
+                        f"{stage}: {coverage[stage]['failed']} failed"
+                        + (f", {coverage[stage]['rejected']} rejected" if stage == 'generate' else '')
+                        for stage in ('collect', 'filter', 'generate')
+                    )
+                    + '.'
+                )
+            messages.append(message)
+        return messages
+
+
+def _require(condition: bool, field: str = '<root>') -> None:
     """Reject a failed frozen-basket invariant with a safe message."""
     if not condition:
-        raise BenchmarkError(
-            'invalid_basket', 'Basket metadata and task records are inconsistent; re-export the basket.'
-        )
+        raise BenchmarkError('invalid_basket', f'Basket field at {field} is inconsistent; re-export the basket.')
 
 
 def _utc(value: str | None) -> None:
@@ -59,7 +104,7 @@ def _url(value: str) -> None:
 
 
 def load_basket(path: Path) -> Basket:
-    """Accept exported v1 tasks, never a partial collector checkpoint."""
+    """Accept frozen v1/v2 exports, never an unfinished collector checkpoint."""
     try:
         content = path.read_bytes()
     except OSError as exc:
@@ -91,9 +136,7 @@ def load_basket(path: Path) -> Basket:
             _require(bool(_HEX64.fullmatch(item['producer'][key])))
     for item in meta['lineage']:
         _require(bool(_HEX64.fullmatch(item['sha256'])))
-    identities = [row['id'] for row in rows] + meta['omitted_failed_ids']
-    _require(len({value.casefold() for value in identities}) == len(identities))
-    _require(meta['partial'] == bool(meta['omitted_failed_ids']))
+    _validate_population(data)
     include = meta['settings'].get('include_golden_diff')
     _require(type(include) is bool)
     for row in rows:
@@ -147,3 +190,68 @@ def load_basket(path: Path) -> Basket:
         )
         _require(('golden_diff' in row) == include and (not include or isinstance(row['golden_diff'], str)))
     return Basket(data, content, bytes_sha256(content))
+
+
+def _validate_population(data: dict) -> None:
+    """Validate known omissions and ordered generation inputs without external receipts."""
+    meta, rows = data['meta'], data['tasks']
+    if meta['schema_version'] == 1:
+        omitted = meta['omitted_failed_ids']
+    else:
+        omitted = [item['id'] for item in meta['omissions']]
+        _validate_selection(meta, rows)
+    identities = [row['id'] for row in rows] + omitted
+    _require(len({value.casefold() for value in identities}) == len(identities))
+    _require(meta['partial'] == bool(omitted))
+
+
+def _validate_selection(meta: dict, rows: list[dict]) -> None:
+    """Bind v2 coverage arithmetic, omissions and task provenance to selection."""
+    coverage, selection, omissions = meta['coverage'], meta['selection'], meta['omissions']
+    discovery = coverage['discovery']
+    _require(discovery['selected'] <= discovery['matched'], 'meta.coverage')
+    _require(discovery['capped'] == (discovery['selected'] < discovery['matched']), 'meta.coverage')
+    for stage in ('collect', 'filter', 'generate'):
+        counts = coverage[stage]
+        _require(
+            counts['input'] == sum(counts[key] for key in ('succeeded', 'failed', 'rejected', 'pending')),
+            f'meta.coverage.{stage}',
+        )
+        _require(counts['pending'] == 0, f'meta.coverage.{stage}')
+        _require(
+            counts['failed'] == sum(item['stage'] == stage and item['kind'] == 'failed' for item in omissions),
+            f'meta.coverage.{stage}',
+        )
+    _require(coverage['collect']['input'] == discovery['selected'], 'meta.coverage')
+    _require(coverage['filter']['input'] == coverage['collect']['succeeded'], 'meta.coverage')
+    _require(coverage['selected'] <= coverage['filter']['succeeded'], 'meta.coverage')
+    _require(coverage['generate']['input'] == coverage['selected'], 'meta.coverage')
+    _require(coverage['generate']['succeeded'] == len(rows), 'meta.coverage')
+    _require(coverage['generate']['rejected'] == sum(item['kind'] == 'rejected' for item in omissions), 'meta.coverage')
+    selected, keys = selection['selected_ids'], selection['generation_keys']
+    _require(len(selected) == coverage['selected'], 'meta.coverage')
+    _require(len({value.casefold() for value in selected}) == len(selected), 'meta.selection')
+    _require(all(re.fullmatch(r'change:[0-9a-f]{64}', value) for value in selected), 'meta.selection')
+    _require(set(selected) == set(keys), 'meta.selection')
+    for digest in (selection['sha256'], selection['input_sha256'], selection['fingerprint'], *keys.values()):
+        _require(bool(_HEX64.fullmatch(digest)), 'meta.selection')
+    _require(
+        selection['fingerprint'] == sha256({'tasks': [[identity, keys[identity]] for identity in selected]}),
+        'meta.selection.fingerprint',
+    )
+    generated = set()
+    for item in omissions:
+        _require(bool(re.fullmatch(r'change:[0-9a-f]{64}', item['id'])), 'meta.omissions')
+        _require(bool(_HEX64.fullmatch(item['result_sha256'])), 'meta.omissions')
+        _require(item['kind'] != 'rejected' or item['stage'] == 'generate', 'meta.omissions')
+        if item['stage'] == 'generate':
+            _require(item['id'] in selected, 'meta.omissions')
+            generated.add(item['id'])
+        else:
+            _require(item['id'] not in selected, 'meta.omissions')
+    _require([row['id'] for row in rows] == [identity for identity in selected if identity not in generated], 'tasks')
+    for row in rows:
+        _require(
+            row['provenance']['generation'].get('input_sha256') == keys[row['id']],
+            'tasks.provenance.generation.input_sha256',
+        )

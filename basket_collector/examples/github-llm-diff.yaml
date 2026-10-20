@@ -1,6 +1,6 @@
 # First LLM run: one merged Python fix; no linked issue is required.
 # https://github.com/pallets/werkzeug/pull/3147
-schema_version: 1
+schema_version: 2
 env_file: ../.env
 dataset:
   name: werkzeug-llm-diff

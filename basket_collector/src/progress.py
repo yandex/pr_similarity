@@ -1,16 +1,15 @@
 """Ephemeral stage progress with bounded terminal rendering and plain heartbeats."""
 
 import logging
-import shutil
+import os
 import sys
 import threading
 import time
+import unicodedata
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, TextIO
-
-from tqdm import tqdm
 
 DISPLAY_LOCK = threading.RLock()
 MODES = ('auto', 'plain', 'off')
@@ -60,7 +59,8 @@ class Progress:
         self.disabled = False
         self.snapshots: dict[str, Snapshot] = {}
         self.current: str | None = None
-        self._bars: dict[str, Any] = {}
+        self._frame_rows = 0
+        self._finished: set[str] = set()
         self._rendered: dict[str, float] = {}
         self._logged: dict[str, float] = {}
         self._worker_lock = threading.Lock()
@@ -70,6 +70,7 @@ class Progress:
     def start(self, stage: str, phase: str, *, mode: str = 'new') -> None:
         """Announce a stage before its first potentially slow operation."""
         self.current = stage
+        self._finished.discard(stage)
         self.snapshots[stage] = Snapshot(stage, phase, mode=mode, started=self.clock())
         self._render(stage, force=True)
 
@@ -80,13 +81,17 @@ class Progress:
         status: str | None = None,
         mode: str | None = None,
         n: int | None = None,
-        total: Any = _UNSET,
-        **metrics: Any,
+        total: object = _UNSET,
+        **metrics: object,
     ) -> None:
         """Update the current stage from successfully saved coordinator state."""
         if self.current is None:
             return
         old = self.snapshots[self.current]
+        if total is _UNSET:
+            total = old.total
+        if total is not None and not isinstance(total, int):
+            raise ValueError('progress total must be an integer or None')
         changed_phase = phase is not None and phase != old.phase
         new = replace(
             old,
@@ -94,7 +99,7 @@ class Progress:
             status=status if status is not None else old.status,
             mode=mode if mode is not None else old.mode,
             n=n if n is not None else old.n,
-            total=old.total if total is _UNSET else total,
+            total=total,
             metrics={**old.metrics, **metrics},
         )
         self.snapshots[self.current] = new
@@ -158,7 +163,12 @@ class Progress:
         self._render('basket', force=True)
 
     def basket_update(
-        self, *, available: int | None = None, successful: int | None = None, failed: int | None = None
+        self,
+        *,
+        available: int | None = None,
+        successful: int | None = None,
+        failed: int | None = None,
+        omitted: int | None = None,
     ) -> None:
         """Count only persisted successful tasks while keeping candidate shortfall explicit."""
         old = self.snapshots.get('basket')
@@ -173,6 +183,8 @@ class Progress:
             metrics['candidate_shortfall'] = max(0, total - available)
         if failed is not None:
             metrics['failed'] = failed
+        if omitted is not None:
+            metrics['omissions'] = omitted
         self.snapshots['basket'] = replace(
             old, total=total, n=old.n if successful is None else successful, metrics=metrics
         )
@@ -186,8 +198,6 @@ class Progress:
         self.snapshots['basket'] = replace(old, status=status)
         self._render('basket', force=True)
         self._close_bar('basket')
-        if self.mode == 'tty' and not self.disabled and self.level <= logging.INFO:
-            self.write_message(self._line(self.snapshots['basket']), stream=self.stream)
 
     def _line(self, snapshot: Snapshot) -> str:
         """Build a redacted, escape-free snapshot for plain output and DEBUG logging."""
@@ -199,7 +209,97 @@ class Progress:
         parts = [prefix, f'{unit}={count}']
         parts.extend(f'{key}={value}' for key, value in snapshot.metrics.items() if value is not None and value != '')
         parts.append(f'elapsed={max(0, self.clock() - snapshot.started):.0f}s')
-        return self.redact(' '.join(parts)).replace('\r', ' ').replace('\n', ' ')
+        return self._safe(' '.join(parts))
+
+    def _safe(self, text: str) -> str:
+        """Remove control characters before terminal rendering after credential redaction."""
+        return ''.join(' ' if unicodedata.category(char).startswith('C') else char for char in self.redact(text))
+
+    def _terminal_size(self) -> tuple[int, int]:
+        """Read and re-read dimensions from the actual output stream, including zero-size PTYs."""
+        try:
+            size = os.get_terminal_size(self.stream.fileno())
+            return max(2, size.columns or 80), max(2, size.lines or 24)
+        except (OSError, ValueError, AttributeError):
+            return 80, 24
+
+    @staticmethod
+    def _clip(text: str, width: int) -> str:
+        """Bound physical terminal cells, preserving combining marks and wide Unicode characters."""
+        used = 0
+        result = []
+        for char in text:
+            cells = 0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
+            if used + cells > width:
+                return ''.join(result)
+            result.append(char)
+            used += cells
+        return ''.join(result)
+
+    def _panel(self, width: int, height: int) -> list[str]:
+        """Separate status and counters into a bounded viewport without duplicated postfixes."""
+        rows = []
+        keys = ['basket', self.current] if self.current != 'basket' else ['basket']
+        for key in keys:
+            if key is None or key not in self.snapshots or key in self._finished:
+                continue
+            snapshot = self.snapshots[key]
+            count = str(snapshot.n) if snapshot.total is None else f'{snapshot.n}/{snapshot.total}'
+            rows.append(self._safe(f'{snapshot.stage} {snapshot.phase} {snapshot.status} {count}'))
+            tokens = [
+                f'{name}={value}' for name, value in snapshot.metrics.items() if value is not None and value != ''
+            ]
+            tokens.append(f'elapsed={max(0, self.clock() - snapshot.started):.0f}s')
+            line = '  '
+            for token in tokens:
+                token = self._safe(token)
+                candidate = line + token + ' '
+                if self._clip(candidate, width) != candidate and line.strip():
+                    rows.append(line.rstrip())
+                    line = '  '
+                line += token + ' '
+            if line.strip():
+                rows.append(line.rstrip())
+        if len(rows) > height:
+            hidden = len(rows) - height + 1
+            rows = [*rows[: height - 1], f'... {hidden} detail rows hidden']
+        return [self._clip(row, width) for row in rows]
+
+    def _summary_lines(self, text: str) -> list[str]:
+        """Wrap durable TTY messages without reaching the terminal's auto-wrap column."""
+        width = self._terminal_size()[0] - 1
+        rows = []
+        line = ''
+        for token in self._safe(text).split():
+            token = self._clip(token, width)
+            candidate = (line + ' ' + token).strip()
+            if line and self._clip(candidate, width) != candidate:
+                rows.append(line)
+                line = token
+            else:
+                line = candidate
+        if line:
+            rows.append(line)
+        return rows
+
+    def _clear_frame(self) -> None:
+        """Erase exactly the previously drawn physical rows and leave the cursor at their start."""
+        if self._frame_rows:
+            self.stream.write(f'\x1b[{self._frame_rows}A')
+            for _ in range(self._frame_rows):
+                self.stream.write('\r\x1b[2K\n')
+            self.stream.write(f'\x1b[{self._frame_rows}A\r')
+            self._frame_rows = 0
+
+    def _draw_frame(self) -> None:
+        """Refresh the complete panel under the single display lock."""
+        columns, lines = self._terminal_size()
+        self._clear_frame()
+        rows = self._panel(columns - 1, min(8, lines - 1))
+        for row in rows:
+            self.stream.write(row + '\n')
+        self._frame_rows = len(rows)
+        self.stream.flush()
 
     def _render(self, key: str, *, force: bool = False) -> None:
         """Rate-limit display and file snapshots, degrading safely on terminal failure."""
@@ -219,28 +319,7 @@ class Progress:
                 return
             with DISPLAY_LOCK:
                 if self.mode == 'tty':
-                    bar = self._bars.get(key)
-                    if bar is None:
-                        bar = tqdm(
-                            total=snapshot.total,
-                            file=self.stream,
-                            position=len(self._bars),
-                            leave=True,
-                            disable=False,
-                            mininterval=0.25,
-                            # PTYs without a configured window may report zero rows.
-                            ncols=shutil.get_terminal_size(fallback=(80, 24)).columns,
-                            nrows=max(5, shutil.get_terminal_size(fallback=(80, 24)).lines),
-                            dynamic_ncols=False,
-                        )
-                        self._bars[key] = bar
-                    bar.total = snapshot.total
-                    bar.n = snapshot.n
-                    bar.set_description_str(
-                        self.redact(' '.join((snapshot.stage, snapshot.phase, snapshot.status))), refresh=False
-                    )
-                    bar.set_postfix_str(line, refresh=False)
-                    bar.refresh()
+                    self._draw_frame()
                 else:
                     print(line, file=self.stream, flush=True)
             self._rendered[key] = now
@@ -253,7 +332,10 @@ class Progress:
         try:
             with DISPLAY_LOCK:
                 if self.mode == 'tty' and not self.disabled:
-                    tqdm.write(text, file=stream)
+                    self._clear_frame()
+                    for line in self._summary_lines(text):
+                        print(line, file=stream, flush=True)
+                    self._draw_frame()
                 else:
                     print(text, file=stream, flush=True)
         except Exception:
@@ -269,17 +351,25 @@ class Progress:
 
     def _close_bar(self, key: str) -> None:
         """Close an existing bar without creating an artificial final update."""
-        bar = self._bars.get(key)
-        if bar is not None:
-            try:
-                with DISPLAY_LOCK:
-                    if self.disabled:
-                        bar.disable = True
-                    bar.close()
-            except Exception:
-                self.disabled = True
+        if key in self._finished:
+            return
+        self._finished.add(key)
+        if self.mode != 'tty' or self.disabled or self.level > logging.INFO:
+            return
+        try:
+            with DISPLAY_LOCK:
+                self._clear_frame()
+                for line in self._summary_lines(self._line(self.snapshots[key])):
+                    self.stream.write(line + '\n')
+                self._draw_frame()
+        except Exception:
+            self.disabled = True
 
     def close(self) -> None:
         """Close up to four stage bars and one result bar."""
-        for key in list(self._bars):
-            self._close_bar(key)
+        try:
+            with DISPLAY_LOCK:
+                self._clear_frame()
+                self.stream.flush()
+        except Exception:
+            self.disabled = True

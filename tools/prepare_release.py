@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import tempfile
+import tomllib
 from pathlib import Path
 
 from check_release import MANIFEST, check_release, file_record, regular_file, source_inventory
@@ -29,7 +30,9 @@ def prepare_release(source: Path, destination: Path) -> dict:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(original, target)
             target.chmod(0o755 if file_record(source, relative)['executable'] else 0o644)
-        manifest = {'manifest_version': 1, 'files': [file_record(staging, path) for path in selected]}
+        version = tomllib.loads((staging / 'benchmark/pyproject.toml').read_text())['project']['version']
+        manifest = {'manifest_version': 1, 'release_version': version,
+                    'files': [file_record(staging, path) for path in selected]}
         (staging / MANIFEST).write_text(json.dumps(manifest, indent=2) + '\n')
         result = check_release(staging)
         # Reserve the named destination before promotion; even an empty existing directory is never reused.

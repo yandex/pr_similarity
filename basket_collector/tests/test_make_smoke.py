@@ -84,7 +84,7 @@ def make_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, str], Path]:
     )
     config = tmp_path / 'config with spaces.yaml'
     config.write_text(
-        'dataset: {name: smoke-basket, description: Offline Make smoke, maintainers: [smoke]}\n'
+        'schema_version: 2\ndataset: {name: smoke-basket, description: Offline Make smoke, maintainers: [smoke]}\n'
         'output_dir: ./output with spaces\ncache_dir: ./cache with spaces\n'
         'source: {provider: github, project: smoke/repo}\ncollect: {selection: change_ids, change_ids: [1, 2]}\n'
         'filter:\n  workers: 1\n  selection: {shuffle: false, limit: 2}\n'
@@ -178,7 +178,7 @@ def test_make_history_rejection_warning_and_empty_exit(
     saved_log = next(output.glob('logs_*/collector.log')).read_text()
     assert requests.count('history_unavailable:1') == 1
     if all_rejected:
-        document, _state = read_checkpoint(output / '.work/filter.json', FilterDocument)
+        document = read_document(output / 'filtered.json', FilterDocument)
         assert document.meta.counts.rejected == 2 and document.meta.counts.pending == 0
         assert not (output / 'tasks.json').exists() and not (output / 'basket.json').exists()
     else:
@@ -268,7 +268,7 @@ def test_installed_wheel_runs_basket_stages(
     assert location.returncode == 0, location.stderr
     assert Path(location.stdout.strip()).is_relative_to(installed_dir)
     result = subprocess.run(
-        [str(python), '-m', 'basket_collector', 'basket', '--config', str(config)],
+        [str(python), '-m', 'basket_collector', 'basket', '--config', str(config), '--allow-partial', '1'],
         cwd=tmp_path,
         env=environment,
         text=True,
@@ -300,12 +300,17 @@ def test_make_targets_basket_reuse_overwrite_and_retry(make_fixture: tuple[Path,
     assert before.returncode != 0
     assert not (output / 'collected.json').exists()
 
-    first = _make(config, environment, '-j', 'basket')
+    blocked = _make(config, environment, 'basket')
+    assert blocked.returncode != 0 and 'ALLOW_PARTIAL=1' in blocked.stdout
+    assert not (output / 'basket.json').exists()
+    preserved_requests = log.read_bytes()
+    first = _make(config, environment, '-j', 'basket', 'ALLOW_PARTIAL=1')
+    assert log.read_bytes() == preserved_requests
     assert first.returncode == 0, first.stdout + first.stderr
-    assert 'partial=true omitted_failed=1' in first.stdout
-    assert f'failure reasons: {tasks_path}' in first.stdout
-    assert 'make basket RETRY_FAILED=1' in first.stdout
-    assert 'same CONFIG' in first.stdout
+    assert 'partial=true omissions=1' in first.stdout
+    assert f'generation rejection reasons: {tasks_path}' in first.stdout
+    assert 'does not repeat rejected records' in first.stdout
+    assert tasks_path.is_file()
     assert [line.split(':', 1)[0] for line in first.stdout.splitlines() if ': completed;' in line] == [
         'collect',
         'filter',
@@ -318,8 +323,8 @@ def test_make_targets_basket_reuse_overwrite_and_retry(make_fixture: tuple[Path,
     basket = read_document(output / 'basket.json', BasketDocument)
     assert collected.meta.counts.succeeded == 2
     assert filtered.meta.counts.succeeded == 2 and not filtered.rejected
-    assert tasks.meta.counts.succeeded == 1 and tasks.meta.counts.failed == 1
-    assert basket.meta.partial and basket.meta.omitted_failed_ids == [task_identity(2)]
+    assert tasks.meta.counts.succeeded == 1 and tasks.meta.counts.rejected == 1 and tasks.meta.counts.failed == 0
+    assert basket.meta.partial and [item.id for item in basket.meta.omissions] == [task_identity(2)]
     assert basket.tasks[0].golden_diff == tasks.tasks[0].changes.diff
     assert filtered.meta.input is not None
     assert tasks.meta.input is not None
@@ -331,21 +336,19 @@ def test_make_targets_basket_reuse_overwrite_and_retry(make_fixture: tuple[Path,
 
     reused = _make(config, environment, 'basket')
     assert reused.returncode == 0, reused.stdout + reused.stderr
-    assert 'partial=true omitted_failed=1' in reused.stdout
-    assert f'failure reasons: {tasks_path}' in reused.stdout
-    assert 'make basket RETRY_FAILED=1' in reused.stdout
-    assert 'same CONFIG' in reused.stdout
+    assert 'partial=true omissions=1' in reused.stdout
+    assert f'generation rejection reasons: {tasks_path}' in reused.stdout
+    assert 'does not repeat rejected records' in reused.stdout
     assert reused.stdout.count('mode=reused') == 4
     assert log.read_text(encoding='utf-8').splitlines() == calls
     for stage in ('collect', 'filter', 'export'):
         result = _make(config, environment, stage)
         assert result.returncode == 0 and 'mode=reused' in result.stdout, result.stdout + result.stderr
         if stage == 'export':
-            assert 'partial=true omitted_failed=1' in result.stdout
-            assert f'failure reasons: {tasks_path}' in result.stdout
+            assert 'partial=true omissions=1' in result.stdout
+            assert f'generation rejection reasons: {tasks_path}' in result.stdout
             assert 'repeat your command' not in result.stdout
-            assert 'make basket RETRY_FAILED=1 with the same CONFIG' in result.stdout
-            assert 'basket --retry-failed 1 with the same --config' in result.stdout
+            assert 'does not repeat rejected records' in result.stdout
     generate = _make(config, environment, 'generate')
     assert generate.returncode != 0 and 'mode=reused' in generate.stdout
     assert log.read_text(encoding='utf-8').splitlines() == calls
@@ -354,12 +357,12 @@ def test_make_targets_basket_reuse_overwrite_and_retry(make_fixture: tuple[Path,
     assert retry.returncode != 0, retry.stdout + retry.stderr
     retried = read_document(output / 'tasks.json', TasksDocument)
     assert retried.tasks == tasks.tasks
-    assert [item.record.id for item in retried.failed] == [task_identity(2)]
+    assert [item.id for item in retried.rejected] == [task_identity(2)] and not retried.failed
     assert log.read_text(encoding='utf-8').splitlines() == calls
 
     partial_retry = _make(config, environment, 'basket', 'RETRY_FAILED=1')
     assert partial_retry.returncode == 0, partial_retry.stdout + partial_retry.stderr
-    assert 'partial=true omitted_failed=1' in partial_retry.stdout
+    assert 'partial=true omissions=1' in partial_retry.stdout
     assert read_document(output / 'tasks.json', TasksDocument).tasks == tasks.tasks
     assert log.read_text(encoding='utf-8').splitlines() == calls
 
@@ -371,7 +374,7 @@ def test_make_targets_basket_reuse_overwrite_and_retry(make_fixture: tuple[Path,
 def test_make_pty_repeated_ctrl_c_drains_and_resumes(make_fixture: tuple[Path, Path, dict[str, str], Path]) -> None:
     """Drain repeated Ctrl+C signals and resume from the saved checkpoint."""
     config, log, environment, output = make_fixture
-    initial = _make(config, environment, 'basket')
+    initial = _make(config, environment, 'basket', 'ALLOW_PARTIAL=1')
     assert initial.returncode == 0, initial.stdout + initial.stderr
     environment = {**environment, 'BASKET_COLLECTOR_MAKE_DELAY_SECONDS': '2'}
     child, master = pty.fork()
@@ -450,21 +453,20 @@ def test_make_basket_rejects_empty_selection_and_reuses_completed_stages(
     config.write_text(text, encoding='utf-8')
     first = _make(config, environment, 'basket')
     assert first.returncode == 2, first.stdout + first.stderr
-    assert 'empty_stage_output: filter' in first.stderr
+    assert 'selection is empty' in first.stdout
     assert not (output / 'basket.json').exists()
     collected = read_document(output / 'collected.json', CollectDocument)
-    filtered, state = read_checkpoint(output / '.work/filter.json', FilterDocument)
+    filtered = read_document(output / 'filtered.json', FilterDocument)
     assert collected.meta.status == 'completed'
-    assert filtered.meta.status == 'failed' and filtered.meta.error is not None
-    assert filtered.meta.error.code == 'empty_stage_output' and state['phase'] == 'selection'
+    assert filtered.meta.status == 'completed' and filtered.meta.error is None
     assert len(collected.tasks) == len(filtered.rejected) == 2
     assert not filtered.tasks
     assert not (output / 'tasks.json').exists() and not (output / '.work/generate.json').exists()
-    saved = {name: (output / name).read_bytes() for name in ('collected.json', '.work/filter.json')}
+    saved = {name: (output / name).read_bytes() for name in ('collected.json', 'filtered.json')}
     requests = log.read_bytes()
     repeated = _make(config, environment, 'basket')
     assert repeated.returncode == 2, repeated.stdout + repeated.stderr
-    assert 'empty_stage_output' in repeated.stderr
+    assert 'selection is empty' in repeated.stdout
     assert repeated.stdout.count('mode=reused') == 1
     assert not (output / 'basket.json').exists()
     assert log.read_bytes() == requests
@@ -477,7 +479,7 @@ def test_make_progress_modes_on_redirected_output(
 ) -> None:
     """Make passes the mode safely and leaves a partial result below the requested limit."""
     config, _log, environment, output = make_fixture
-    result = _make(config, environment, 'basket', f'PROGRESS={mode}')
+    result = _make(config, environment, 'basket', 'ALLOW_PARTIAL=1', f'PROGRESS={mode}')
     assert result.returncode == 0, result.stdout + result.stderr
     basket = read_document(output / 'basket.json', BasketDocument)
     assert len(basket.tasks) == 1 and basket.meta.partial
@@ -486,17 +488,17 @@ def test_make_progress_modes_on_redirected_output(
         assert 'basket completed tasks=' not in result.stderr
     else:
         assert 'basket completed tasks=1/2' in result.stderr
-        assert 'candidate_shortfall=0' in result.stderr and 'failed=1' in result.stderr
+        assert 'candidate_shortfall=0' in result.stderr and 'omissions=1' in result.stderr
 
 
 def test_make_tty_progress_retains_incomplete_basket(
     make_fixture: tuple[Path, Path, dict[str, str], Path],
 ) -> None:
-    """Exercise actual tqdm rendering in a PTY over fully offline Git/API fixtures."""
+    """Exercise actual multiline panel rendering in a PTY over fully offline Git/API fixtures."""
     config, _log, environment, output = make_fixture
     master, slave = pty.openpty()
     process = subprocess.Popen(
-        ['make', 'basket', f'CONFIG={config}', 'PROGRESS=auto'],
+        ['make', 'basket', f'CONFIG={config}', 'PROGRESS=auto', 'ALLOW_PARTIAL=1'],
         cwd=PROJECT,
         env=environment,
         stdin=slave,
@@ -528,5 +530,5 @@ def test_make_tty_progress_retains_incomplete_basket(
         os.close(master)
     text = transcript.decode(errors='replace')
     assert '\r' in text and 'basket' in text and '1/2' in text
-    assert 'candidate_shortfall=0' in text and 'failed=1' in text
+    assert 'candidate_shortfall=0' in text and 'omissions=1' in text
     assert len(read_document(output / 'basket.json', BasketDocument).tasks) == 1

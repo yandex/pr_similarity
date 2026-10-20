@@ -9,17 +9,16 @@ from basket_collector.config import CollectorConfig
 from basket_collector.contracts import (
     BasketDocument,
     CollectRecord,
-    FailedRecord,
     FilterRecord,
     RejectionReason,
-    StageError,
     TaskRecord,
 )
 from basket_collector.filters import compact_rejection
-from basket_collector.pipeline import EmptyStageError, Pipeline
+from basket_collector.llm import LLMCallError
+from basket_collector.pipeline import Pipeline
 from basket_collector.remote import Candidate, RemoteError
 from basket_collector.sources import Repository
-from basket_collector.storage import StorageError, read_json
+from basket_collector.storage import read_json
 from basket_collector.vcs import VCS
 from test_neutral_models import example
 
@@ -111,6 +110,7 @@ def config(tmp_path: Path) -> CollectorConfig:
     """Keep all stage identities fixed while isolating outputs for each test."""
     return CollectorConfig.model_validate(
         {
+            'schema_version': 2,
             'dataset': {'name': 'fixture', 'description': 'Fixture', 'maintainers': ['test']},
             'source': {'provider': 'github', 'project': 'owner/repo'},
             'collect': {
@@ -118,7 +118,7 @@ def config(tmp_path: Path) -> CollectorConfig:
                 'merged_from': '2026-01-01T00:00:00Z',
                 'merged_before': '2026-01-02T00:00:00Z',
             },
-            'generation': {'source': 'issue'},
+            'generation': {'source': 'issue', 'max_retries': 0},
             'output_dir': str(tmp_path / 'output'),
             'cache_dir': str(tmp_path / 'cache'),
         }
@@ -139,14 +139,10 @@ def test_empty_population_fails_at_owning_stage(tmp_path: Path, monkeypatch: pyt
             )
         return filtered
 
-    def generate(*args: object, **kwargs: object) -> FailedRecord:
+    def generate(*args: object, **kwargs: object) -> TaskRecord:
         """Allow only the expected generation stage; earlier empties must stop first."""
         assert stage == 'generate'
-        return FailedRecord(
-            record=filtered,
-            attempts=1,
-            error=StageError(code='fixture_failure', message='Repair fixture', retryable=True),
-        )
+        raise LLMCallError('fixture_failure', 'Repair fixture', True, 1)
 
     monkeypatch.setattr('basket_collector.pipeline.process_one', filter_one)
     monkeypatch.setattr('basket_collector.pipeline.generate_record', generate)
@@ -154,15 +150,14 @@ def test_empty_population_fails_at_owning_stage(tmp_path: Path, monkeypatch: pyt
     pipeline = Pipeline(
         settings, producer=records()[0].meta.producer, remote=remote, git_repository=cast(VCS, PreparedCache())
     )
-    with pytest.raises(EmptyStageError) as caught:
-        pipeline.run('basket')
-    assert caught.value.code == 'empty_stage_output'
-    saved = read_json(tmp_path / f'output/.work/{stage}.json')
-    assert saved['meta']['status'] == 'failed' and saved['meta']['error']['code'] == 'empty_stage_output'
+    assert pipeline.run('basket') == 3
+    name = {'collect': 'collected.json', 'filter': 'filtered.json', 'generate': 'tasks.json'}[stage]
+    saved = read_json(tmp_path / 'output' / name)
+    assert saved['meta']['error'] is None and saved['meta']['counts']['pending'] == 0
     assert not (tmp_path / 'output/basket.json').exists()
     if stage == 'collect':
         assert remote.calls == ['repository', 'discovery']
-        assert not (tmp_path / 'output/.work/filter.json').exists()
+        assert read_json(tmp_path / 'output/filtered.json')['meta']['counts']['input'] == 0
     elif stage == 'filter':
         assert len(saved['rejected']) == 1
         assert not (tmp_path / 'output/.work/generate.json').exists()
@@ -176,14 +171,12 @@ def test_all_failed_generation_can_retry_without_recollecting(tmp_path: Path, mo
     basket, _collected, filtered = records()
     remote = Remote()
     monkeypatch.setattr('basket_collector.pipeline.process_one', lambda *args, **kwargs: filtered)
-    monkeypatch.setattr(
-        'basket_collector.pipeline.generate_record',
-        lambda *args, **kwargs: FailedRecord(
-            record=filtered,
-            attempts=1,
-            error=StageError(code='fixture_failure', message='Repair fixture', retryable=True),
-        ),
-    )
+
+    def fail(*args: object, **kwargs: object) -> TaskRecord:
+        """Expose one nonfatal operation failure to the owning record retry policy."""
+        raise LLMCallError('fixture_failure', 'Repair fixture', True, 1)
+
+    monkeypatch.setattr('basket_collector.pipeline.generate_record', fail)
 
     def pipeline() -> Pipeline:
         """Create a fresh coordinator without changing producer or meaningful inputs."""
@@ -191,11 +184,9 @@ def test_all_failed_generation_can_retry_without_recollecting(tmp_path: Path, mo
             settings, producer=basket.meta.producer, remote=remote, git_repository=cast(VCS, PreparedCache())
         )
 
-    with pytest.raises(EmptyStageError):
-        pipeline().run('basket')
+    assert pipeline().run('basket') == 3
     calls = list(remote.calls)
-    with pytest.raises(StorageError, match='empty_stage_output'):
-        pipeline().run('basket')
+    assert pipeline().run('basket') == 3
     assert remote.calls == calls
     task = TaskRecord.model_validate(
         {

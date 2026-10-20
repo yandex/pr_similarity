@@ -9,16 +9,16 @@ from basket_collector.config import (
     load_template_snapshot,
 )
 from basket_collector.contracts import (
-    FailedRecord,
     FilterRecord,
     Generation,
-    StageError,
+    RejectedRecord,
+    RejectionReason,
     TaskContent,
     TaskRecord,
 )
+from basket_collector.filters import compact_rejection
 from basket_collector.llm import (
     GenerationInterrupted,
-    LLMCallError,
     LLMClient,
     LLMConfigurationError,
 )
@@ -48,10 +48,10 @@ class _NoCallEnvironment(SandboxedEnvironment):
         return False
 
 
-def _failure(record: FilterRecord, code: str, message: str, retryable: bool, attempts: int) -> FailedRecord:
-    """Record a generation failure while retaining the filtered PR."""
-    return FailedRecord(
-        record=record, error=StageError(code=code, message=message, retryable=retryable), attempts=attempts
+def _rejection(record: FilterRecord, code: str, message: str) -> RejectedRecord:
+    """Record a deterministic input exclusion without spending transport retries."""
+    return compact_rejection(
+        record, RejectionReason(code=code, message=message, observed=None, expected='valid generation input')
     )
 
 
@@ -151,9 +151,8 @@ def generate_record(
     *,
     llm_client: LLMClient | None = None,
     stop_event: threading.Event | None = None,
-    previous_attempts: int = 0,
     template_snapshot: TemplateSnapshot | None = None,
-) -> TaskRecord | FailedRecord:
+) -> TaskRecord | RejectedRecord:
     """Process one PR; interruption propagates so the coordinator leaves it pending."""
     if stop_event is not None and stop_event.is_set():
         raise GenerationInterrupted()
@@ -163,35 +162,28 @@ def generate_record(
             task = _direct_issue_task(record)
         except ValueError as exc:
             code = str(exc)
-            return _failure(
+            return _rejection(
                 record,
                 code,
                 'linked issue is missing' if code == 'missing_issue' else 'linked issue has an empty title',
-                False,
-                previous_attempts,
             )
         generation = Generation(
             issue_ids=issue_ids, attempts=0, response_id=None, response_model=None, usage=None, request_sha256=None
         )
     else:
         if config.context in ('issue', 'diff+issue') and not record.issues:
-            return _failure(record, 'missing_issue', 'linked issue is missing', False, previous_attempts)
+            return _rejection(record, 'missing_issue', 'linked issue is missing')
         system, user = _prompts(record, config, template_snapshot)
         if len(system) + len(user) > config.max_input_chars:
-            return _failure(
-                record, 'input_too_large', 'rendered prompts exceed max_input_chars', False, previous_attempts
-            )
-        try:
-            if llm_client is None:
-                with LLMClient(config, stop_event=stop_event) as local_client:
-                    result = local_client.generate(system, user)
-            else:
-                result = llm_client.generate(system, user)
-        except LLMCallError as exc:
-            return _failure(record, exc.code, str(exc), exc.retryable, previous_attempts + exc.attempts)
+            return _rejection(record, 'input_too_large', 'rendered prompts exceed max_input_chars')
+        if llm_client is None:
+            with LLMClient(config, stop_event=stop_event) as local_client:
+                result = local_client.generate(system, user)
+        else:
+            result = llm_client.generate(system, user)
         generation = Generation(
             issue_ids=issue_ids,
-            attempts=previous_attempts + result.attempts,
+            attempts=result.attempts,
             response_id=result.response_id,
             response_model=result.response_model,
             usage=result.usage,

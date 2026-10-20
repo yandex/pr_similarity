@@ -43,6 +43,7 @@ class LocalGitHub:
         local_git(monkeypatch, self.source)
         self.config = CollectorConfig.model_validate(
             {
+                'schema_version': 2,
                 'source': {
                     'provider': 'github',
                     'project': 'owner/repo',
@@ -54,7 +55,7 @@ class LocalGitHub:
                 'output_dir': str(path / 'output'),
                 'cache_dir': str(path / 'cache'),
                 'collect': {'selection': 'change_ids', 'change_ids': [1, 2]},
-                'filter': {'workers': 1, 'selection': {'shuffle': False}},
+                'filter': {'workers': 1, 'max_retries': 0, 'selection': {'shuffle': False}},
                 'generation': {'source': 'issue'},
             }
         )
@@ -138,7 +139,7 @@ class LocalGitHub:
             },
         )
 
-    def run(self, stage: str) -> int:
+    def run(self, stage: str, *, retry_failed: bool = False) -> int:
         """Create fresh real clients and run a stage against the same durable output."""
         with GitHubClient(native_config(self.config.source), transport=httpx.MockTransport(self.handler)) as github:
             repository = GitRepository(Path(self.config.cache_dir), str(self.source), 10)
@@ -147,7 +148,7 @@ class LocalGitHub:
                 producer=self.producer,
                 remote=GitHubRemoteVCS(self.config.source, client=github),
                 git_repository=repository,
-            ).run(stage)
+            ).run(stage, retry_failed=retry_failed)
 
     def checkpoint(self) -> FilterDocument:
         """Read the durable filter document for recovery assertions."""
@@ -178,7 +179,7 @@ def test_anonymous_collect_resumes_filter_after_adding_token(
     assert fixture.issue_numbers == []
     assert error.value.code == 'github_auth_error'
     monkeypatch.setenv('GITHUB_TOKEN', 'fixture-key')
-    assert fixture.run('filter') == 0
+    assert fixture.run('filter', retry_failed=True) == 0
     filtered = read_document(Path(fixture.config.output_dir) / 'filtered.json', FilterDocument)
     assert [item.change_request.number for item in filtered.tasks] == [1, 2]
     assert fixture.issue_numbers == [1, 2]
@@ -195,20 +196,25 @@ def test_filter_recovery_preserves_completed_prs(tmp_path: Path, monkeypatch: py
     fixture = LocalGitHub(tmp_path, monkeypatch)
     fixture.failure = failure
     assert fixture.run('collect') == 0
-    with pytest.raises(GitHubError):
-        fixture.run('filter')
-    checkpoint = fixture.checkpoint()
+    if failure == 401:
+        with pytest.raises(GitHubError):
+            fixture.run('filter')
+        checkpoint = fixture.checkpoint()
+        assert checkpoint.meta.counts.pending == 1
+        assert checkpoint.meta.error is not None and checkpoint.meta.error.code == 'github_auth_error'
+    else:
+        assert fixture.run('filter') == 3
+        checkpoint = read_document(Path(fixture.config.output_dir) / 'filtered.json', FilterDocument)
+        assert checkpoint.meta.counts.failed == 1 and checkpoint.failed[0].error.code == 'github_unavailable'
+        assert checkpoint.meta.error is None and checkpoint.meta.counts.pending == 0
     assert checkpoint.meta.counts.succeeded == 1
-    assert checkpoint.meta.counts.pending == 1
-    assert checkpoint.meta.error is not None and checkpoint.meta.error.retryable is True
-    assert checkpoint.meta.error.code == ('github_auth_error' if failure == 401 else 'github_unavailable')
     assert fixture.issue_numbers == [1, 2]
     assert all(delay < 2 for delay in sleeps)
     done = checkpoint.tasks[0]
     if failure == 401:
         monkeypatch.delenv('GITHUB_TOKEN')
         with pytest.raises(GitHubError):
-            fixture.run('filter')
+            fixture.run('filter', retry_failed=True)
         missing = fixture.checkpoint()
         assert missing.meta.error is not None and missing.meta.error.code == 'github_auth_error'
         assert missing.meta.error.retryable is True
@@ -217,7 +223,7 @@ def test_filter_recovery_preserves_completed_prs(tmp_path: Path, monkeypatch: py
         assert fixture.issue_numbers == [1, 2]
         monkeypatch.setenv('GITHUB_TOKEN', 'fixture-key')
     fixture.failure = None
-    assert fixture.run('filter') == 0
+    assert fixture.run('filter', retry_failed=True) == 0
     filtered = read_document(Path(fixture.config.output_dir) / 'filtered.json', FilterDocument)
     assert fixture.issue_numbers == [1, 2, 2]
     assert filtered.tasks[0] == done

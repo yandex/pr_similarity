@@ -76,6 +76,7 @@ def _document(*, status: StageStatus = 'completed', title: str = 'Example') -> C
     )
     return CollectDocument(
         meta=CollectMeta(
+            schema_version=2,
             status=status,
             input=None,
             settings=settings,
@@ -134,7 +135,7 @@ def test_checkpoint_reuses_progress_and_keeps_previous_result_on_overwrite(tmp_p
         input_receipt=None,
     )
     assert loaded == interrupted
-    assert loaded_state == state
+    assert loaded_state == {**state, 'attempts': {}, 'retry_ids': []}
     assert read_document(store.path, CollectDocument) == old
     assert store.load(
         CollectDocument,
@@ -163,14 +164,14 @@ def test_mismatch_requires_overwrite(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     'field, value',
     [
-        ('schema_version', 2),
+        ('schema_version', 1),
         ('schema_version', True),
         ('schema_version', 1.0),
         ('schema_family', 'unsupported.family'),
     ],
     ids=['unsupported-version', 'boolean-version', 'float-version', 'unknown-family'],
 )
-def test_unsupported_schema_identity_requires_overwrite(
+def test_unsupported_schema_identity_cannot_be_overwritten(
     tmp_path: Path, location: str, field: str, value: float | str
 ) -> None:
     """Reject unknown schemas in saved results, checkpoints, and completed work."""
@@ -180,11 +181,17 @@ def test_unsupported_schema_identity_requires_overwrite(
     if location == 'checkpoint':
         payload['checkpoint'] = {'phase': 'records'}
     atomic_write(store.path if location == 'result' else store.work_path, payload)
-    with pytest.raises(StorageError, match=field):
+    with pytest.raises(StorageError):
         store.load(CollectDocument, settings=_document().meta.settings, producer=_producer(), input_receipt=None)
-    assert store.load(
-        CollectDocument, settings=_document().meta.settings, producer=_producer(), input_receipt=None, overwrite=True
-    ) == (None, None)
+    if field == 'schema_version' or location == 'result':
+        with pytest.raises(StorageError):
+            store.load(
+                CollectDocument,
+                settings=_document().meta.settings,
+                producer=_producer(),
+                input_receipt=None,
+                overwrite=True,
+            )
 
 
 @pytest.mark.parametrize('code', ['source_changed', 'llm_configuration', 'github_auth_error'])
@@ -238,7 +245,7 @@ def test_completed_work_is_recovered_after_crash_before_promotion(
 
     def fail_promotion(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
         """Simulate a crash when completed work is moved into place."""
-        if Path(source) == store.work_path and Path(target) == store.path:
+        if Path(target) == store.publication.current:
             raise OSError('simulated crash before promotion')
         original_replace(source, target)
 

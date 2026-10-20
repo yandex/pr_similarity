@@ -2,11 +2,13 @@
 
 import io
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from basket_collector.config import CollectorConfig
 from basket_collector.contracts import (
     BasketDocument,
     CollectDocument,
@@ -16,7 +18,7 @@ from basket_collector.contracts import (
     RejectionReason,
 )
 from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.pipeline import EmptyStageError, Pipeline, PipelineInterrupted, Shutdown
+from basket_collector.pipeline import Pipeline, PipelineInterrupted, Shutdown
 from basket_collector.progress import Progress
 from basket_collector.remote import ChangeRejected, RemoteError, RemoteInterrupted
 from basket_collector.sources import change_id
@@ -71,18 +73,24 @@ class RejectingGitHub(FakeGitHub):
             raise self.failure
         return super().get_pull_request(repository, number)
 
-    def list_closed_prs(self, repository: str, *, start_page: int = 1):
+    def list_closed_prs(self, repository: str, *, start_page: int = 1) -> Iterator[tuple[int, list[dict[str, Any]]]]:
         """Expose the same ordered population through date-range discovery."""
         yield 1, [{'number': n, 'merged_at': TIME, 'base': {'ref': 'develop'}} for n in (1, 2, 3)]
 
 
-def setup(tmp_path: Path):
+def setup(tmp_path: Path) -> CollectorConfig:
     """Select a deterministic three-candidate population."""
     config = _config(tmp_path)
     return config.model_copy(update={'collect': config.collect.model_copy(update={'change_ids': [1, 2, 3]})})
 
 
-def pipeline(config, client: RejectingGitHub, *, shutdown: Shutdown | None = None, progress: Progress | None = None):
+def pipeline(
+    config: CollectorConfig,
+    client: RejectingGitHub,
+    *,
+    shutdown: Shutdown | None = None,
+    progress: Progress | None = None,
+) -> Pipeline:
     """Use real checkpoint coordination with frozen producer and offline source/Git."""
     return Pipeline(
         config,
@@ -182,14 +190,18 @@ def test_gitlab_pipeline_skips_only_successful_empty_commit_response(tmp_path: P
             assert [record.change_request.number for record in document.rejected] == [42]
             assert document.meta.counts.rejected == 1 and document.meta.counts.pending == 0
             assert document.rejected[0].id == change_id('gitlab', remote.config.server_url, '123', 'merge_request', 42)
-        else:
+        elif commit_status == 401:
             with pytest.raises(RemoteError) as caught:
                 run.run('collect')
-            assert not isinstance(caught.value, ChangeRejected)
+            assert caught.value.code == 'source_auth_error'
             document, _ = read_checkpoint(output / '.work/collect.json', CollectDocument)
-            assert document.meta.status == 'failed'
-            assert document.rejected == [] and document.meta.counts.pending == 1
-            assert not (output / 'collected.json').exists()
+            assert document.meta.status == 'failed' and document.meta.counts.pending == 1
+        else:
+            assert run.run('collect') == 3
+            document = read_document(output / 'collected.json', CollectDocument)
+            assert document.meta.status == 'completed'
+            assert document.rejected == [] and document.meta.counts.failed == 1
+            assert document.failed[0].identity.number == 42
         assert sum(path.endswith('/42/commits') for path in requests) == 1
     finally:
         remote.client.close()
@@ -207,7 +219,7 @@ def test_interruption_after_rejection_resumes_only_pending_candidates(tmp_path: 
     assert saved.meta.counts.succeeded == saved.meta.counts.rejected == saved.meta.counts.pending == 1
     assert saved.rejected == [rejection()] and state['numbers'] == [1, 2, 3]
     resumed = RejectingGitHub()
-    assert pipeline(config, resumed).run('collect') == 0
+    assert pipeline(config, resumed).run('collect', retry_failed=True) == 0
     assert resumed.requested == [3]
     completed = read_document(output / 'collected.json', CollectDocument)
     assert completed.rejected == saved.rejected
@@ -229,8 +241,19 @@ def test_interruption_after_rejection_resumes_only_pending_candidates(tmp_path: 
     ],
 )
 def test_global_source_errors_are_not_candidate_skips(tmp_path: Path, code: str, retryable: bool) -> None:
-    """Only the typed candidate outcome can skip; matching generic error codes cannot."""
+    """Distinguish fatal shared access and identity errors from exhausted record failures."""
     config = setup(tmp_path)
+    if code not in {'source_auth_error', 'source_changed'}:
+        assert (
+            pipeline(
+                config, RejectingGitHub(failure=RemoteError('fixture failure', code=code, retryable=retryable))
+            ).run('collect')
+            == 3
+        )
+        document = read_document(Path(config.output_dir) / 'collected.json', CollectDocument)
+        assert document.meta.status == 'completed' and document.meta.counts.failed == 1
+        assert document.failed[0].error.code == code and document.rejected == [rejection()]
+        return
     with pytest.raises(RemoteError, match='fixture fatal'):
         pipeline(config, RejectingGitHub(failure=RemoteError('fixture fatal', code=code, retryable=retryable))).run(
             'collect'
@@ -242,7 +265,7 @@ def test_global_source_errors_are_not_candidate_skips(tmp_path: Path, code: str,
     assert saved.meta.counts.pending == 1 and saved.rejected == [rejection()]
     resumed = RejectingGitHub()
     if retryable:
-        assert pipeline(config, resumed).run('collect') == 0
+        assert pipeline(config, resumed).run('collect', retry_failed=True) == 0
         assert resumed.requested == [3]
     else:
         with pytest.raises(StorageError):
@@ -254,13 +277,12 @@ def test_all_candidates_rejected_keeps_empty_stage_failure_and_reasons(tmp_path:
     """An empty usable population stays an error without losing the rejected MR."""
     config = setup(tmp_path)
     config = config.model_copy(update={'collect': config.collect.model_copy(update={'change_ids': [2]})})
-    with pytest.raises(EmptyStageError):
-        pipeline(config, RejectingGitHub()).run('collect')
-    saved, _ = read_checkpoint(Path(config.output_dir) / '.work/collect.json', CollectDocument)
+    assert pipeline(config, RejectingGitHub()).run('collect') == 3
+    saved = read_document(Path(config.output_dir) / 'collected.json', CollectDocument)
     assert saved.rejected == [rejection()]
     assert saved.meta.counts.succeeded == saved.meta.counts.pending == 0
     assert saved.meta.counts.rejected == 1
-    assert not (Path(config.output_dir) / 'collected.json').exists()
+    assert saved.meta.status == 'completed'
 
 
 @pytest.mark.parametrize(
@@ -294,10 +316,11 @@ def test_rejected_checkpoint_corruption_blocks_resume_before_api(tmp_path: Path,
     assert not (Path(config.output_dir) / 'collected.json').exists()
 
 
-def test_collect_without_rejections_keeps_previous_wire_shape_and_hash() -> None:
-    """Legacy collect snapshots still parse and retain their semantic digest."""
+def test_collect_without_rejections_has_explicit_empty_v2_outcomes() -> None:
+    """Persist explicit outcome partitions even when collection has no rejected records."""
     original = _collect()
     restored = CollectDocument.model_validate(original)
     assert restored.rejected == []
-    assert restored.model_dump(mode='json') == original
-    assert stage_sha256(restored) == stage_sha256(original)
+    dumped = restored.model_dump(mode='json')
+    assert dumped['failed'] == [] and dumped['rejected'] == []
+    assert stage_sha256(restored) == stage_sha256(CollectDocument.model_validate(dumped))

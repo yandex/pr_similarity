@@ -7,10 +7,10 @@ from helpers import archive_fixture, inference
 from viewer.archive import validate_archive
 from viewer.config import Config, Limits
 from viewer.database import Database
-from viewer.errors import ViewerError, StorageError
+from viewer.errors import StorageError, ViewerError
 from viewer.service import ViewerService
 from viewer.storage import MemoryStore
-from viewer.util import json_bytes, parse_json
+from viewer.util import digest, json_bytes
 
 
 def service(tmp_path,store=None):
@@ -187,6 +187,7 @@ def test_run_basket_source_and_wall_time_are_stable_across_reprice_overwrite(tmp
         basket['meta']['description']='A public basket description'
         generation=next(item for item in basket['meta']['lineage'] if item['stage']=='generate')
         generation['settings']={'source':'llm','context':'diff+issue'}
+        generation['settings_hash'] = digest(json_bytes(generation['settings']))
         files['basket.json']=json_bytes(basket)
         report['basket']['sha256']=__import__('hashlib').sha256(files['basket.json']).hexdigest()
     path=tmp_path/'timing.tar.gz';report,_=archive_fixture(path,run_id=rid,configure=change)

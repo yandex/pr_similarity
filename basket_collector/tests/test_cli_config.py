@@ -12,21 +12,21 @@ from basket_collector.pipeline import Pipeline, main
     [
         ('dataset: [\n', 'dataset'),
         (
-            'dataset: {name: sample, description: fixture, maintainers: [alice]}\n'
+            'schema_version: 2\ndataset: {name: sample, description: fixture, maintainers: [alice]}\n'
             'source: {provider: github, project: owner/repo}\ncollect: {selection: change_ids, change_ids: [1]}\n'
             'generation: {source: issue}\n'
             'filter:\n  files:\n    allowed_path_patterns: [\'[\']\n',
             'filter.files.allowed_path_patterns',
         ),
         (
-            'dataset: {name: sample, description: fixture, maintainers: [alice]}\n'
+            'schema_version: 2\ndataset: {name: sample, description: fixture, maintainers: [alice]}\n'
             'source: {provider: github, project: owner/repo}\ncollect: {selection: change_ids, change_ids: [1]}\n'
             'generation: {source: issue}\n'
             'filter:\n  files:\n    forbidden_path_patterns: [\'[\']\n',
             'filter.files.forbidden_path_patterns',
         ),
         (
-            'dataset: {name: sample, description: fixture, maintainers: [alice]}\n'
+            'schema_version: 2\ndataset: {name: sample, description: fixture, maintainers: [alice]}\n'
             'source: {provider: github, project: owner/repo}\ncollect: {selection: change_ids, change_ids: [1]}\n'
             'generation: {source: issue}\n'
             'filter:\n  files:\n    required_path_patterns: [\'[\']\n',
@@ -60,13 +60,21 @@ def test_runtime_disk_error_exits_four(
     """Classify storage I/O failures during a valid run as infrastructure errors."""
     config_path = tmp_path / 'config.yaml'
     config_path.write_text(
-        'dataset: {name: sample, description: fixture, maintainers: [alice]}\n'
+        'schema_version: 2\ndataset: {name: sample, description: fixture, maintainers: [alice]}\n'
         'source: {provider: github, project: owner/repo}\ncollect: {selection: change_ids, change_ids: [1]}\n'
         'generation: {source: issue}\n',
         encoding='utf-8',
     )
 
-    def fail_run(self: Pipeline, command: str, *, overwrite: bool = False, retry_failed: bool = False) -> int:
+    def fail_run(
+        self: Pipeline,
+        command: str,
+        *,
+        overwrite: bool = False,
+        retry_failed: bool = False,
+        allow_partial: bool = False,
+        reselect: bool = False,
+    ) -> int:
         """Emulate a disk write failure after configuration has loaded."""
         raise OSError(errno.ENOSPC, 'disk full')
 
@@ -84,7 +92,7 @@ def test_missing_setup_file_exits_two(tmp_path: Path, capsys: pytest.CaptureFixt
     if missing == 'template':
         (tmp_path / 'prompts').mkdir()
         config_path.write_text(
-            'dataset: {name: sample, description: fixture, maintainers: [alice]}\n'
+            'schema_version: 2\ndataset: {name: sample, description: fixture, maintainers: [alice]}\n'
             'source: {provider: github, project: owner/repo}\ncollect: {selection: change_ids, change_ids: [1]}\n'
             'generation: {source: llm, context: diff, llm: {model: fixture}}\n',
             encoding='utf-8',

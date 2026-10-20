@@ -109,6 +109,7 @@ def test_complete_offline_basket_uses_exact_git_and_saved_issue(
     local_git(monkeypatch, source)
     config = CollectorConfig.model_validate(
         {
+            'schema_version': 2,
             'source': {'provider': 'github', 'project': 'owner/repo'},
             'dataset': {'name': 'fixture', 'description': 'offline', 'maintainers': ['alice']},
             'output_dir': str(tmp_path / 'output'),
@@ -144,7 +145,7 @@ def test_complete_offline_basket_uses_exact_git_and_saved_issue(
         assert [item.path for item in basket.tasks[0].changes.files] == [(Path(workspace) / 'main.py').as_posix()]
         assert basket.tasks[0].agent_task == 'Task: Add program\n\nSubtasks:\n- Write main.py'
         assert basket.tasks[0].workspace == workspace
-        assert basket.meta.schema_version == 1
+        assert basket.meta.schema_version == 2
         assert not basket.meta.partial
         first_bytes = (output / 'basket.json').read_bytes()
         first_calls = list(calls)

@@ -89,7 +89,7 @@ def test_auto_without_tty_uses_plain_and_redacts() -> None:
     assert all('fixture-secret' not in line for line in snapshots)
 
 
-def test_failed_tqdm_writer_preserves_mandatory_message(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_panel_writer_preserves_mandatory_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """A display failure must still print the first warning to a healthy stream."""
 
     class Terminal(io.StringIO):
@@ -100,13 +100,13 @@ def test_failed_tqdm_writer_preserves_mandatory_message(monkeypatch: pytest.Monk
             return True
 
     def broken_writer(*args: object, **kwargs: object) -> None:
-        """Fail tqdm itself while the underlying stream remains writable."""
+        """Fail panel redraw while the underlying stream remains writable."""
         raise BrokenPipeError('fixture renderer failure')
 
     stream = Terminal()
     progress = Progress('auto', stream=stream)
     progress.start('collect', 'records')
-    monkeypatch.setattr('basket_collector.progress.tqdm.write', broken_writer)
+    monkeypatch.setattr(progress, '_draw_frame', broken_writer)
     progress.write_message('MANDATORY_WARNING', stream=stream)
     progress.close()
     assert progress.disabled and 'MANDATORY_WARNING' in stream.getvalue()

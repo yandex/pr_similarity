@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-similarity-os-benchmark"
-version = "0.1.1"
+version = "0.2.0"
 description = "Benchmark OpenCode against frozen GitHub pull request tasks."
 readme = "README.md"
 license = "Apache-2.0"

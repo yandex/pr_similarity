@@ -17,10 +17,10 @@ from viewer.util import digest
 pytest_plugins = ['test_ui']
 
 
-def _producer_archive(tmp_path: Path) -> Path:
+def _producer_archive(tmp_path: Path, basket_version: int = 1) -> Path:
     """Generate a bounded provider-free archive through the benchmark's real artifact workflow."""
     supplied = os.environ.get('PRSIM_PRODUCER_ARCHIVE')
-    if supplied:
+    if supplied and basket_version == 1:
         archive = Path(supplied)
         assert archive.is_file()
         return archive
@@ -40,7 +40,7 @@ def _producer_archive(tmp_path: Path) -> Path:
             str(interpreter),
             '-m',
             'pytest',
-            'tests/test_artifact_workflow.py::test_public_runner_native_artifact_workflow',
+            f'tests/test_artifact_workflow.py::test_public_runner_native_artifact_workflow[{basket_version}]',
             '-q',
         ],
         cwd=benchmark,
@@ -56,11 +56,12 @@ def _producer_archive(tmp_path: Path) -> Path:
     return archive
 
 
+@pytest.mark.parametrize('basket_version', [1, 2])
 def test_actual_producer_archive_publishes_and_serves_all_role_pairs(
-    tmp_path: Path,
+    tmp_path: Path, basket_version: int,
 ) -> None:
     """Exercise producer archive validation, ViewerService publication, API config and absent/empty diffs."""
-    archive = _producer_archive(tmp_path)
+    archive = _producer_archive(tmp_path, basket_version)
     token = tmp_path / 'admin-token'
     token.write_text('A' * 32)
     token.chmod(0o400)
@@ -79,6 +80,10 @@ def test_actual_producer_archive_publishes_and_serves_all_role_pairs(
         receipt = service.publish(imported, 'alice', 'producer-roundtrip')
         rid = receipt['run_id']
         row = client.get('/api/v1/runs/' + rid).json()
+        assert imported.basket['meta']['schema_version'] == basket_version
+        assert set(row['basket']) == {'name', 'description', 'task_source'}
+        service.refresh()
+        assert client.get('/api/v1/runs/' + rid).json()['basket'] == row['basket']
         assert row['tag_groups']['model'] == ['provider/model [medium]']
         assert row['tag_groups']['effort'] == ['medium']
         assert row['tag_groups']['setup'] == [
@@ -117,7 +122,7 @@ def test_actual_producer_archive_is_navigable_in_browser(
 ) -> None:
     """Open real producer evidence in the browser without replacing synthetic catalogue rows."""
     page, origin, app, errors = browser_page
-    archive = _producer_archive(tmp_path)
+    archive = _producer_archive(tmp_path, 2)
     imported = validate_archive(archive, tmp_path / 'validated', app.state.service.config.limits)
     receipt = app.state.service.publish(imported, 'alice', 'producer-browser')
     page.goto(origin)

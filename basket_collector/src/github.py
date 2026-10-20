@@ -15,16 +15,17 @@ from basket_collector.contracts import Issue
 from basket_collector.http_runtime import HTTPRuntime
 from basket_collector.remote import RemoteError, RemoteInterrupted
 from basket_collector.sources import Repository, issue_id
+from basket_collector.transport_scope import HTTP_OPERATION_ERRORS, record_owned
 
 
 class GitHubError(RemoteError):
     """A GitHub request or response cannot be used as a complete snapshot."""
 
-    def __init__(self, message: str, *, code: str = 'github_error', retryable: bool = False) -> None:
+    def __init__(
+        self, message: str, *, code: str = 'github_error', retryable: bool = False, retry_after: float | None = None
+    ) -> None:
         """Record a stable failure code and whether retrying could succeed."""
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
+        super().__init__(message, code=code, retryable=retryable, retry_after=retry_after)
 
 
 class GitHubInterrupted(GitHubError, RemoteInterrupted):
@@ -304,7 +305,8 @@ class GitHubClient:
             GitHubInterrupted: If shutdown starts before another attempt.
 
         """
-        for attempt in range(self.config.max_retries + 1):
+        max_retries = 0 if record_owned() else self.config.max_retries
+        for attempt in range(max_retries + 1):
             self._check_running()
             self._wait_for_turn()
             try:
@@ -320,7 +322,7 @@ class GitHubClient:
                 )
             except TimeoutError as exc:
                 self._check_running()
-                if attempt == self.config.max_retries:
+                if attempt == max_retries:
                     raise GitHubError(
                         'GitHub request exceeded overall deadline after bounded retries',
                         code='github_timeout',
@@ -328,9 +330,9 @@ class GitHubClient:
                     ) from exc
                 self._retry_wait(min(2**attempt, self.config.max_retry_delay_seconds))
                 continue
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            except HTTP_OPERATION_ERRORS as exc:
                 self._check_running()
-                if attempt == self.config.max_retries:
+                if attempt == max_retries:
                     raise GitHubError(
                         'GitHub request failed after bounded retries', code='github_network_error', retryable=True
                     ) from exc
@@ -344,45 +346,47 @@ class GitHubClient:
                     # GitHub asks for at least a minute on secondary GraphQL limits without headers.
                     delay = 60 * (2**attempt) if graphql_limited else 2**attempt
                 self._set_cooldown(delay)
-                if attempt == self.config.max_retries or delay > self.config.max_retry_delay_seconds:
+                if attempt == max_retries or delay > self.config.max_retry_delay_seconds:
                     raise GitHubError(
                         f'GitHub rate limit after bounded retries (HTTP {response.status_code})',
                         code='github_rate_limited',
                         retryable=True,
+                        retry_after=delay,
                     )
                 self._retry_wait(delay)
                 continue
             if 500 <= response.status_code < 600:
                 self._check_running()
                 delay = _retry_after(response.headers)
-                if attempt == self.config.max_retries or (
-                    delay is not None and delay > self.config.max_retry_delay_seconds
-                ):
+                if delay is not None:
+                    self._set_cooldown(delay)
+                if attempt == max_retries or (delay is not None and delay > self.config.max_retry_delay_seconds):
                     raise GitHubError(
                         f'GitHub HTTP {response.status_code} after bounded retries',
                         code='github_unavailable',
                         retryable=True,
+                        retry_after=delay,
                     )
                 self._retry_wait(delay if delay is not None else min(2**attempt, self.config.max_retry_delay_seconds))
                 continue
             if response.status_code >= 400:
-                code = (
-                    'github_auth_error'
-                    if response.status_code in (401, 403)
-                    else 'github_not_found' if response.status_code == 404 else 'github_http_error'
-                )
-                remedy = (
-                    f'check {self.config.token_env}, its expiry and project/API read permissions'
-                    if response.status_code in (401, 403)
-                    else (
-                        'check the project locator and token permissions; a resource may be missing or hidden'
-                        if response.status_code == 404
-                        else 'check API capabilities and request configuration'
-                    )
-                )
-                raise GitHubError(f'GitHub HTTP {response.status_code}; {remedy}.', code=code)
+                raise self._http_error(response)
             return self._response_json(response, graphql_data)
         raise AssertionError('unreachable retry state')
+
+    def _http_error(self, response: httpx.Response) -> GitHubError:
+        """Keep local access failures separate from confirmed shared credential rejection."""
+        code = {401: 'github_auth_error', 403: 'github_access_denied', 404: 'github_not_found'}.get(
+            response.status_code, 'github_http_error'
+        )
+        remedy = (
+            f'check {self.config.token_env}, its expiry and project/API read permissions'
+            if response.status_code in (401, 403)
+            else 'check the project locator, API capabilities and resource permissions'
+        )
+        return GitHubError(
+            f'GitHub HTTP {response.status_code}; {remedy}.', code=code, retry_after=_retry_after(response.headers)
+        )
 
     @staticmethod
     def _repo_path(repository: str) -> str:

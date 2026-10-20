@@ -24,7 +24,7 @@
     },
     "BasketMeta": {
       "additionalProperties": false,
-      "description": "Describe the exported basket and any omitted failed tasks.",
+      "description": "Frozen v2 basket with complete stage coverage and explicit omissions.",
       "properties": {
         "schema_family": {
           "const": "pr_similarity_os.basket",
@@ -33,10 +33,8 @@
           "type": "string"
         },
         "schema_version": {
-          "const": 1,
-          "default": 1,
-          "title": "Schema Version",
-          "type": "integer"
+          "type": "integer",
+          "const": 2
         },
         "stage": {
           "const": "export",
@@ -139,12 +137,17 @@
           "title": "Partial",
           "type": "boolean"
         },
-        "omitted_failed_ids": {
+        "omissions": {
+          "type": "array",
           "items": {
-            "type": "string"
-          },
-          "title": "Omitted Failed Ids",
-          "type": "array"
+            "$ref": "#/$defs/Omission"
+          }
+        },
+        "coverage": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "selection": {
+          "$ref": "#/$defs/SelectionReceipt"
         }
       },
       "required": [
@@ -164,7 +167,10 @@
         "description",
         "maintainers",
         "partial",
-        "omitted_failed_ids"
+        "schema_version",
+        "omissions",
+        "coverage",
+        "selection"
       ],
       "title": "BasketMeta",
       "type": "object"
@@ -532,6 +538,21 @@
             }
           ],
           "title": "Request Sha256"
+        },
+        "input_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "reused_from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -540,7 +561,8 @@
         "response_id",
         "response_model",
         "usage",
-        "request_sha256"
+        "request_sha256",
+        "input_sha256"
       ],
       "title": "Generation",
       "type": "object"
@@ -1087,10 +1109,147 @@
       ],
       "title": "SourceRevisions",
       "type": "object"
+    },
+    "Omission": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^change:[0-9a-f]{64}$"
+        },
+        "stage": {
+          "enum": [
+            "collect",
+            "filter",
+            "generate"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "failed",
+            "rejected"
+          ]
+        },
+        "code": {
+          "type": "string"
+        },
+        "result_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "stage",
+        "kind",
+        "code",
+        "result_sha256"
+      ]
+    },
+    "Discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "matched": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "capped": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "matched",
+        "selected",
+        "capped"
+      ]
+    },
+    "Coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "discovery": {
+          "$ref": "#/$defs/Discovery"
+        },
+        "collect": {
+          "$ref": "#/$defs/Counts"
+        },
+        "filter": {
+          "$ref": "#/$defs/Counts"
+        },
+        "selected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "generate": {
+          "$ref": "#/$defs/Counts"
+        }
+      },
+      "required": [
+        "discovery",
+        "collect",
+        "filter",
+        "selected",
+        "generate"
+      ]
+    },
+    "SelectionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 2
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "input_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "selected_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^change:[0-9a-f]{64}$"
+          },
+          "uniqueItems": true
+        },
+        "generation_keys": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^change:[0-9a-f]{64}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "sha256",
+        "input_sha256",
+        "fingerprint",
+        "selected_ids",
+        "generation_keys"
+      ]
     }
   },
   "additionalProperties": false,
-  "description": "Canonical standalone GitHub/GitLab frozen basket, schema v1.",
+  "description": "Canonical standalone GitHub/GitLab frozen basket, schema v2.",
   "properties": {
     "meta": {
       "$ref": "#/$defs/BasketMeta"
@@ -1108,7 +1267,7 @@
     "meta",
     "tasks"
   ],
-  "title": "Frozen public GitHub PR basket v1",
+  "title": "Frozen GitHub/GitLab basket v2",
   "type": "object",
   "$schema": "https://json-schema.org/draft/2020-12/schema"
 }

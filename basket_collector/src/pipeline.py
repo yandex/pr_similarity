@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypeVar
 
+from basket_collector.attempts import AttemptJournal, RecordResult
 from basket_collector.checkpoint_inputs import validate_checkpoint_input
 from basket_collector.config import (
     CollectorConfig,
@@ -27,38 +28,51 @@ from basket_collector.contracts import (
     BasketDocument,
     BasketMeta,
     CollectDocument,
+    CollectFailure,
     CollectMeta,
     CollectRecord,
     Counts,
+    Coverage,
     Discovery,
     FailedRecord,
     FilterDocument,
+    FilterFailure,
     FilterMeta,
     FilterRecord,
     GenerateMeta,
     InputReceipt,
     LineageReceipt,
     Producer,
+    RecordIdentity,
     RejectedRecord,
     Repository,
     StageError,
     TaskRecord,
     TasksDocument,
 )
-from basket_collector.filters import apply_population
-from basket_collector.git import GitInfrastructureError, GitRepository
+from basket_collector.export_validation import validate_export_accounting
+from basket_collector.git import (
+    GitDiagnosticContext,
+    GitFatalError,
+    GitInfrastructureError,
+    GitRepository,
+    GitStopRequested,
+)
 from basket_collector.github_source import GitHubRemoteVCS
 from basket_collector.gitlab_source import GitLabRemoteVCS
 from basket_collector.llm import (
     GenerationInterrupted,
     LLMAuthenticationError,
+    LLMCallError,
     LLMClient,
     LLMConfigurationError,
 )
 from basket_collector.logs import InvocationLogs, friendly_error
 from basket_collector.progress import MODES, Progress
+from basket_collector.record_runtime import RecordRuntime
 from basket_collector.remote import ChangeRejected, RemoteError, RemoteInterrupted, RemoteVCS
-from basket_collector.sources import SourceDescriptor, source_hash
+from basket_collector.selection import build_selection, omissions, selected_records, selection_receipt, semantic_record
+from basket_collector.sources import SourceDescriptor, change_id, source_hash
 from basket_collector.stages.collect import (
     DiscoveryResult,
     collect_change,
@@ -82,8 +96,10 @@ from basket_collector.storage import (
     receipt,
     sha256,
     single_writer,
+    stage_sha256,
     utc_now,
 )
+from basket_collector.transport_scope import generation_requests
 from basket_collector.vcs import VCS
 
 T = TypeVar('T')
@@ -104,6 +120,10 @@ class PipelineInterrupted(RuntimeError):
 
 class PipelineError(RuntimeError):
     """An infrastructure or stage operation failed."""
+
+
+class DecisionRequired(PipelineError):
+    """Completed record work needs explicit permission before selection or publication."""
 
 
 class EmptyStageError(PipelineError):
@@ -133,6 +153,8 @@ def _stage_error(stage: str, error: Exception) -> StageError:
         return StageError(code='llm_auth_error', message=str(error), retryable=True)
     if isinstance(error, LLMConfigurationError):
         return StageError(code='llm_configuration', message=str(error), retryable=False)
+    if isinstance(error, LLMCallError):
+        return StageError(code=error.code, message=str(error), retryable=error.retryable)
     if isinstance(error, FileNotFoundError):
         return StageError(code='missing_file', message=str(error), retryable=False)
     if isinstance(error, RemoteError):
@@ -290,6 +312,11 @@ class Pipeline:
         self._owns_llm = False
         self._generation_snapshot: TemplateSnapshot | None = None
         self.stage_modes: dict[str, str] = {}
+        self.allow_partial = False
+        self.reselect = False
+        self.overwrite = False
+        self.retry_failed = False
+        self._worker_messages: queue.SimpleQueue[str] = queue.SimpleQueue()
 
     def _remote(self) -> RemoteVCS:
         """Create the selected hosting adapter only after verified stage input."""
@@ -320,6 +347,8 @@ class Pipeline:
 
     def _poll_progress(self) -> None:
         """Observe shutdown without changing scheduling or checkpoint state."""
+        while not self._worker_messages.empty():
+            self._message(self._worker_messages.get_nowait(), level='WARNING')
         if self.shutdown.sync():
             self.progress.update(status='draining')
         self.progress.poll()
@@ -369,6 +398,7 @@ class Pipeline:
         workers: int,
         operation: Callable[[T], R],
         accept: Callable[[T, R], None],
+        on_poll: Callable[[], None] | None = None,
     ) -> None:
         """Run bounded workers and pass their completed results to the writer."""
         remaining = iter(items)
@@ -380,7 +410,10 @@ class Pipeline:
             with self._scheduler_lock:
                 if self.shutdown.requested or self.shutdown.stop_event.is_set():
                     raise _TaskSkippedForShutdown()
-            reason = 'Git operation' if self.progress.current == 'filter' else 'LLM request'
+            reasons = {'collect': 'HTTP request', 'filter': 'Git operation', 'generate': 'task processing'}
+            if self.config.generation.source == 'llm':
+                reasons['generate'] = 'LLM request'
+            reason = reasons.get(self.progress.current or '', 'processing')
             self.progress.worker_started(reason)
             try:
                 return operation(item)
@@ -403,6 +436,8 @@ class Pipeline:
 
             fill()
             while active:
+                if on_poll is not None:
+                    on_poll()
                 self._poll_progress()
                 done, _ = wait(active, timeout=0.1, return_when=FIRST_COMPLETED)
                 for future in done:
@@ -432,6 +467,7 @@ class Pipeline:
                         future.cancel()
                 else:
                     fill()
+        self._poll_progress()
         if failure is not None:
             raise failure
 
@@ -455,7 +491,7 @@ class Pipeline:
         now = utc_now()
         settings = effective_settings(self.config, stage, template_snapshot=template_snapshot)
         return {
-            'schema_version': 1,
+            'schema_version': 2,
             'stage': stage,
             'status': status,
             'input': InputReceipt(stage=lineage[-1].stage, sha256=lineage[-1].sha256) if lineage else None,
@@ -494,10 +530,27 @@ class Pipeline:
                 raise StorageError(f'{name} is absent or unfinished; complete it before {stage}')
             if not isinstance(loaded, (CollectDocument, FilterDocument, TasksDocument)):
                 raise StorageError(f'{name} has an invalid predecessor document type')
-            if not loaded.tasks:
-                raise EmptyStageError(stage, predecessor=name)
             if loaded.meta.lineage != self._lineage(documents):
                 raise StorageError(f'{name} lineage differs from current predecessors; use OVERWRITE=1')
+            if isinstance(loaded, FilterDocument) and stage in ('generate', 'export'):
+                collected = documents[0]
+                assert isinstance(collected, CollectDocument)
+                proposal = build_selection(
+                    loaded,
+                    collected,
+                    self.config,
+                    self.producer,
+                    self._generation_snapshot or load_template_snapshot(self.config.generation),
+                )
+                if (
+                    loaded.selection is not None
+                    and proposal.generation_settings_sha256 != loaded.selection.generation_settings_sha256
+                ):
+                    raise StorageError(
+                        'generation settings differ from selection; recompute filter or basket with OVERWRITE=1'
+                    )
+                if loaded.selection is None or proposal.sha256 != loaded.selection.sha256:
+                    raise DecisionRequired('selection inputs changed; run filter or basket with RESELECT=1 as needed')
             documents.append(loaded)
         return documents
 
@@ -566,11 +619,16 @@ class Pipeline:
         elif stage == 'generate':
             phase = 'tasks'
             metrics['successful'] = counts.succeeded
+            metrics['rejected'] = counts.rejected
             self.progress.basket_update(successful=counts.succeeded, failed=counts.failed)
         else:
             assert isinstance(document, BasketDocument)
             phase = 'writing'
-            self.progress.basket_update(successful=len(document.tasks), failed=len(document.meta.omitted_failed_ids))
+            self.progress.basket_update(
+                successful=len(document.tasks),
+                failed=sum(item.kind == 'failed' for item in document.meta.omissions),
+                omitted=len(document.meta.omissions),
+            )
         self.progress.update(
             phase=phase,
             status=document.meta.status,
@@ -605,7 +663,7 @@ class Pipeline:
             self._checkpoint(store, interrupted, state)
             raise PipelineInterrupted()
         self.progress.update(wait='saving checkpoint')
-        store.publish(document, current_input=current_input)
+        store.publish(document, current_input=current_input, operation_state=state)
         self._observe_document(document, state)
 
     def _initial_collect(
@@ -693,7 +751,131 @@ class Pipeline:
             tasks=document.tasks,
         )
 
-    def _collect(self, overwrite: bool) -> CollectDocument:
+    def _record_runtime(self, stage: str, state: dict[str, Any], persist: Callable[[], None]) -> RecordRuntime:
+        """Retry controlled record failures while propagating environment and programming defects."""
+
+        def classify(error: Exception) -> StageError | None:
+            """Classify at the owning operation boundary, not from broad message guesses."""
+            if self.logs is not None:
+                self.logs.diagnostic(error)
+            if isinstance(error, (GitFatalError, LLMAuthenticationError, LLMConfigurationError, SourceChangedError)):
+                return None
+            if isinstance(error, RemoteError) and error.code in {
+                'source_auth_error',
+                'github_auth_error',
+                'source_changed',
+                'source_identity_changed',
+            }:
+                return None
+            if isinstance(error, (RemoteError, GitInfrastructureError, LLMCallError)):
+                return _stage_error(stage, error)
+            return None
+
+        def observe(identity: str, journal: AttemptJournal) -> None:
+            """Report durable retry and failure decisions on the coordinator thread."""
+            current = journal.current
+            error = current.attempts[-1].error
+            assert error is not None
+            outcome = 'failed' if current.exhausted else 'retry scheduled'
+            diagnostic = f'; DEBUG log: {self.logs.path}' if self.logs is not None else ''
+            self._message(
+                f'{stage}: {identity} {outcome}; attempt={len(current.attempts)}/{current.limit} '
+                f'code={error.code}; {error.message}{diagnostic}',
+                level='WARNING',
+            )
+
+        return RecordRuntime(
+            getattr(self.config, stage if stage != 'generate' else 'generation'),
+            state,
+            self.shutdown.stop_event,
+            persist,
+            classify,
+            (RemoteInterrupted, FilterInterrupted, GenerationInterrupted, GitStopRequested),
+            retry_pending=self.retry_failed,
+            observe=observe,
+        )
+
+    def _collect_records(
+        self,
+        document: CollectDocument,
+        state: dict[str, Any],
+        store: StageStore,
+        update: Callable[[CollectDocument], None],
+    ) -> CollectDocument:
+        """Process the frozen queue with durable per-record attempts and ordered outcomes."""
+        repository = document.meta.repository
+        numbers = state['numbers']
+        accepted = {item.change_request.number: item for item in document.tasks}
+        rejected = {item.change_request.number: item for item in document.rejected}
+        failed = {item.identity.number: item for item in document.failed}
+        runtime = self._record_runtime('collect', state, lambda: self._checkpoint(store, document, state))
+        kind = 'pull_request' if repository.provider == 'github' else 'merge_request'
+
+        def identity(number: int) -> RecordIdentity:
+            """Derive identity solely from the frozen discovery queue and repository."""
+            return RecordIdentity(
+                id=change_id(repository.provider, repository.server_url, repository.project_id, kind, number),
+                kind=kind,
+                repository=repository.path,
+                number=number,
+            )
+
+        def operation(number: int) -> RecordResult[CollectRecord | RejectedRecord]:
+            """Translate a deterministic exclusion into a successful rejected outcome."""
+            record_identity = identity(number)
+
+            def collect(journal: AttemptJournal) -> CollectRecord | RejectedRecord:
+                """Execute one complete hosting operation without inner transport retries."""
+                try:
+                    return collect_change(self._remote(), repository, number, self.config.collect)
+                except ChangeRejected as error:
+                    if error.record.id != record_identity.id:
+                        raise ValueError('source rejected another change') from error
+                    return error.record
+
+            return runtime.run(record_identity.id, sha256(record_identity), collect)
+
+        def accept(number: int, result: RecordResult[CollectRecord | RejectedRecord]) -> None:
+            """Commit the terminal journal and record outcome in one checkpoint."""
+            nonlocal document
+            record_identity = identity(number)
+            runtime.accept(record_identity.id, result)
+            if result.needs_budget:
+                self._checkpoint(store, document, state)
+                return
+            if result.error is not None:
+                assert result.journal is not None
+                failed[number] = CollectFailure(
+                    identity=record_identity, error=result.error, attempts=len(result.journal.current.attempts)
+                )
+            elif isinstance(result.value, RejectedRecord):
+                rejected[number] = result.value
+            elif isinstance(result.value, CollectRecord):
+                if result.value.id != record_identity.id:
+                    raise ValueError('source returned another change')
+                accepted[number] = result.value
+            else:
+                raise ValueError('invalid collect operation result')
+            document = document.model_copy(
+                update={
+                    'tasks': [accepted[number] for number in numbers if number in accepted],
+                    'rejected': [rejected[number] for number in numbers if number in rejected],
+                    'failed': [failed[number] for number in numbers if number in failed],
+                }
+            )
+            document = self._update(
+                document, counts=_counts(len(numbers), len(accepted), len(rejected), len(failed)), status='running'
+            )
+            update(document)
+            self._checkpoint(store, document, state)
+
+        pending = [
+            number for number in numbers if number not in accepted and number not in rejected and number not in failed
+        ]
+        self._run_items(pending, 1, operation, accept, runtime.poll)
+        return document
+
+    def _collect(self, overwrite: bool, retry_failed: bool = False) -> CollectDocument:
         """Resume or build the collected PR snapshot with durable checkpoints."""
         stage = 'collect'
         store = StageStore(self.output_dir, stage)
@@ -702,8 +884,18 @@ class Pipeline:
             CollectDocument, settings=settings, producer=self.producer, input_receipt=None, overwrite=overwrite
         )
         if old is not None and state is None:
-            self.stage_modes[stage] = 'reused'
-            return old
+            if not retry_failed or not old.failed:
+                self.stage_modes[stage] = 'reused'
+                return old
+            state = store.operation_state()
+            runtime = self._record_runtime(stage, state, lambda: None)
+            runtime.retry([item.identity.id for item in old.failed])
+            state['phase'] = 'records'
+            old = old.model_copy(update={'failed': []})
+            old = self._update(
+                old, counts=_counts(old.meta.counts.input, len(old.tasks), len(old.rejected)), status='running'
+            )
+            self._checkpoint(store, old, state)
         if old is None:
             self.stage_modes[stage] = 'new'
             doc, state, repository = self._initial_collect(store)
@@ -736,41 +928,25 @@ class Pipeline:
                 self._checkpoint(store, doc, state)
             else:
                 numbers = state['numbers']
-            done = {item.change_request.number for item in doc.tasks}
-            done.update(item.change_request.number for item in doc.rejected)
-            for number in numbers:
-                if self.shutdown.sync():
-                    break
-                if number in done:
-                    continue
-                try:
-                    record = self._run_one(
-                        lambda n=number: collect_change(self._remote(), repository, n, self.config.collect)
-                    )
-                except RemoteInterrupted:
-                    if self.shutdown.sync():
-                        break
-                    raise
-                except ChangeRejected as exc:
-                    if exc.record.change_request.number != number:
-                        raise RemoteError('Source rejected another change.', code='invalid_source_metadata') from exc
-                    doc = doc.model_copy(update={'rejected': [*doc.rejected, exc.record]})
-                else:
-                    doc = doc.model_copy(update={'tasks': [*doc.tasks, record]})
-                doc = self._update(
-                    doc, counts=_counts(len(numbers), len(doc.tasks), len(doc.rejected)), status='running'
-                )
-                self._checkpoint(store, doc, state)
+
+            def keep_progress(document: CollectDocument) -> None:
+                """Retain acknowledged outcomes if a later record fails fatally."""
+                nonlocal doc
+                doc = document
+
+            doc = self._collect_records(doc, state, store, keep_progress)
             if self.shutdown.sync():
                 doc = self._update(doc, counts=doc.meta.counts, status='interrupted')
                 self._checkpoint(store, doc, state)
                 raise PipelineInterrupted()
-            if not doc.tasks:
-                raise EmptyStageError('collect', details=_empty_collect_details(doc))
-            doc = self._update(doc, counts=_counts(len(numbers), len(doc.tasks), len(doc.rejected)), status='completed')
+            if doc.meta.counts.pending:
+                raise DecisionRequired('collect: interrupted records need a new attempt budget; use RETRY_FAILED=1')
+            doc = self._update(doc, counts=doc.meta.counts, status='completed')
             state = {**state, 'phase': 'ready'}
             self._publish(store, doc, state)
             return doc
+        except DecisionRequired:
+            raise
         except (RemoteInterrupted, GenerationInterrupted, FilterInterrupted) as exc:
             if self.shutdown.requested:
                 self.shutdown.sync()
@@ -794,38 +970,93 @@ class Pipeline:
             self._checkpoint(store, self._update(doc, counts=doc.meta.counts, status='failed', error=error), state)
             raise
 
-    def _filter_repository(self, source: SourceDescriptor) -> VCS:
+    def _filter_repository(
+        self,
+        source: SourceDescriptor,
+        journal: AttemptJournal | None = None,
+        save: Callable[[AttemptJournal], None] | None = None,
+        context: GitDiagnosticContext | None = None,
+    ) -> VCS:
         """Use the injected Git cache or create one tied to the stop event."""
         if self.git_repository is not None:
             return self.git_repository
+
+        def account(values: dict[str, int]) -> None:
+            """Persist cumulative warm and cold bytes across automatic attempts."""
+            assert journal is not None and save is not None
+            journal.current.warm_bytes = values['warm']
+            journal.current.cold_bytes = values['cold']
+            save(journal)
+
         return GitRepository(
             Path(self.config.cache_dir) / source_hash(source),
             source.fetch_url,
-            self.config.git.timeout_seconds,
+            self.config.filter.git.timeout_seconds,
             stop_event=self.shutdown.stop_event,
-            initial_depth=self.config.git.initial_depth,
-            max_depth=self.config.git.max_depth,
-            max_transfer_bytes=self.config.git.max_transfer_bytes,
+            initial_depth=self.config.filter.git.initial_depth,
+            max_depth=self.config.filter.git.max_depth,
+            max_transfer_bytes=self.config.filter.git.max_transfer_bytes,
+            transfer_state=(
+                {'warm': journal.current.warm_bytes, 'cold': journal.current.cold_bytes} if journal else None
+            ),
+            transfer_callback=account if journal is not None and save is not None else None,
+            diagnostic_context=context,
+            wait_callback=self.progress.wait,
+            warning_callback=self._worker_messages.put,
+            secret_names=(self.config.source.token_env,),
         )
 
     def _select_filter(self, document: FilterDocument, predecessor: CollectDocument) -> FilterDocument:
         """Apply population rules once while retaining all rejection reasons."""
         self.progress.update(phase='selection')
-        selected, population_rejected = apply_population(document.tasks, self.config.filter)
-        rejected_by_id = {item.id: item for item in [*document.rejected, *population_rejected]}
-        ordered_rejected = [rejected_by_id[item.id] for item in predecessor.tasks if item.id in rejected_by_id]
-        document = document.model_copy(update={'tasks': selected, 'rejected': ordered_rejected})
+        snapshot = build_selection(
+            document, predecessor, self.config, self.producer, load_template_snapshot(self.config.generation)
+        )
+        previous = StageStore(self.output_dir, 'filter').publication.selection()
+        unchanged = previous is not None and previous.sha256 == snapshot.sha256
+        if snapshot.omissions and not unchanged and not self.allow_partial:
+            raise DecisionRequired(
+                'filter: record pass completed with omissions; use RETRY_FAILED=1 or ALLOW_PARTIAL=1'
+            )
+        if previous is not None and not self.overwrite:
+            if previous.generation_settings_sha256 != snapshot.generation_settings_sha256:
+                raise StorageError('generation settings changed; use OVERWRITE=1 for the requested recalculation')
+            if previous.fingerprint != snapshot.fingerprint and not self.reselect:
+                added = set(snapshot.selected_ids) - set(previous.selected_ids)
+                removed = set(previous.selected_ids) - set(snapshot.selected_ids)
+                changed = [
+                    identity
+                    for identity in snapshot.selected_ids
+                    if identity in previous.generation_keys
+                    and previous.generation_keys[identity] != snapshot.generation_keys[identity]
+                ]
+                raise DecisionRequired(
+                    f'selection changed: added={sorted(added)} removed={sorted(removed)} changed={changed}; '
+                    'order may differ; use RESELECT=1'
+                )
+        if not snapshot.selected_ids:
+            raise DecisionRequired('filter: selection is empty; inspect saved rejection and failure reasons')
+        document = document.model_copy(update={'selection': snapshot})
         return self._update(
             document,
-            counts=_counts(len(predecessor.tasks), len(selected), len(ordered_rejected)),
+            counts=document.meta.counts,
             status='running',
         )
 
     def _filter_one(
-        self, item: CollectRecord, remote: RemoteVCS, hosting_repository: Repository
+        self,
+        item: CollectRecord,
+        remote: RemoteVCS,
+        hosting_repository: Repository,
+        journal: AttemptJournal | None = None,
+        save: Callable[[AttemptJournal], None] | None = None,
     ) -> FilterRecord | RejectedRecord:
         """Prepare one descriptor-specific cache and run the hosting-independent filter."""
-        repository = self._filter_repository(item.source)
+        request = item.change_request
+        context = GitDiagnosticContext(
+            item.id, f'{request.kind} {request.repository} #{request.number}', source_hash(item.source)
+        )
+        repository = self._filter_repository(item.source, journal, save, context)
         repository.prepare()
         return process_one(
             item,
@@ -836,22 +1067,174 @@ class Pipeline:
             hosting_repository=hosting_repository,
         )
 
-    def _filter(self, overwrite: bool) -> FilterDocument:
+    def _prior_stage(
+        self,
+        store: StageStore,
+        model: type[DocumentT],
+        settings: dict[str, Any],
+        overwrite: bool,
+    ) -> tuple[DocumentT | None, dict[str, Any] | None]:
+        """Validate an older stage against its immutable predecessor before reconciling inputs."""
+
+        def validate(document: DocumentT, state: dict[str, Any] | None) -> None:
+            """Resolve the exact prior source rather than accepting a changed current head."""
+            reference = document.meta.input
+            if reference is None:
+                raise StorageError('saved downstream stage has no predecessor')
+            source = DOCUMENTS[reference.stage].model_validate(
+                store.publication.lookup(reference.stage, reference.sha256)
+            )
+            if isinstance(source, BasketDocument):
+                raise StorageError('a basket cannot be the input of a processing stage')
+            validate_checkpoint_input(document, source, state)
+            if isinstance(document, BasketDocument):
+                assert isinstance(source, TasksDocument)
+                collected_ref, filtered_ref = document.meta.lineage[:2]
+                collected = CollectDocument.model_validate(store.publication.lookup('collect', collected_ref.sha256))
+                filtered = FilterDocument.model_validate(store.publication.lookup('filter', filtered_ref.sha256))
+                validate_export_accounting(document, collected, filtered, source)
+
+        return store.prior(
+            model, settings=settings, producer=self.producer, overwrite=overwrite, validate_loaded=validate
+        )
+
+    def _rebase_filter(
+        self,
+        document: FilterDocument,
+        state: dict[str, Any],
+        source: CollectDocument,
+        store: StageStore,
+    ) -> tuple[FilterDocument, dict[str, Any]]:
+        """Keep only outcomes and attempt journals whose complete collected input is unchanged."""
+        assert document.meta.input is not None
+        previous = CollectDocument.model_validate(store.publication.lookup('collect', document.meta.input.sha256))
+        old_inputs = {item.id: semantic_record(item) for item in previous.tasks}
+        retained = {item.id for item in source.tasks if old_inputs.get(item.id) == semantic_record(item)}
+        good = [item for item in document.tasks if item.id in retained]
+        rejected = [item for item in document.rejected if item.id in retained]
+        failed = [item for item in document.failed if item.record.id in retained]
+        order = {item.id: index for index, item in enumerate(source.tasks)}
+        fields = self._meta_fields(
+            'filter',
+            source.meta.repository,
+            self._lineage([source]),
+            _counts(len(source.tasks), len(good), len(rejected), len(failed)),
+        )
+        rebased = FilterDocument(
+            meta=FilterMeta(**fields),
+            tasks=sorted(good, key=lambda item: order[item.id]),
+            rejected=sorted(rejected, key=lambda item: order[item.id]),
+            failed=sorted(failed, key=lambda item: order[item.record.id]),
+        )
+        state = {
+            **state,
+            'phase': 'local',
+            'attempts': {key: value for key, value in state.get('attempts', {}).items() if key in retained},
+            'retry_ids': [key for key in state.get('retry_ids', []) if key in retained],
+        }
+        return rebased, state
+
+    def _filter_records(
+        self,
+        doc: FilterDocument,
+        state: dict[str, Any],
+        store: StageStore,
+        predecessor: CollectDocument,
+        update: Callable[[FilterDocument], None],
+    ) -> FilterDocument:
+        """Run the complete candidate queue and preserve each durable outcome independently."""
+        remote = self._remote()
+        processed = (
+            {item.id for item in doc.tasks}
+            | {item.id for item in doc.rejected}
+            | {item.record.id for item in doc.failed}
+        )
+        pending = [item for item in predecessor.tasks if item.id not in processed]
+        accepted = {item.id: item for item in doc.tasks}
+        rejected = {item.id: item for item in doc.rejected}
+        failed = {item.record.id: item for item in doc.failed}
+        active_state = state
+        runtime = self._record_runtime('filter', state, lambda: self._checkpoint(store, doc, active_state))
+
+        def filter_item(item: CollectRecord) -> RecordResult[FilterRecord | RejectedRecord]:
+            """Bind this queue item to its hosting identity and source descriptor."""
+            return runtime.run(
+                item.id,
+                sha256(semantic_record(item)),
+                lambda journal: self._filter_one(
+                    item,
+                    remote,
+                    predecessor.meta.repository,
+                    journal,
+                    lambda value: runtime.save(item.id, value),
+                ),
+            )
+
+        def accept(item: CollectRecord, result: RecordResult[FilterRecord | RejectedRecord]) -> None:
+            """Merge one filter result in input order and persist the checkpoint."""
+            nonlocal doc
+            runtime.accept(item.id, result)
+            if result.needs_budget:
+                self._checkpoint(store, doc, active_state)
+                return
+            if result.error is not None:
+                assert result.journal is not None
+                failed[item.id] = FilterFailure(
+                    record=item, error=result.error, attempts=len(result.journal.current.attempts)
+                )
+            elif isinstance(result.value, FilterRecord):
+                accepted[item.id] = result.value
+            elif isinstance(result.value, RejectedRecord):
+                rejected[item.id] = result.value
+            else:
+                raise ValueError('invalid filter operation result')
+            ordered_ok = [accepted[pr.id] for pr in predecessor.tasks if pr.id in accepted]
+            ordered_no = [rejected[pr.id] for pr in predecessor.tasks if pr.id in rejected]
+            ordered_failed = [failed[pr.id] for pr in predecessor.tasks if pr.id in failed]
+            doc = doc.model_copy(update={'tasks': ordered_ok, 'rejected': ordered_no, 'failed': ordered_failed})
+            doc = self._update(
+                doc,
+                counts=_counts(len(predecessor.tasks), len(ordered_ok), len(ordered_no), len(ordered_failed)),
+                status='running',
+            )
+            update(doc)
+            self._checkpoint(store, doc, active_state)
+            if isinstance(result.value, RejectedRecord):
+                self._print_history_rejection(result.value, store.work_path)
+
+        self._run_items(pending, self.config.filter.workers, filter_item, accept, runtime.poll)
+        return doc
+
+    def _filter(self, overwrite: bool, retry_failed: bool = False) -> FilterDocument:
         """Resolve PR changes, select a stable population, and publish the result."""
         predecessor = self._verified_predecessors('filter')[0]
         assert isinstance(predecessor, CollectDocument)
         store = StageStore(self.output_dir, 'filter')
-        old, state = store.load(
+        old, state = self._prior_stage(
+            store,
             FilterDocument,
-            settings=effective_settings(self.config, 'filter'),
-            producer=self.producer,
-            input_receipt=expected_input(predecessor),
-            overwrite=overwrite,
-            validate_loaded=lambda saved, checkpoint: validate_checkpoint_input(saved, predecessor, checkpoint),
+            effective_settings(self.config, 'filter'),
+            overwrite,
         )
+        completed_pass = old is not None and (state is None or old.meta.counts.pending == 0)
+        if old is not None and old.meta.input != expected_input(predecessor):
+            old, state = self._rebase_filter(old, state or store.operation_state(), predecessor, store)
+        if old is not None and completed_pass and retry_failed and old.failed:
+            state = state or store.operation_state()
+            runtime = self._record_runtime('filter', state, lambda: None)
+            runtime.retry([item.record.id for item in old.failed])
+            old = old.model_copy(update={'failed': [], 'selection': None})
+            old = self._update(
+                old, counts=_counts(len(predecessor.tasks), len(old.tasks), len(old.rejected)), status='running'
+            )
+            state['phase'] = 'local'
         if old is not None and state is None:
-            self.stage_modes['filter'] = 'reused'
-            return old
+            proposal = self._select_filter(old, predecessor)
+            if proposal.selection == old.selection:
+                self.stage_modes['filter'] = 'reused'
+                return old
+            old = proposal
+            state = {**store.operation_state(), 'phase': 'selection'}
         if old is None:
             self.stage_modes['filter'] = 'new'
             counts = _counts(len(predecessor.tasks), 0)
@@ -871,52 +1254,33 @@ class Pipeline:
             return doc
         try:
             if state['phase'] == 'local':
-                remote = self._remote()
-                processed = {item.id for item in doc.tasks} | {item.id for item in doc.rejected}
-                pending = [item for item in predecessor.tasks if item.id not in processed]
-                accepted = {item.id: item for item in doc.tasks}
-                rejected = {item.id: item for item in doc.rejected}
-                active_state = state
 
-                def filter_item(item: CollectRecord) -> FilterRecord | RejectedRecord:
-                    """Bind this queue item to its hosting identity and source descriptor."""
-                    return self._filter_one(item, remote, predecessor.meta.repository)
-
-                def accept(item: CollectRecord, result: FilterRecord | RejectedRecord) -> None:
-                    """Merge one filter result in input order and persist the checkpoint."""
+                def keep_progress(document: FilterDocument) -> None:
+                    """Keep acknowledged results if a later candidate stops the stage."""
                     nonlocal doc
-                    if isinstance(result, FilterRecord):
-                        accepted[item.id] = result
-                    else:
-                        rejected[item.id] = result
-                    ordered_ok = [accepted[pr.id] for pr in predecessor.tasks if pr.id in accepted]
-                    ordered_no = [rejected[pr.id] for pr in predecessor.tasks if pr.id in rejected]
-                    doc = doc.model_copy(update={'tasks': ordered_ok, 'rejected': ordered_no})
-                    doc = self._update(
-                        doc,
-                        counts=_counts(len(predecessor.tasks), len(ordered_ok), len(ordered_no)),
-                        status='running',
-                    )
-                    self._checkpoint(store, doc, active_state)
-                    if isinstance(result, RejectedRecord):
-                        self._print_history_rejection(result, store.work_path)
+                    doc = document
 
-                self._run_items(pending, self.config.filter.workers, filter_item, accept)
+                doc = self._filter_records(doc, state, store, predecessor, keep_progress)
                 if self.shutdown.sync():
                     doc = self._update(doc, counts=doc.meta.counts, status='interrupted')
                     self._checkpoint(store, doc, state)
                     raise PipelineInterrupted()
-                state = {'phase': 'selection'}
+                if doc.meta.counts.pending:
+                    raise DecisionRequired('filter: interrupted records need a new attempt budget; use RETRY_FAILED=1')
+                state = {**state, 'phase': 'selection'}
                 self._checkpoint(store, doc, state)
+            if doc.selection is None:
+                completed_candidates = self._update(doc, counts=doc.meta.counts, status='completed')
+                self._publish(store, completed_candidates, state, 'collect')
             doc = self._select_filter(doc, predecessor)
-            if not doc.tasks:
-                raise EmptyStageError('filter', details=_empty_filter_details(doc))
-            state = {'phase': 'ready'}
+            state = {**state, 'phase': 'ready'}
             self._checkpoint(store, doc, state)
             doc = self._update(doc, counts=doc.meta.counts, status='completed')
             self._verified_predecessors('filter')
             self._publish(store, doc, state, 'collect')
             return doc
+        except DecisionRequired:
+            raise
         except PipelineInterrupted:
             if self.shutdown.requested:
                 doc = self._update(doc, counts=doc.meta.counts, status='interrupted')
@@ -945,71 +1309,334 @@ class Pipeline:
         store: StageStore,
         template_snapshot: TemplateSnapshot | None,
         retry_failed: bool,
-    ) -> tuple[TasksDocument, dict[str, Any] | None, dict[str, int]]:
+    ) -> tuple[TasksDocument, dict[str, Any] | None]:
         """Initialize or resume task progress without repeating completed work."""
-        retry_attempts: dict[str, int] = {}
+        assert source.selection is not None
+        total = len(source.selection.selected_ids)
         if old is None:
             self.stage_modes['generate'] = 'new'
             fields = self._meta_fields(
                 'generate',
                 source.meta.repository,
                 self._lineage(predecessors),
-                _counts(len(source.tasks), 0),
+                _counts(total, 0),
                 template_snapshot=template_snapshot,
             )
-            document = TasksDocument(meta=GenerateMeta(**fields), tasks=[], failed=[])
-            state = {'retry_attempts': {}}
+            document = TasksDocument(
+                meta=GenerateMeta(**fields), tasks=[], failed=[], selection=selection_receipt(source.selection)
+            )
+            state = {'phase': 'records', 'attempts': {}, 'retry_ids': []}
             self._checkpoint(store, document, state)
         elif state is None:
-            retry_attempts = {entry.record.id: entry.attempts for entry in old.failed}
-            if not retry_attempts:
+            if not retry_failed or not old.failed:
                 self.stage_modes['generate'] = 'reused'
-                return old, None, retry_attempts
+                return old, None
             self.stage_modes['generate'] = 'resumed'
+            state = store.operation_state()
+            runtime = self._record_runtime('generate', state, lambda: None)
+            runtime.retry([entry.record.id for entry in old.failed])
             document = old.model_copy(update={'failed': []})
-            document = self._update(document, counts=_counts(len(source.tasks), len(document.tasks)), status='running')
-            state = {'retry_attempts': retry_attempts}
+            document = self._update(
+                document, counts=_counts(total, len(document.tasks), len(document.rejected)), status='running'
+            )
+            state['phase'] = 'records'
             self._checkpoint(store, document, state)
         else:
             self.stage_modes['generate'] = 'resumed'
-            retry_attempts = dict(state.get('retry_attempts', {}))
-            if set(retry_attempts) - {record.id for record in source.tasks}:
-                raise StorageError('invalid checkpoint retry_attempts: PR is absent from generation input')
             document = self._update(old, counts=old.meta.counts, status='running')
-            if retry_failed and document.failed:
-                retry_attempts.update({entry.record.id: entry.attempts for entry in document.failed})
-                document = document.model_copy(update={'failed': []})
-                document = self._update(
-                    document, counts=_counts(len(source.tasks), len(document.tasks)), status='running'
+        return document, state
+
+    def _generation_history(
+        self,
+        previous: TasksDocument,
+        keys: dict[str, str],
+        retained: set[str],
+    ) -> tuple[dict[str, TaskRecord], dict[str, RejectedRecord], dict[str, dict[str, Any]]]:
+        """Restore completed historical outcomes and rejection journals with exact input keys."""
+        store = StageStore(self.output_dir, 'generate')
+        successes: dict[str, TaskRecord] = {}
+        rejections: dict[str, RejectedRecord] = {}
+        journals: dict[str, dict[str, Any]] = {}
+        seen = set(retained)
+        for payload in store.publication.history('generate'):
+            historical = TasksDocument.model_validate(payload)
+            if historical.meta.producer != self.producer or historical.meta.settings != previous.meta.settings:
+                continue
+            assert historical.meta.input is not None
+            source = FilterDocument.model_validate(store.publication.lookup('filter', historical.meta.input.sha256))
+            validate_checkpoint_input(historical, source, None)
+            origin = stage_sha256(historical)
+            for item in historical.tasks:
+                if item.id not in seen and keys.get(item.id) == item.generation.input_sha256:
+                    generation = item.generation.model_copy(update={'reused_from': origin})
+                    successes[item.id] = item.model_copy(update={'generation': generation})
+                    seen.add(item.id)
+            for rejected in historical.rejected:
+                if rejected.id in seen or keys.get(rejected.id) != historical.selection.generation_keys[rejected.id]:
+                    continue
+                state = store.publication.historical_state('generate', origin)
+                journal = AttemptJournal.model_validate(state.get('attempts', {}).get(rejected.id))
+                if (
+                    journal.input_sha256 != keys[rejected.id]
+                    or not journal.current.attempts
+                    or journal.current.attempts[-1].outcome != 'rejected'
+                ):
+                    raise StorageError('historical rejection journal disagrees with generation input')
+                journal.reused_from = origin
+                journals[rejected.id] = journal.model_dump(mode='json')
+                rejections[rejected.id] = rejected
+                seen.add(rejected.id)
+        return successes, rejections, journals
+
+    def _rebase_generation(
+        self,
+        previous: TasksDocument,
+        state: dict[str, Any],
+        source: FilterDocument,
+        predecessors: list[CollectDocument | FilterDocument | TasksDocument],
+    ) -> tuple[TasksDocument, dict[str, Any]]:
+        """Reuse outcomes only when full generation keys match the newly accepted selection."""
+        assert source.selection is not None
+        inputs = selected_records(source)
+        keys = source.selection.generation_keys
+        retained = {
+            identity for identity, key in keys.items() if previous.selection.generation_keys.get(identity) == key
+        }
+        successes = {item.id: item for item in previous.tasks if item.id in retained}
+        origins = {item.id: stage_sha256(previous) for item in successes.values()}
+        cached, excluded, journals = self._generation_history(previous, keys, retained)
+        successes.update(cached)
+        for identity, item in cached.items():
+            assert item.generation.reused_from is not None
+            origins[identity] = item.generation.reused_from
+        failures = {item.record.id: item for item in previous.failed if item.record.id in retained}
+        rejections = {item.id: item for item in previous.rejected if item.id in retained}
+        rejections.update(excluded)
+        good, bad, rejected = [], [], []
+        for item in inputs:
+            if item.id in successes:
+                prior = successes[item.id]
+                generation = prior.generation.model_copy(update={'reused_from': origins[item.id]})
+                good.append(
+                    TaskRecord.model_validate(
+                        {
+                            **item.model_dump(mode='json'),
+                            'task': prior.task.model_dump(mode='json'),
+                            'generation': generation.model_dump(mode='json'),
+                        }
+                    )
                 )
-                state = {'retry_attempts': retry_attempts}
-                self._checkpoint(store, document, state)
-        return document, state, retry_attempts
+            elif item.id in failures:
+                bad.append(failures[item.id].model_copy(update={'record': item}))
+            elif item.id in rejections:
+                rejected.append(rejections[item.id])
+        fields = self._meta_fields(
+            'generate',
+            source.meta.repository,
+            self._lineage(predecessors),
+            _counts(len(inputs), len(good), len(rejected), len(bad)),
+            template_snapshot=self._generation_snapshot,
+        )
+        document = TasksDocument(
+            meta=GenerateMeta(**fields),
+            selection=selection_receipt(source.selection),
+            tasks=good,
+            failed=bad,
+            rejected=rejected,
+        )
+        state = {
+            **state,
+            'phase': 'records',
+            'attempts': {
+                **{key: value for key, value in state.get('attempts', {}).items() if key in retained},
+                **journals,
+            },
+            'retry_ids': [key for key in state.get('retry_ids', []) if key in retained],
+        }
+        return document, state
+
+    def _generate_one(
+        self,
+        item: FilterRecord,
+        journal: AttemptJournal,
+        client: LLMClient | None,
+        template_snapshot: TemplateSnapshot | None,
+        key: str,
+        save: Callable[[AttemptJournal], None],
+    ) -> TaskRecord | RejectedRecord:
+        """Bind a generated task to its complete input and cumulative actual request count."""
+
+        def reserve() -> None:
+            """Persist actual request launches independently from local record validation attempts."""
+            journal.current.request_count += 1
+            save(journal)
+
+        with generation_requests(reserve):
+            result = generate_record(
+                item,
+                self.config.generation,
+                llm_client=client,
+                stop_event=self.shutdown.stop_event,
+                template_snapshot=template_snapshot,
+            )
+        if isinstance(result, TaskRecord):
+            generation = result.generation.model_copy(
+                update={
+                    'input_sha256': key,
+                    'attempts': (
+                        sum(round.request_count for round in journal.rounds)
+                        if self.config.generation.source == 'llm'
+                        else 0
+                    ),
+                }
+            )
+            result = result.model_copy(update={'generation': generation})
+        return result
+
+    def _generate_records(
+        self,
+        doc: TasksDocument,
+        active_state: dict[str, Any],
+        store: StageStore,
+        inputs: list[FilterRecord],
+        template_snapshot: TemplateSnapshot | None,
+        retry_failed: bool,
+        update: Callable[[TasksDocument], None],
+    ) -> TasksDocument:
+        """Execute selected records while committing each task and its attempt journal together."""
+        state = active_state
+        completed = (
+            {item.id for item in doc.tasks}
+            | {item.record.id for item in doc.failed}
+            | {item.id for item in doc.rejected}
+        )
+        pending = [item for item in inputs if item.id not in completed]
+        self.progress.update(
+            retry_batch=len(pending) if retry_failed else None,
+            kept_successful=len(doc.tasks) if retry_failed else None,
+        )
+        succeeded = {item.id: item for item in doc.tasks}
+        failed = {item.record.id: item for item in doc.failed}
+        rejected = {item.id: item for item in doc.rejected}
+        runtime = self._record_runtime('generate', state, lambda: self._checkpoint(store, doc, active_state))
+
+        def accept(item: FilterRecord, result: RecordResult[TaskRecord | RejectedRecord]) -> None:
+            """Merge one task result in source order and persist the checkpoint."""
+            nonlocal doc
+            runtime.accept(item.id, result)
+            if result.needs_budget:
+                self._checkpoint(store, doc, active_state)
+                return
+            if result.error is not None:
+                assert result.journal is not None
+                failed[item.id] = FailedRecord(
+                    record=item, error=result.error, attempts=len(result.journal.current.attempts)
+                )
+            elif isinstance(result.value, TaskRecord):
+                succeeded[item.id] = result.value
+            elif isinstance(result.value, RejectedRecord):
+                rejected[item.id] = result.value
+            else:
+                raise ValueError('invalid generation operation result')
+            good = [succeeded[pr.id] for pr in inputs if pr.id in succeeded]
+            bad = [failed[pr.id] for pr in inputs if pr.id in failed]
+            excluded = [rejected[pr.id] for pr in inputs if pr.id in rejected]
+            doc = doc.model_copy(update={'tasks': good, 'failed': bad, 'rejected': excluded})
+            doc = self._update(doc, counts=_counts(len(inputs), len(good), len(excluded), len(bad)), status='running')
+            update(doc)
+            self._checkpoint(store, doc, active_state)
+
+        if pending:
+            client = self._llm() if self.config.generation.source == 'llm' else None
+
+            def generate(item: FilterRecord) -> RecordResult[TaskRecord | RejectedRecord]:
+                """Bind one complete generation operation to its full frozen input key."""
+                key = doc.selection.generation_keys[item.id]
+
+                return runtime.run(
+                    item.id,
+                    key,
+                    lambda journal: self._generate_one(
+                        item, journal, client, template_snapshot, key, lambda value: runtime.save(item.id, value)
+                    ),
+                )
+
+            self._run_items(
+                pending,
+                self.config.generation.workers,
+                generate,
+                accept,
+                runtime.poll,
+            )
+        return doc
+
+    def _rebind_generation(self) -> None:
+        """Rebind only generation inputs for explicit recalculation, preserving candidate checks and selected IDs."""
+        collected = self._verified_predecessors('filter')[0]
+        assert isinstance(collected, CollectDocument)
+        store = StageStore(self.output_dir, 'filter')
+        filtered, state = store.load(
+            FilterDocument,
+            settings=effective_settings(self.config, 'filter'),
+            producer=self.producer,
+            input_receipt=expected_input(collected),
+            validate_loaded=lambda document, checkpoint: validate_checkpoint_input(document, collected, checkpoint),
+        )
+        if filtered is None or state is not None or filtered.selection is None:
+            raise DecisionRequired('generate: complete filter and accept its selection before recalculating generation')
+        self._generation_snapshot = load_template_snapshot(self.config.generation)
+        proposal = build_selection(filtered, collected, self.config, self.producer, self._generation_snapshot)
+        previous = filtered.selection
+        if proposal == previous:
+            return
+        if (
+            proposal.input_sha256 != previous.input_sha256
+            or proposal.selected_ids != previous.selected_ids
+            or proposal.settings != previous.settings
+            or proposal.omissions != previous.omissions
+        ):
+            raise DecisionRequired(
+                'generate: population or selection changed; accept it through filter or basket first'
+            )
+        rebound = filtered.model_copy(update={'selection': proposal})
+        rebound = self._update(rebound, counts=rebound.meta.counts, status='completed')
+        if self.shutdown.sync():
+            raise PipelineInterrupted()
+        store.publish(rebound, current_input=expected_input(collected), operation_state=store.operation_state())
 
     def _generate(self, overwrite: bool, retry_failed: bool) -> TasksDocument:
         """Generate tasks from one template snapshot while preserving retry progress."""
+        if overwrite:
+            self._rebind_generation()
         predecessors = self._verified_predecessors('generate')
         source = predecessors[-1]
         assert isinstance(source, FilterDocument)
-        self.progress.basket_update(available=len(source.tasks))
+        inputs = selected_records(source)
+        self.progress.basket_update(available=len(inputs))
         store = StageStore(self.output_dir, 'generate')
-        template_snapshot = load_template_snapshot(self.config.generation)
+        template_snapshot = self._generation_snapshot or load_template_snapshot(self.config.generation)
         self._generation_snapshot = template_snapshot
-        old, state = store.load(
+        old, state = self._prior_stage(
+            store,
             TasksDocument,
-            settings=effective_settings(self.config, 'generate', template_snapshot=template_snapshot),
-            producer=self.producer,
-            input_receipt=expected_input(source),
-            overwrite=overwrite,
-            allow_empty_retry=retry_failed,
-            validate_loaded=lambda saved, checkpoint: validate_checkpoint_input(saved, source, checkpoint),
+            effective_settings(self.config, 'generate', template_snapshot=template_snapshot),
+            overwrite,
         )
+        completed_pass = old is not None and state is None
+        if old is not None and old.meta.input != expected_input(source):
+            old, state = self._rebase_generation(old, state or store.operation_state(), source, predecessors)
+            if completed_pass and retry_failed and old.failed:
+                runtime = self._record_runtime('generate', state, lambda: None)
+                runtime.retry([item.record.id for item in old.failed])
+                old = old.model_copy(update={'failed': []})
+                old = self._update(
+                    old, counts=_counts(len(inputs), len(old.tasks), len(old.rejected)), status='running'
+                )
+            self._checkpoint(store, old, state)
         if old is not None and state is None and not retry_failed:
             self.stage_modes['generate'] = 'reused'
             return old
-        doc, state, retry_attempts = self._prepare_generate(
-            old, state, source, predecessors, store, template_snapshot, retry_failed
-        )
+        doc, state = self._prepare_generate(old, state, source, predecessors, store, template_snapshot, retry_failed)
         if state is None:
             return doc
         if state.get('phase') == 'ready':
@@ -1017,59 +1644,28 @@ class Pipeline:
             self._verified_predecessors('generate')
             self._publish(store, doc, state, 'filter')
             return doc
-        active_state = state
         try:
-            completed = {item.id for item in doc.tasks} | {item.record.id for item in doc.failed}
-            pending = [item for item in source.tasks if item.id not in completed]
-            self.progress.update(
-                retry_batch=len(pending) if retry_failed else None,
-                kept_successful=len(doc.tasks) if retry_failed else None,
-            )
-            succeeded = {item.id: item for item in doc.tasks}
-            failed = {item.record.id: item for item in doc.failed}
 
-            def accept(item: FilterRecord, result: TaskRecord | FailedRecord) -> None:
-                """Merge one task result in source order and persist the checkpoint."""
+            def keep_progress(document: TasksDocument) -> None:
+                """Keep acknowledged outcomes when another selected record stops the stage."""
                 nonlocal doc
-                if isinstance(result, TaskRecord):
-                    succeeded[item.id] = result
-                else:
-                    failed[item.id] = result
-                good = [succeeded[pr.id] for pr in source.tasks if pr.id in succeeded]
-                bad = [failed[pr.id] for pr in source.tasks if pr.id in failed]
-                doc = doc.model_copy(update={'tasks': good, 'failed': bad})
-                doc = self._update(doc, counts=_counts(len(source.tasks), len(good), failed=len(bad)), status='running')
-                self._checkpoint(store, doc, active_state)
+                doc = document
 
-            if pending:
-                client = self._llm() if self.config.generation.source == 'llm' else None
-                self._run_items(
-                    pending,
-                    self.config.generation.workers,
-                    lambda item: generate_record(
-                        item,
-                        self.config.generation,
-                        llm_client=client,
-                        stop_event=self.shutdown.stop_event,
-                        previous_attempts=retry_attempts.get(item.id, 0),
-                        template_snapshot=template_snapshot,
-                    ),
-                    accept,
-                )
+            doc = self._generate_records(doc, state, store, inputs, template_snapshot, retry_failed, keep_progress)
             if self.shutdown.sync():
                 doc = self._update(doc, counts=doc.meta.counts, status='interrupted')
                 self._checkpoint(store, doc, state)
                 raise PipelineInterrupted()
-            if not doc.tasks:
-                raise EmptyStageError(
-                    'generate', details=f'Failed={len(doc.failed)}; repair the cause and use RETRY_FAILED=1.'
-                )
-            counts = _counts(len(source.tasks), len(doc.tasks), failed=len(doc.failed))
+            counts = _counts(len(inputs), len(doc.tasks), len(doc.rejected), len(doc.failed))
+            if counts.pending:
+                raise DecisionRequired('generate: interrupted records need a new attempt budget; use RETRY_FAILED=1')
             doc = self._update(doc, counts=counts, status='completed')
             self._verified_predecessors('generate')
-            state = {'phase': 'ready'}
+            state = {**state, 'phase': 'ready'}
             self._publish(store, doc, state, 'filter')
             return doc
+        except DecisionRequired:
+            raise
         except PipelineInterrupted:
             raise
         except Exception as exc:
@@ -1093,17 +1689,21 @@ class Pipeline:
         self.progress.basket_update(available=tasks.meta.counts.input)
         self.progress.update(phase='preparing', total=len(tasks.tasks))
         store = StageStore(self.output_dir, 'export')
-        old, state = store.load(
+        old, state = self._prior_stage(
+            store,
             BasketDocument,
-            settings=effective_settings(self.config, 'export'),
-            producer=self.producer,
-            input_receipt=expected_input(tasks),
-            overwrite=overwrite,
-            validate_loaded=lambda saved, checkpoint: validate_checkpoint_input(saved, tasks, checkpoint),
+            effective_settings(self.config, 'export'),
+            overwrite,
         )
+        if old is not None and old.meta.input != expected_input(tasks):
+            old, state = None, None
         if old is not None and state is None:
             self.stage_modes['export'] = 'reused'
             return old
+        if not tasks.tasks:
+            raise DecisionRequired('export: no successful tasks; an empty basket cannot be published')
+        if (tasks.failed or tasks.rejected) and not self.allow_partial:
+            raise DecisionRequired('export: generation omissions require ALLOW_PARTIAL=1 or retry failed tasks')
         self.stage_modes['export'] = 'resumed' if state is not None else 'new'
         if old is not None and state is not None:
             if state.get('phase') != 'ready':
@@ -1114,7 +1714,9 @@ class Pipeline:
             return document
         if self.shutdown.sync():
             raise PipelineInterrupted()
-        failed_ids = [item.record.id for item in tasks.failed]
+        collected, filtered = predecessors[:2]
+        assert isinstance(collected, CollectDocument) and isinstance(filtered, FilterDocument)
+        omitted = [*omissions(collected), *omissions(filtered), *omissions(tasks)]
         fields = self._meta_fields(
             'export',
             tasks.meta.repository,
@@ -1127,8 +1729,16 @@ class Pipeline:
             name=self.config.dataset.name,
             description=self.config.dataset.description,
             maintainers=self.config.dataset.maintainers,
-            partial=bool(failed_ids),
-            omitted_failed_ids=failed_ids,
+            partial=bool(omitted),
+            omissions=omitted,
+            selection=tasks.selection,
+            coverage=Coverage(
+                discovery=collected.meta.discovery,
+                collect=collected.meta.counts,
+                filter=filtered.meta.counts,
+                selected=len(tasks.selection.selected_ids),
+                generate=tasks.meta.counts,
+            ),
         )
         self.progress.update(phase='validating')
         document = export_tasks(tasks, meta)
@@ -1140,8 +1750,15 @@ class Pipeline:
         """Explain omitted generation failures and how to retry a partial basket."""
         if document.meta.partial:
             tasks_path = StageStore(self.output_dir, 'generate').path
+            if all(item.kind == 'rejected' for item in document.meta.omissions):
+                self._message(
+                    f'export: partial=true omissions={len(document.meta.omissions)}; '
+                    f'generation rejection reasons: {tasks_path}; RETRY_FAILED does not repeat rejected records.',
+                    level='WARNING',
+                )
+                return
             self._message(
-                f'export: partial=true omitted_failed={len(document.meta.omitted_failed_ids)}; '
+                f'export: partial=true omissions={len(document.meta.omissions)}; '
                 f'failure reasons: {tasks_path}; '
                 'retry: make basket RETRY_FAILED=1 with the same CONFIG; '
                 'Python CLI: use basket --retry-failed 1 with the same --config',
@@ -1193,13 +1810,37 @@ class Pipeline:
                 level='WARNING',
             )
 
-    def run(self, command: str, *, overwrite: bool = False, retry_failed: bool = False) -> int:
+    @staticmethod
+    def _validate_command(command: str, overwrite: bool, retry_failed: bool, reselect: bool) -> None:
+        """Reject conflicting intents and flags outside a command's scope before work begins."""
+        if command not in (*STAGES, 'basket'):
+            raise ValueError(f'unknown command: {command}')
+        if overwrite and retry_failed:
+            raise ValueError('OVERWRITE=1 and RETRY_FAILED=1 cannot be combined')
+        if overwrite and reselect:
+            raise ValueError('OVERWRITE=1 and RESELECT=1 cannot be combined')
+        if reselect and command not in ('filter', 'basket'):
+            raise ValueError('RESELECT=1 applies only to filter and basket')
+        if retry_failed and command == 'export':
+            raise ValueError('RETRY_FAILED=1 does not apply to export')
+
+    def run(
+        self,
+        command: str,
+        *,
+        overwrite: bool = False,
+        retry_failed: bool = False,
+        allow_partial: bool = False,
+        reselect: bool = False,
+    ) -> int:
         """Execute one stage or the ordered basket under an exclusive output lock.
 
         Args:
                 command: A stage name or ``basket``.
                 overwrite: Rebuild selected stages from their inputs.
                 retry_failed: Retry only completed per-PR generation failures.
+                allow_partial: Accept the exact known omissions at selection or export.
+                reselect: Accept a changed ordered selection after processing candidates.
 
         Returns:
                 Zero on success or three when a direct generate run has failed PRs.
@@ -1209,13 +1850,10 @@ class Pipeline:
         StorageError: If an input, checkpoint, or stage identity is inconsistent.
 
         """
-        if command not in (*STAGES, 'basket'):
-            raise ValueError(f'unknown command: {command}')
-        if overwrite and retry_failed:
-            raise ValueError('OVERWRITE=1 and RETRY_FAILED=1 cannot be combined')
-        if retry_failed and command not in ('generate', 'basket'):
-            raise ValueError('RETRY_FAILED=1 applies only to generate and basket')
+        self._validate_command(command, overwrite, retry_failed, reselect)
         self._generation_snapshot = None
+        self.allow_partial, self.reselect, self.overwrite = allow_partial, reselect, overwrite
+        self.retry_failed = retry_failed
         selected = STAGES if command == 'basket' else (command,)
         if command == 'basket':
             self.progress.basket(self.config.filter.selection.limit)
@@ -1228,13 +1866,16 @@ class Pipeline:
                     self.progress.start(stage, 'repository' if stage == 'collect' else 'predecessors')
                     try:
                         if stage == 'collect':
-                            final = self._collect(overwrite)
+                            final = self._collect(overwrite, retry_failed)
                         elif stage == 'filter':
-                            final = self._filter(overwrite)
+                            final = self._filter(overwrite, retry_failed)
                         elif stage == 'generate':
                             final = self._generate(overwrite, retry_failed)
                         else:
-                            final = self._export(overwrite or retry_failed)
+                            final = self._export(overwrite)
+                    except DecisionRequired:
+                        self.progress.finish('blocked')
+                        raise
                     except PipelineInterrupted:
                         self.progress.finish('interrupted')
                         raise
@@ -1257,9 +1898,17 @@ class Pipeline:
                         self._print_partial_export(final)
                 if command == 'basket':
                     self.progress.finish_basket('completed')
-                if command == 'generate' and isinstance(final, TasksDocument) and final.failed:
-                    return 3
+                if isinstance(final, (CollectDocument, FilterDocument, TasksDocument)):
+                    if not final.tasks:
+                        self._message(f'{final.meta.stage}: no successful records remain', level='WARNING')
+                        return 3
+                    if not allow_partial and (final.failed or isinstance(final, TasksDocument) and final.rejected):
+                        return 3
                 return 0
+            except DecisionRequired as error:
+                self._message(str(error), level='WARNING')
+                self.progress.finish_basket('blocked')
+                return 3
             except PipelineInterrupted:
                 self.progress.finish_basket('interrupted')
                 raise
@@ -1305,6 +1954,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--config', default='config.yaml')
     parser.add_argument('--overwrite', choices=('0', '1'), default='0')
     parser.add_argument('--retry-failed', choices=('0', '1'), default='0')
+    parser.add_argument('--allow-partial', choices=('0', '1'), default='0')
+    parser.add_argument('--reselect', choices=('0', '1'), default='0')
     parser.add_argument(
         '--log-level', choices=('DEBUG', 'INFO', 'WARNING', 'ERROR'), default=os.environ.get('LOG_LEVEL', 'INFO')
     )
@@ -1340,7 +1991,13 @@ def main(argv: list[str] | None = None) -> int:
         command = 'basket' if args.command == 'smoke-live' else args.command
         pipeline = Pipeline(config, logs=logs, progress_mode=args.progress)
         setup = False
-        return pipeline.run(command, overwrite=args.overwrite == '1', retry_failed=args.retry_failed == '1')
+        return pipeline.run(
+            command,
+            overwrite=args.overwrite == '1',
+            retry_failed=args.retry_failed == '1',
+            allow_partial=args.allow_partial == '1',
+            reselect=args.reselect == '1',
+        )
     except PipelineInterrupted:
         assert logs is not None
         logs.message('interrupted; checkpoint saved; resume with the same CONFIG.', level='WARNING', stream=sys.stderr)

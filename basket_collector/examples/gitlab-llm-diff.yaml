@@ -1,6 +1,6 @@
 # One merged Go test fix. GITLAB_TOKEN is required even for this public project.
 # https://gitlab.com/gitlab-org/gitlab-runner/-/merge_requests/7494
-schema_version: 1
+schema_version: 2
 env_file: ../.env
 dataset:
   name: gitlab-runner-llm-diff
@@ -19,12 +19,12 @@ collect:
   change_ids: [7494]
   default_branch_only: true
   max_changes: 1
-git:
-  timeout_seconds: 180
-  initial_depth: 1
-  max_depth: 4096
-  max_transfer_bytes: 536870912
 filter:
+  git:
+    timeout_seconds: 180
+    initial_depth: 1
+    max_depth: 4096
+    max_transfer_bytes: 536870912
   workers: 1
   scope:
     enabled: true

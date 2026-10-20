@@ -18,11 +18,11 @@ from basket_collector.contracts import (
     SourceRevisions,
 )
 from basket_collector.git import GitRepository
-from basket_collector.github import GitHubClient, GitHubError
+from basket_collector.github import GitHubClient
 from basket_collector.github_source import GitHubRemoteVCS
 from basket_collector.pipeline import Pipeline
 from basket_collector.sources import RetrievalReceipt, SourceDescriptor
-from basket_collector.storage import read_checkpoint, read_document
+from basket_collector.storage import read_document
 from fixture_helpers import native_config, retrieval
 
 SHA = 'a' * 40
@@ -86,12 +86,13 @@ def _config(tmp_path: Path) -> CollectorConfig:
     """Build the local configuration fixture for this test module."""
     return CollectorConfig.model_validate(
         {
+            'schema_version': 2,
             'source': {'provider': 'github', 'project': 'owner/repo', 'max_retries': 1, 'requests_per_second': 1000000},
             'dataset': {'name': 'test basket', 'description': 'offline', 'maintainers': ['alice']},
             'output_dir': str(tmp_path / 'output'),
             'cache_dir': str(tmp_path / 'cache'),
             'collect': {'selection': 'change_ids', 'change_ids': [1, 2]},
-            'filter': {'workers': 1},
+            'filter': {'workers': 1, 'max_retries': 0},
             'generation': {'source': 'issue'},
         }
     )
@@ -202,24 +203,22 @@ def test_filter_resumes_only_pending_pr_after_graphql_rate_limit(
             Pipeline(config, producer=_producer(), remote=GitHubRemoteVCS(config.source, client=github)).run('collect')
             == 0
         )
-        with pytest.raises(GitHubError) as error:
+        assert (
             Pipeline(
                 config,
                 producer=_producer(),
                 remote=GitHubRemoteVCS(config.source, client=github),
                 git_repository=cast(GitRepository, FakeGitRepository()),
             ).run('filter')
-    assert error.value.code == 'github_rate_limited'
-    assert error.value.retryable is True
-    assert graphql_attempts == 2
-    checkpoint, state = read_checkpoint(Path(config.output_dir) / '.work' / 'filter.json', FilterDocument)
-    assert checkpoint.meta.status == 'failed'
+            == 3
+        )
+    assert graphql_attempts == 1
+    checkpoint = read_document(Path(config.output_dir) / 'filtered.json', FilterDocument)
+    assert checkpoint.meta.status == 'completed'
     assert checkpoint.meta.counts.succeeded == 1
-    assert checkpoint.meta.counts.pending == 1
-    assert checkpoint.meta.error is not None
-    assert checkpoint.meta.error.code == 'github_rate_limited'
-    assert checkpoint.meta.error.retryable is True
-    assert state['phase'] == 'local'
+    assert checkpoint.meta.counts.pending == 0 and checkpoint.meta.counts.failed == 1
+    assert checkpoint.failed[0].error.code == 'github_rate_limited'
+    assert checkpoint.meta.error is None
 
     requests.clear()
     limited = False
@@ -230,7 +229,7 @@ def test_filter_resumes_only_pending_pr_after_graphql_rate_limit(
                 producer=_producer(),
                 remote=GitHubRemoteVCS(config.source, client=github),
                 git_repository=cast(GitRepository, FakeGitRepository()),
-            ).run('filter')
+            ).run('filter', retry_failed=True)
             == 0
         )
     assert requests == [('rest', 2), ('rest', 2), ('graphql', 2)]
