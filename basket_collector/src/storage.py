@@ -227,7 +227,7 @@ def current_producer(project_dir: Path | None = None) -> Producer:
     lock_data = (source_dir / 'requirements.lock').read_bytes()
     version_result = subprocess.run(['git', '--version'], check=True, capture_output=True, text=True, timeout=10)
     return Producer(
-        version='0.1.0',
+        version='0.1.1',
         implementation_sha256=inventory.hexdigest(),
         dependencies_sha256=hashlib.sha256(lock_data).hexdigest(),
         python_version=f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',

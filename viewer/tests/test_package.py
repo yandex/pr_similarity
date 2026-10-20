@@ -14,7 +14,7 @@ def test_wheel_installed_without_source(tmp_path):
     subprocess.run([sys.executable,'-m','pip','install','--no-deps','--target',str(tmp_path/'installed'),str(wheel)],check=True,capture_output=True)
     code='import sys;sys.path.insert(0,sys.argv[1]);from viewer.contracts import validator;from viewer.metrics import aggregate;import viewer;assert "installed" in viewer.__file__;assert validator("report");assert aggregate([])["score"] is None;from importlib.resources import files;assert all(len(files("viewer").joinpath("static",name).read_bytes())>100 for name in ("index.html","app.js","style.css"));print(viewer.__version__)'
     result=subprocess.run([sys.executable,'-I','-c',code,str(tmp_path/'installed')],cwd=tmp_path,check=True,capture_output=True,text=True)
-    assert result.stdout.strip()=='0.1.0'
+    assert result.stdout.strip()=='0.1.1'
 
 
 def test_frozen_consumer_sources_match_recorded_hashes():

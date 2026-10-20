@@ -39,8 +39,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "size_bytes": 1038,
-      "sha256": "99dd7a9b98357cc20fda03387e0910635e0a201142bca92e957c5da6de843880",
+      "size_bytes": 1907,
+      "sha256": "ef2055265bd37068a74369fe732efef01271a00ea1673b5c5c1dcb2f73d4b243",
       "executable": false
     },
     {
@@ -184,7 +184,7 @@
     {
       "path": "basket_collector/pyproject.toml",
       "size_bytes": 1246,
-      "sha256": "e3ca70dd9b7aa03be5ccc96b1a8768ef5d72cebdb137d3a53be33c17d2951842",
+      "sha256": "8fca4ba0bd4dba827f7209d65549b43452236dd454dde7c9b45e841637109ad3",
       "executable": false
     },
     {
@@ -196,7 +196,7 @@
     {
       "path": "basket_collector/src/__init__.py",
       "size_bytes": 102,
-      "sha256": "90f4189ebd0e0dd38a9e6e8305d6a91ec7f88575c930a312909273ac2d5e8e03",
+      "sha256": "5c537a05c4681b026cf470afe9059305251faed44b0ffec20f6906ac501af685",
       "executable": false
     },
     {
@@ -358,7 +358,7 @@
     {
       "path": "basket_collector/src/storage.py",
       "size_bytes": 15590,
-      "sha256": "314e9c416cdcaffa16c632863c9080ec8c0469134e9c56965c767ff39ec52e8d",
+      "sha256": "35284f707e2e1659c336323ffce2cc96d21e07a47131b2cc23486780ac0d74a4",
       "executable": false
     },
     {
@@ -754,7 +754,7 @@
     {
       "path": "benchmark/pyproject.toml",
       "size_bytes": 1595,
-      "sha256": "5579ec3ef46b215dfb8846d5fe2c03ed09f1ce00253b8cf7478cc8e6928f96ba",
+      "sha256": "4905d781da5120812b9d4b6b6b0b2180183ce0bd56be6c7c113c7be1317b5e5a",
       "executable": false
     },
     {
@@ -772,7 +772,7 @@
     {
       "path": "benchmark/src/__init__.py",
       "size_bytes": 88,
-      "sha256": "22c455635523798495a41cb075eb9461f37948b95a5bc037837f6ffd6dbf887a",
+      "sha256": "96218df8d34829fd88f544c61b558e37879439fe13f34213e4a8c486fbfb4215",
       "executable": false
     },
     {
@@ -1564,7 +1564,7 @@
     {
       "path": "viewer/pyproject.toml",
       "size_bytes": 934,
-      "sha256": "44641e82fd479a3450e8c09cead1d7bbbad14633f325620e9b9d98c6a214ddc4",
+      "sha256": "0cf6f553b83304af95893a7ef929000f49fc21e0c516b4e5f142a68d850885ad",
       "executable": false
     },
     {
@@ -1582,7 +1582,7 @@
     {
       "path": "viewer/src/__init__.py",
       "size_bytes": 90,
-      "sha256": "ae8451b82e4cc0c27492f1a712412d118eacd3ee3a90514eb7ac197314cfebe6",
+      "sha256": "c6c7437cb927e593464e50f62e093975616bbefeafe1a09f4b3a0ad6f3e1409b",
       "executable": false
     },
     {
@@ -1924,7 +1924,7 @@
     {
       "path": "viewer/tests/test_package.py",
       "size_bytes": 1525,
-      "sha256": "2a573acdc7fe49506464459f523c35e73d7d60b50e2d13a9c458885c841b1b87",
+      "sha256": "92b8e31a092f4c85df275d00436841d62a0292c372e1331f760057c8e7cb91b7",
       "executable": false
     },
     {
