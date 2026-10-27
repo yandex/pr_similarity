@@ -5,14 +5,15 @@ description: Use when inspecting saved PR Similarity task behavior, logs, source
 
 # Analyze a saved run
 
-Read root/benchmark AGENTS.md, the [artifact contract](../../../benchmark/README.md#further-details)
-and [pricing guide](../../../benchmark/README.md#estimate-cost-with-reprice).
+Read root/benchmark AGENTS.md, the [artifact contract](../../../benchmark/docs/reference.md#reference)
+and [pricing guide](../../../benchmark/docs/pricing.md#estimate-cost-with-reprice).
 Analysis is read-only. Rescore/reprice, HTML generation, publication and new model
 calls are separate actions requiring the corresponding request.
 
 Start at `report.json`: record frozen basket/run identity and actual coverage.
-Read the run's frozen basket, not a newer collector output. Both v1/v2 are valid
-inputs; never convert them during analysis. For v2, inspect `meta.coverage` and
+Read the run's original frozen basket. Follow the
+[saved-data compatibility note](../../../README.md#reading-data-from-earlier-releases).
+Never convert artifacts during analysis. Inspect `meta.coverage` and
 `meta.omissions`, separating failed collector records and generation rejections
 from agent execution failures. Exported tasks are the benchmark population.
 Select by task `ordinal`/PR number and `directory`; follow its selected final
@@ -20,7 +21,7 @@ attempt and score/price refs in `_meta/state.json`. For an explicitly requested
 older attempt, find its sequence in that registered task's current/history refs and
 open `tasks/<key>/attempts/NNN/`. Never choose a success/newest directory instead
 of the authoritative selection. Valid state can rebuild a report cache; damaged
-state or legacy layouts are not reconstructed by guessing.
+state or unsupported layouts are not reconstructed by guessing.
 
 Read shared native input through `report.agent_input`: `agent/opencode.json`
 and declared resources are frozen once. Effective refs point to unique

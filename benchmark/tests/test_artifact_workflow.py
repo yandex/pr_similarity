@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,23 +17,33 @@ from typing import NoReturn
 
 import pytest
 import yaml
-from benchmark import coordinator
-from benchmark.archive import create_archive, verify_archive
-from benchmark.config import RunConfig, load_config
-from benchmark.contracts import validate_document
-from benchmark.git import GitCache
-from benchmark.provisioning import Runtime
-from benchmark.repricing import reprice
-from benchmark.rescore import rescore
-from benchmark.run_store import RunStore
-from benchmark.runner import run
-from benchmark.storage import bytes_sha256, canonical_bytes, read_json, write_json
-from benchmark.triplet_paths import triplet_path
-from benchmark.triplets import read_triplets
-from test_basket import payload
-from test_basket_v2 import payload as payload_v2
+from test_basket import FixtureBasket, payload
 from test_pricing import policy
 from test_workspace import git
+
+from benchmark.config import RunConfig, load_config
+from benchmark.execution.provisioning import Runtime
+from benchmark.metrics.rescore import rescore
+from benchmark.models import Report, State
+from benchmark.models.base import WireModel
+from benchmark.models.evidence import Seal, Start
+from benchmark.models.runtime import ProvisioningReceipt
+from benchmark.persistence.run_store import RunStore
+from benchmark.persistence.storage import (
+    bytes_sha256,
+    canonical_bytes,
+    read_json,
+    write_json,
+)
+from benchmark.persistence.triplets import read_triplets
+from benchmark.pricing.operations import reprice
+from benchmark.publication.archive import create_archive, verify_archive
+from benchmark.runtime import coordinator
+from benchmark.runtime.runner import run
+from benchmark.validation.basket import load_basket
+from benchmark.validation.contracts import validate_document
+from benchmark.validation.triplet_paths import triplet_path
+from benchmark.vcs.git import GitCache
 
 
 @dataclass(frozen=True)
@@ -81,9 +92,9 @@ def _history(root: Path) -> tuple[GitCache, str, str]:
     return cache, before, after
 
 
-def _basket(cache: GitCache, before: str, after: str) -> dict:
+def _basket(cache: GitCache, before: str, after: str, version: int) -> FixtureBasket:
     """Bind every changed source blob/mode to real endpoint trees in a frozen basket."""
-    data = payload()
+    data = payload(version=version)
     row = data['tasks'][0]
     trees = {role: cache.tree(revision) for role, revision in [('before', before), ('after', after)]}
     row['workspace'] = '.'
@@ -115,26 +126,22 @@ def _basket(cache: GitCache, before: str, after: str) -> dict:
         'changed_lines': additions + deletions,
         'patch_chars': 0,
     }
-    cache.verify_reference(row)
     return data
 
 
-def _inputs(root: Path, basket_version: int = 1) -> Workflow:
+def _inputs(root: Path, basket_version: int = 3) -> Workflow:
     """Freeze UTF-8 operator config, untouched compact basket bytes and synthetic tariff inputs."""
     cache, before, after = _history(root)
     dataset = root / 'basket.json'
-    data = _basket(cache, before, after)
-    if basket_version == 2:
-        contract = payload_v2()
-        data['meta'].pop('omitted_failed_ids')
-        data['meta']['schema_version'] = 2
-        for field in ('coverage', 'selection', 'omissions'):
-            data['meta'][field] = contract['meta'][field]
-        data['tasks'][0]['provenance']['generation']['input_sha256'] = contract['tasks'][0]['provenance']['generation'][
-            'input_sha256'
-        ]
-        data['tasks'][0]['provenance']['generation']['reused_from'] = None
-    dataset.write_bytes(canonical_bytes(data) + b'\n')
+    template = Path(__file__).parent / f'fixtures/basket-v{basket_version}/github.json'
+    template_bytes = template.read_bytes()
+    data = _basket(cache, before, after, basket_version)
+    frozen = canonical_bytes(data) + b'\n'
+    dataset.write_bytes(frozen)
+    basket = load_basket(dataset)
+    assert basket.schema_version == basket_version and basket.content == frozen
+    cache.verify_reference(basket.rows[0])
+    assert template.read_bytes() == template_bytes
     executable = root / 'controlled-opencode'
     executable.write_bytes((Path(__file__).parent / 'fixtures/native-workflow.py').read_bytes())
     executable.chmod(0o755)
@@ -164,13 +171,14 @@ def _inputs(root: Path, basket_version: int = 1) -> Workflow:
     )
     runtime = Runtime(
         executable,
-        {
-            'actual_version': '1.18.33',
-            'asset_name': 'offline-native-fixture.py',
-            'platform': 'linux-x64-offline-fixture',
-            'archive_sha256': bytes_sha256(executable.read_bytes()),
-            'binary_sha256': bytes_sha256(executable.read_bytes()),
-        },
+        ProvisioningReceipt(
+            selector='opencode:v1.18.33',
+            actual_version='1.18.33',
+            asset_name='offline-native-fixture.py',
+            platform='linux-x64-offline-fixture',
+            archive_sha256=bytes_sha256(executable.read_bytes()),
+            binary_sha256=bytes_sha256(executable.read_bytes()),
+        ),
     )
     tariffs = policy()
     tariffs['models'][0].update(provider='provider', model='model', long_context=None)
@@ -187,6 +195,16 @@ def _serialization(directory: Path, frozen_basket: bytes) -> None:
             continue
         content = path.read_bytes()
         data = json.loads(content)
+        if path.name in (
+            'report.json',
+            'run.json',
+            'state.json',
+            'start.json',
+            'seal.json',
+            'outcome.json',
+            'scoring.json',
+        ):
+            assert data['schema_version'] == 2
         assert content == (json.dumps(data, ensure_ascii=False, allow_nan=False, indent=2) + '\n').encode('utf-8'), path
         assert b'\r\n' not in content and content.endswith(b'\n')
     events = list(directory.rglob('*.jsonl'))
@@ -198,34 +216,47 @@ def _serialization(directory: Path, frozen_basket: bytes) -> None:
     assert not (directory / 'checkpoint.json').exists()
 
 
-def _roles(directory: Path, report: dict) -> None:
+def _roles(directory: Path, report: object) -> None:
     """Prove original paths/extensions and all role-pair availability without fabricating absent files."""
-    row = report['tasks'][0]
-    index_path = directory / row['artifacts']['triplets_manifest']
-    bundle = read_triplets(index_path.parent, owner=row, run_id=report['run']['id'])
-    entries = {entry['path']: entry for entry in bundle.index['entries']}
+    report = Report.model_validate(report)
+    row = report.tasks[0]
+    assert row.artifacts.triplets_manifest is not None
+    index_path = directory / row.artifacts.triplets_manifest
+    bundle = read_triplets(index_path.parent, owner=row, run_id=report.run.id)
+    entries = {entry.path: entry for entry in bundle.index.entries}
     assert {'src/value.py', 'src/empty.py', 'src/shape.py', 'src/shape.py/leaf.py'} <= entries.keys()
     for path, entry in entries.items():
-        parents = {Path(value['path']).parent for value in entry['files'].values() if value is not None}
+        parents = {
+            Path(value.path).parent
+            for value in (entry.files.base, entry.files.human, entry.files.ai)
+            if value is not None
+        }
         assert len(parents) <= 1
-        for role in ('base', 'human', 'ai'):
-            receipt = entry['files'][role]
-            if entry['exists'][role]:
-                assert receipt['path'] == triplet_path(entry['number'], path, role)
-                content = (index_path.parent / receipt['path']).read_bytes()
-                assert receipt['size_bytes'] == len(content) and receipt['sha256'] == bytes_sha256(content)
+        for role, exists, mode, receipt in (
+            ('base', entry.exists.base, entry.modes.base, entry.files.base),
+            ('human', entry.exists.human, entry.modes.human, entry.files.human),
+            ('ai', entry.exists.ai, entry.modes.ai, entry.files.ai),
+        ):
+            if exists:
+                assert receipt is not None and receipt.path == triplet_path(entry.number, path, role)
+                content = (index_path.parent / receipt.path).read_bytes()
+                assert receipt.size_bytes == len(content) and receipt.sha256 == bytes_sha256(content)
             else:
-                assert receipt is None and entry['modes'][role] is None
-    for first, second in [('base', 'human'), ('base', 'ai'), ('human', 'ai')]:
-        assert entries['src/value.py']['exists'][first] and entries['src/value.py']['exists'][second]
-        assert entries['src/empty.py']['files'][first]['size_bytes'] == 0
-        assert entries['src/empty.py']['files'][second]['size_bytes'] == 0
-    assert entries['src/deleted.py']['exists'] == {'base': True, 'human': False, 'ai': False}
-    assert entries['src/added.py']['exists'] == {'base': False, 'human': True, 'ai': True}
-    assert entries['src/human-only.py']['exists'] == {'base': False, 'human': True, 'ai': False}
-    assert entries['src/agent-only.py']['exists'] == {'base': False, 'human': False, 'ai': True}
-    assert entries['src/shape.py']['exists'] == {'base': True, 'human': False, 'ai': False}
-    assert entries['src/shape.py/leaf.py']['exists'] == {'base': False, 'human': True, 'ai': True}
+                assert receipt is None and mode is None
+    value_exists = entries['src/value.py'].exists
+    assert value_exists.base and value_exists.human and value_exists.ai
+    empty = entries['src/empty.py'].files
+    assert all(receipt is not None and receipt.size_bytes == 0 for receipt in (empty.base, empty.human, empty.ai))
+    for path, expected in [
+        ('src/deleted.py', (True, False, False)),
+        ('src/added.py', (False, True, True)),
+        ('src/human-only.py', (False, True, False)),
+        ('src/agent-only.py', (False, False, True)),
+        ('src/shape.py', (True, False, False)),
+        ('src/shape.py/leaf.py', (False, True, True)),
+    ]:
+        actual = entries[path].exists
+        assert (actual.base, actual.human, actual.ai) == expected
 
 
 def _export(directory: Path, archive: Path) -> None:
@@ -240,16 +271,16 @@ def _export(directory: Path, archive: Path) -> None:
     shutil.copyfile(archive, root / 'producer.tar.gz')
     for name in ('report.json', 'basket.json', 'config_identity.json', 'manifest.json', 'run.json'):
         shutil.copyfile(directory / name, root / name)
-    report = read_json(directory / 'report.json')
+    report = Report.model_validate(read_json(directory / 'report.json'))
     write_json(
         root / 'current.json',
         {
             'run_directory': saved.name,
             'archive': 'producer.tar.gz',
-            'run_id': report['run']['id'],
+            'run_id': report.run.id,
             'adapter': 'provider-free executable fixture',
             'sandbox': read_json(directory / '_meta/sandbox.json'),
-            'native_attempt': report['tasks'][0]['final_attempt'],
+            'native_attempt': report.tasks[0].final_attempt,
             'role_pairs': ['base-human', 'base-ai', 'human-ai'],
             'source_cases': [
                 'modified',
@@ -265,7 +296,7 @@ def _export(directory: Path, archive: Path) -> None:
     )
 
 
-@pytest.mark.parametrize('basket_version', [1, 2])
+@pytest.mark.parametrize('basket_version', [1, 2, 3])
 def test_public_runner_native_artifact_workflow(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, basket_version: int
 ) -> None:
@@ -275,32 +306,42 @@ def test_public_runner_native_artifact_workflow(
     monkeypatch.setattr(coordinator, 'provision_opencode', lambda *_args, **_kwargs: inputs.runtime)
     code, directory = run(inputs.config, inputs.dataset, output=tmp_path / 'runs', progress='off')
     assert code == 0
-    report = read_json(directory / 'report.json')
+    report = Report.model_validate(read_json(directory / 'report.json'))
     validate_document('report', report)
+    assert report.schema_version == 2
     assert re.fullmatch(r'\d{8}T\d{6}Z-offline-artifact-workflow-[0-9a-f]{8}', directory.name)
-    stamp = datetime.fromisoformat(report['run']['created_at']).strftime('%Y%m%dT%H%M%SZ')
+    stamp = datetime.fromisoformat(report.run.created_at).strftime('%Y%m%dT%H%M%SZ')
     assert directory.name.startswith(stamp + '-offline-artifact-workflow-')
-    assert report['run']['tags'] == inputs.config.data['tags']
-    assert report['inference']['configured']['effort']['value'] == 'medium'
-    assert report['inference']['effective']['model']['value'] == 'provider/model'
-    row = report['tasks'][0]
-    assert row['execution']['status'] == 'completed' and row['scoring']['status'] == 'available'
-    assert row['progress']['phase'] == 'completed'
-    assert datetime.fromisoformat(row['progress']['updated_at']) >= datetime.fromisoformat(
-        row['final_attempt']['finished_at']
+    assert report.run.tags == inputs.config.data.tags
+    assert report.inference.configured.effort.value == 'medium'
+    assert report.inference.effective.model.value == 'provider/model'
+    row = report.tasks[0]
+    assert row.execution.status == 'completed' and row.scoring.status == 'available'
+    assert row.progress.phase == 'completed'
+    assert row.final_attempt is not None
+    assert (
+        row.progress.updated_at is not None
+        and row.final_attempt is not None
+        and row.final_attempt.finished_at is not None
     )
-    original_progress = row['progress'].copy()
-    assert row['telemetry']['tokens']['total'] == 16 and row['telemetry']['cost']['amount'] == 0.5
+    assert datetime.fromisoformat(row.progress.updated_at) >= datetime.fromisoformat(row.final_attempt.finished_at)
+    original_progress = row.progress.model_copy(deep=True)
+    assert row.telemetry.tokens.total == 16 and row.telemetry.cost.amount == 0.5
     _roles(directory, report)
-    outcome = directory / row['artifacts']['outcome']
-    original_outcome, original_attempt = outcome.read_bytes(), row['final_attempt'].copy()
-    seal = directory / Path(row['artifacts']['outcome']).with_name('seal.json')
-    original_seal = seal.read_bytes()
-    assert read_json(seal)['native_timing']['finished_at'] == original_attempt['finished_at']
-    assert 'Offline fixture: Завершено' in (directory / row['artifacts']['agent_log']).read_text(encoding='utf-8')
-    assert b'OFFLINE_PRIVATE_SENTINEL' not in lzma.decompress(
-        (directory / row['telemetry']['session_db']['path']).read_bytes()
+    assert (
+        row.artifacts.outcome is not None
+        and row.artifacts.agent_log is not None
+        and row.telemetry.session_db is not None
     )
+    outcome = directory / row.artifacts.outcome
+    assert row.final_attempt is not None
+    original_outcome, original_attempt = outcome.read_bytes(), row.final_attempt.model_copy(deep=True)
+    seal = directory / Path(row.artifacts.outcome).with_name('seal.json')
+    original_seal = seal.read_bytes()
+    assert Seal.model_validate(read_json(seal)).native_timing.finished_at == original_attempt.finished_at
+    assert 'Offline fixture: Завершено' in (directory / row.artifacts.agent_log).read_text(encoding='utf-8')
+    assert row.telemetry.session_db is not None
+    assert b'OFFLINE_PRIVATE_SENTINEL' not in lzma.decompress((directory / row.telemetry.session_db.path).read_bytes())
     human_log = (directory / 'run.log').read_text(encoding='utf-8')
     assert 'Task 001/1 · attempt 1' in human_log
     assert 'Final: processed 1/1; tasks complete 1/1; native completed 1' in human_log
@@ -320,19 +361,26 @@ def test_public_runner_native_artifact_workflow(
     assert run(inputs.config, inputs.dataset, resume=moved, progress='off')[0] == 0
     assert rescore(moved, level='ERROR') == 0
     assert reprice(moved, inputs.pricing, level='ERROR') == 0
-    current = read_json(moved / 'report.json')
-    assert current['tasks'][0]['final_attempt'] == original_attempt
-    assert current['tasks'][0]['progress'] == original_progress
+    current = Report.model_validate(read_json(moved / 'report.json'))
+    assert current.tasks[0].final_attempt == original_attempt
+    assert current.tasks[0].progress == original_progress
     resumed_log = (moved / 'run.log').read_text(encoding='utf-8')
     assert 'Resume plan: reused 1; host-only recovery 0; new attempts 0; blocked 0.' in resumed_log
     assert 'All-attempt native reported: known subtotal USD 0.5' in resumed_log
-    assert (moved / row['artifacts']['outcome']).read_bytes() == original_outcome
+    assert (moved / row.artifacts.outcome).read_bytes() == original_outcome
     assert (moved / seal.relative_to(directory)).read_bytes() == original_seal
-    assert current['last_rescore'] is not None and current['last_reprice'] is not None
+    assert current.last_rescore is not None and current.last_reprice is not None
     assert len(list(moved.glob('tasks/*/attempts/*/start.json'))) == 1
-    assert current['tasks'][0]['telemetry']['api_equivalent']['amount'] > 0
+    assert current.tasks[0].telemetry.api_equivalent is not None
+    price = current.tasks[0].telemetry.api_equivalent
+    assert price is not None and price.amount is not None and price.amount > 0
     archive = create_archive(moved, tmp_path / 'producer.tar.gz')
-    assert verify_archive(archive.path)['complete']
+    assert verify_archive(archive.path).complete
+    with tarfile.open(archive.path, 'r:gz') as saved:
+        member = saved.extractfile('basket.json')
+        assert member is not None
+        with member:
+            assert member.read() == frozen
     _serialization(moved, frozen)
     _export(moved, archive.path)
 
@@ -346,17 +394,33 @@ def _process_identity(pid: int) -> tuple[str, int] | None:
     return fields[0], int(fields[19])
 
 
-def _living(descendants: list[dict]) -> list[int]:
+class ProcessIdentity(WireModel):
+    """Identify a test-owned child without inspecting its environment."""
+
+    pid: int
+    start_time: int
+
+
+class CrashNotice(WireModel):
+    """Describe the exact durable boundary reached by the owned crash driver."""
+
+    boundary: str
+    run_directory: str
+    pid: int
+    descendants: list[ProcessIdentity]
+
+
+def _living(descendants: list[ProcessIdentity]) -> list[int]:
     """Return still-running descendants while protecting against PID reuse and zombies."""
     result = []
     for item in descendants:
-        identity = _process_identity(item['pid'])
-        if identity is not None and identity[1] == item['start_time'] and identity[0] != 'Z':
-            result.append(item['pid'])
+        identity = _process_identity(item.pid)
+        if identity is not None and identity[1] == item.start_time and identity[0] != 'Z':
+            result.append(item.pid)
     return result
 
 
-def _kill_owned(process: subprocess.Popen, descendants: list[dict]) -> None:
+def _kill_owned(process: subprocess.Popen, descendants: list[ProcessIdentity]) -> None:
     """SIGKILL the owned driver group and require namespaced descendants to die with their parent."""
     if process.poll() is None:
         os.killpg(process.pid, signal.SIGKILL)
@@ -372,7 +436,7 @@ def _kill_owned(process: subprocess.Popen, descendants: list[dict]) -> None:
             os.kill(pid, signal.SIGKILL)
 
 
-def _crash(root: Path, boundary: str) -> tuple[Path, dict]:
+def _crash(root: Path, boundary: str) -> tuple[Path, CrashNotice]:
     """Pause a real subprocess at one durable boundary, kill it and retain exact evidence."""
     driver = Path(__file__).parent / 'fixtures/artifact-crash-driver.py'
     environment = os.environ.copy()
@@ -389,20 +453,21 @@ def _crash(root: Path, boundary: str) -> tuple[Path, dict]:
         )
         notice = None
         try:
-            deadline = time.monotonic() + 10
+            # Includes Python bootstrap and several real sandbox mount namespaces.
+            deadline = time.monotonic() + 30
             while time.monotonic() < deadline and not paused.is_file() and process.poll() is None:
                 time.sleep(0.02)
             assert paused.is_file(), (root / 'driver.log').read_text(encoding='utf-8')
-            notice = read_json(paused)
-            assert notice['boundary'] == boundary and notice['pid'] == process.pid
+            notice = CrashNotice.model_validate(read_json(paused))
+            assert notice.boundary == boundary and notice.pid == process.pid
         finally:
-            _kill_owned(process, [] if notice is None else notice['descendants'])
+            _kill_owned(process, [] if notice is None else notice.descendants)
         assert process.returncode == -signal.SIGKILL
     assert notice is not None
-    return Path(notice['run_directory']), notice
+    return Path(notice.run_directory), notice
 
 
-@pytest.mark.parametrize('basket_version', [1, 2])
+@pytest.mark.parametrize('basket_version', [1, 2, 3])
 @pytest.mark.parametrize('boundary', ['reserved', 'native', 'seal', 'outcome', 'state'])
 def test_sigkill_recovers_only_state_owned_native_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str, basket_version: int
@@ -419,26 +484,27 @@ def test_sigkill_recovers_only_state_owned_native_facts(
         monkeypatch.setenv('PRSIM_CRASH_NATIVE', 'continue-native-process-after-crash-test')
     directory, notice = _crash(tmp_path, boundary)
     if boundary == 'native':
-        assert notice['descendants'], 'live-native boundary must observe the actual sandbox child'
+        assert notice.descendants, 'live-native boundary must observe the actual sandbox child'
     first = next(directory.glob('tasks/*/attempts/001'))
     start = (first / 'start.json').read_bytes()
-    initial = read_json(first / 'start.json')['attempt']
+    initial = Start.model_validate(read_json(first / 'start.json')).attempt
     original_seal = (first / 'seal.json').read_bytes() if (first / 'seal.json').exists() else None
     original_outcome = (first / 'outcome.json').read_bytes() if (first / 'outcome.json').exists() else None
-    selected = read_json(directory / '_meta/state.json')['tasks'][0]
-    assert selected['attempt']['id'] == initial['id'] and selected['next_sequence'] == 2
+    selected = State.model_validate(read_json(directory / '_meta/state.json')).tasks[0]
+    assert initial is not None and selected.attempt is not None
+    assert selected.attempt.id == initial.id and selected.next_sequence == 2
     if boundary == 'state':
-        assert selected['processing_status'] == 'completed'
-        assert selected['progress']['phase'] == 'completed'
-        assert read_json(directory / 'report.json')['tasks'][0]['processing_status'] != 'completed'
+        assert selected.processing_status == 'completed'
+        assert selected.progress.phase == 'completed'
+        assert Report.model_validate(read_json(directory / 'report.json')).tasks[0].processing_status != 'completed'
     if boundary in ('reserved', 'native'):
         assert original_seal is None and original_outcome is None
-        snapshot = RunStore.open(directory).snapshot()['tasks'][0]
-        assert snapshot['scoring']['status'] == 'pending' and snapshot['telemetry']['tokens']['total'] is None
+        snapshot = RunStore.open(directory).snapshot().tasks[0]
+        assert snapshot.scoring.status == 'pending' and snapshot.telemetry.tokens.total is None
         monkeypatch.setattr(coordinator, 'provision_opencode', lambda *_args, **_kwargs: inputs.runtime)
     else:
         assert original_seal is not None
-        assert selected['outcome'] is not None if boundary == 'state' else selected['outcome'] is None
+        assert selected.outcome is not None if boundary == 'state' else selected.outcome is None
 
         def forbidden(*_args: object, **_kwargs: object) -> NoReturn:
             """Reject native replay when complete sealed evidence permits host recovery."""
@@ -447,28 +513,32 @@ def test_sigkill_recovers_only_state_owned_native_facts(
         monkeypatch.setattr(coordinator, 'provision_opencode', forbidden)
     assert run(config, inputs.dataset, resume=directory, progress='off')[0] == 0
     report = RunStore.open(directory).snapshot()
-    row = report['tasks'][0]
+    row = report.tasks[0]
     expected_sequence = 2 if boundary in ('reserved', 'native') else 1
-    assert row['final_attempt']['sequence'] == expected_sequence
+    assert row.final_attempt is not None
+    assert row.final_attempt.sequence == expected_sequence
     assert len(list(directory.glob('tasks/*/attempts/*/start.json'))) == expected_sequence
     assert (first / 'start.json').read_bytes() == start
     if original_seal is not None:
         assert (first / 'seal.json').read_bytes() == original_seal
-        native = json.loads(original_seal)
-        assert row['final_attempt'] == native['task']['final_attempt']
+        native = Seal.model_validate(json.loads(original_seal))
+        assert row.final_attempt == native.task.final_attempt
     else:
-        assert row['final_attempt']['id'] != initial['id']
-        assert read_json(directory / '_meta/state.json')['tasks'][0]['history'][0]['attempt']['id'] == initial['id']
+        assert initial is not None and row.final_attempt is not None
+        assert row.final_attempt.id != initial.id
+        assert (
+            State.model_validate(read_json(directory / '_meta/state.json')).tasks[0].history[0].attempt.id == initial.id
+        )
     if original_outcome is not None:
         assert (first / 'outcome.json').read_bytes() == original_outcome
     elif original_seal is not None:
         assert not (first / 'outcome.json').exists(), 'host recovery must not invent a native outcome'
-    assert row['telemetry']['tokens']['total'] == 16
-    native_cost = report['costs']['all_attempts']['native_reported']
-    assert native_cost['known_subtotal'] == '0.5' and native_cost['coverage']['known_requests'] == 1
+    assert row.telemetry.tokens.total == 16
+    native_cost = report.costs.all_attempts.native_reported
+    assert native_cost.known_subtotal == '0.5' and native_cost.coverage.known_requests == 1
     assert len(list(directory.glob('tasks/*/attempts/*/telemetry/usage.json'))) == 1
     if boundary in ('reserved', 'native'):
-        assert native_cost['amount'] is None and native_cost['coverage']['total_attempts'] == 2
-        assert read_json(directory / '_meta/state.json')['tasks'][0]['history'][0]['seal'] is None
+        assert native_cost.amount is None and native_cost.coverage.total_attempts == 2
+        assert State.model_validate(read_json(directory / '_meta/state.json')).tasks[0].history[0].seal is None
     else:
-        assert native_cost['amount'] == '0.5' and native_cost['coverage']['total_attempts'] == 1
+        assert native_cost.amount == '0.5' and native_cost.coverage.total_attempts == 1

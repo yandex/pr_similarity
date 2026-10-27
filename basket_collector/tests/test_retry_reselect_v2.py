@@ -4,9 +4,10 @@ import threading
 from pathlib import Path
 
 import pytest
-from basket_collector.attempts import AttemptRunner
+from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer, real_generate_record
+
 from basket_collector.config import FilterConfig, GenerationConfig, TemplateSnapshot
-from basket_collector.contracts import (
+from basket_collector.models.artifacts import (
     BasketDocument,
     CollectRecord,
     FilterRecord,
@@ -15,13 +16,13 @@ from basket_collector.contracts import (
     TaskRecord,
     TasksDocument,
 )
-from basket_collector.git import GitInfrastructureError, GitRepository
-from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.llm import LLMCallError, LLMClient
+from basket_collector.persistence.storage import StageStore, read_document
 from basket_collector.pipeline import Pipeline
-from basket_collector.remote import RemoteVCS
-from basket_collector.storage import StageStore, read_document
-from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer, real_generate_record
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.providers.llm import LLMCallError, LLMClient
+from basket_collector.providers.remote import RemoteVCS
+from basket_collector.runtime.attempts import AttemptRunner
+from basket_collector.vcs.git import GitInfrastructureError, GitRepository
 
 
 @pytest.mark.parametrize('allow_partial', [False, True])

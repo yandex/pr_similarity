@@ -1,0 +1,122 @@
+schema_version: 2
+# Complete collector field reference; one bounded Werkzeug PR example.
+# Paths resolve from this file. Customize identity and output paths before use.
+# Tokens stay in ../.env or the host environment; YAML contains variable names only.
+dataset:
+  name: example-basket
+  description: One Werkzeug fix with a task generated from its diff
+  maintainers:
+  - your-github-login
+env_file: ../.env
+output_dir: ../output/examples/full
+cache_dir: ../cache/examples/full
+# GitLab alternative: provider: gitlab, server_url: https://gitlab.com,
+# project: group/project, token_env: GITLAB_TOKEN, api_version: v4.
+source:
+  provider: github
+  project: pallets/werkzeug
+  server_url: https://github.com
+  token_env: GITHUB_TOKEN
+  api_version: '2026-03-10'
+  request_timeout_seconds: 60
+  max_retries: 3
+  requests_per_second: 2
+  max_retry_delay_seconds: 120
+  max_pages: 1000
+# All date bounds are half-open UTC; max_changes bounds discovery, not sampling.
+collect:
+  max_retries: 3
+  retry_delay_seconds: 10
+  max_retry_delay_seconds: 120
+  selection: change_ids
+  default_branch_only: true
+  # date_range alternative: set selection: date_range, change_ids: null,
+  # merged_from: "2026-01-01T00:00:00Z", merged_before: "2026-07-01T00:00:00Z".
+  merged_from: null
+  merged_before: null
+  change_ids:
+  - 3147
+  max_changes: 1
+# Eligibility filters run before percentile trimming and final selection.
+filter:
+  max_retries: 3
+  retry_delay_seconds: 10
+  max_retry_delay_seconds: 120
+  # Transfer cap is bytes per source cache; selection.limit does not cap Git work.
+  git:
+    timeout_seconds: 120
+    initial_depth: 1
+    max_depth: 4096
+    max_transfer_bytes: 536870912
+  workers: 1
+  scope:
+    enabled: false
+    prefix: ''
+    subfolders_affected: null
+  # Null bounds are disabled. Character/line/file bounds are independent.
+  size:
+    enabled: true
+    min_chars: null
+    max_chars: 1000000
+    min_lines: 1
+    max_lines: 300
+    min_files: 1
+    max_files: 5
+  # Regexes match paths. Source proportion counts files, not changed lines.
+  files:
+    enabled: true
+    source_extensions:
+    - .py
+    min_source_proportion: 0.5
+    max_source_proportion: null
+    allowed_path_patterns: []
+    forbidden_path_patterns: []
+    required_path_patterns:
+    - ^src/werkzeug/
+  issues:
+    allow_no_issue: true
+    allow_multiple_issues: true
+  # metric alternatives: changed_lines, files_count, patch_chars.
+  percentile:
+    enabled: false
+    metric: changed_lines
+    lower_fraction: 0.05
+    upper_fraction: 0.05
+  # limit is a maximum; shuffle uses the reproducible seed.
+  selection:
+    shuffle: false
+    seed: 42
+    limit: 1
+# source: issue copies linked issue text without LLM calls; llm may be null then.
+# context alternatives for llm: diff, issue, diff+issue.
+generation:
+  max_retries: 3
+  retry_delay_seconds: 10
+  max_retry_delay_seconds: 120
+  source: llm
+  context: diff
+  workers: 1
+  request_timeout_seconds: 120
+  requests_per_second: 1
+  max_input_chars: 20000
+  # For issue/diff+issue use ../prompts/issue.jinja2 or ../prompts/diff_issue.jinja2.
+  templates:
+    system: ../prompts/system.jinja2
+    user: ../prompts/diff.jinja2
+  # API alternatives: openai_responses, openai_completions.
+  # Use a model that supports strict structured output; API credentials are required.
+  llm:
+    api: openai_responses
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-4.1-mini
+    parameters:
+      max_output_tokens: 2048
+      temperature: 0.0
+      top_p: null
+      # Optional: reasoning: {effort: low}; values: none, minimal, low, medium, high, xhigh.
+      # Model support varies; do not combine unsupported sampling/reasoning options.
+      reasoning: null
+# Include the reference patch only when needed; benchmark isolates it from agents.
+export:
+  include_golden_diff: false

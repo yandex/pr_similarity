@@ -5,13 +5,14 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from pydantic import ValidationError
+
 from basket_collector.config import (
     CollectorConfig,
     effective_settings,
     load_config,
     load_environment,
 )
-from pydantic import ValidationError
 
 
 def _base(source: str = 'issue') -> dict[str, Any]:

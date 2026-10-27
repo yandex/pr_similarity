@@ -13,9 +13,10 @@ from typing import cast
 from urllib.parse import urlsplit
 
 import pytest
-from benchmark import git as module
-from benchmark.git import GitCache
-from benchmark.git_auth import credential_environment, isolated_environment
+
+from benchmark.vcs import git as module
+from benchmark.vcs.git import GitCache
+from benchmark.vcs.git_auth import credential_environment, isolated_environment
 
 
 def committed_source(directory: Path) -> str:

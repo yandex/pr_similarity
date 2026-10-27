@@ -3,9 +3,9 @@
 from pathlib import Path
 
 import pytest
+
 from basket_collector.config import GitHubConfig, SourceConfig
-from basket_collector.git import GitRepository
-from basket_collector.sources import (
+from basket_collector.models.sources import (
     Repository,
     RetrievalReceipt,
     SourceDescriptor,
@@ -13,6 +13,7 @@ from basket_collector.sources import (
     issue_id,
     source_hash,
 )
+from basket_collector.vcs.git import GitRepository
 
 
 def repository(path: str = 'owner/repo', branch: str = 'develop') -> Repository:

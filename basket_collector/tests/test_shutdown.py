@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import Any, Callable, cast
 
 import pytest
-from basket_collector.contracts import CollectDocument, Producer, Repository
-from basket_collector.github import GitHubClient, GitHubInterrupted
-from basket_collector.github_source import GitHubRemoteVCS
+from test_pipeline import FakeGitHub, _config
+
+from basket_collector.models.artifacts import CollectDocument, Producer, Repository
+from basket_collector.persistence.storage import read_checkpoint, read_document
 from basket_collector.pipeline import Pipeline, PipelineInterrupted, Shutdown
-from basket_collector.storage import read_checkpoint, read_document
-from test_pipeline import HASH, FakeGitHub, _config
+from basket_collector.providers.github import GitHubClient, GitHubInterrupted
+from basket_collector.providers.github_source import GitHubRemoteVCS
 
 
 class BlockingGitHub(GitHubClient):
@@ -58,8 +59,6 @@ def test_repeated_stop_drains_and_keeps_pending_pr(tmp_path: Path) -> None:
     github = BlockingGitHub(shutdown.stop_event)
     producer = Producer(
         version='test',
-        implementation_sha256=HASH,
-        dependencies_sha256=HASH,
         python_version='3.12.3',
         git_version='git test',
     )
@@ -114,8 +113,6 @@ def test_signal_between_schedule_check_and_submit_does_not_start_new_work(
         _config(tmp_path),
         producer=Producer(
             version='test',
-            implementation_sha256=HASH,
-            dependencies_sha256=HASH,
             python_version='3.12.3',
             git_version='git test',
         ),
@@ -145,8 +142,6 @@ def test_stop_during_first_repository_lookup_saves_resumable_collect(
     github = BlockingRepositoryGitHub(shutdown.stop_event)
     producer = Producer(
         version='test',
-        implementation_sha256=HASH,
-        dependencies_sha256=HASH,
         python_version='3.12.3',
         git_version='git test',
     )

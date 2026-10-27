@@ -3,18 +3,18 @@
 from threading import Event
 
 from basket_collector.config import FilterConfig
-from basket_collector.contracts import (
+from basket_collector.filters import check_issues, check_local, compact_rejection
+from basket_collector.models.artifacts import (
     CollectRecord,
     FilterRecord,
     FilterRevisions,
     RejectedRecord,
     RejectionReason,
 )
-from basket_collector.filters import check_issues, check_local, compact_rejection
-from basket_collector.git import RejectedChange
-from basket_collector.remote import RemoteVCS
-from basket_collector.sources import Repository
-from basket_collector.vcs import VCS
+from basket_collector.models.sources import Repository
+from basket_collector.providers.remote import RemoteVCS
+from basket_collector.vcs.base import VCS
+from basket_collector.vcs.git import RejectedChange
 
 
 class SourceChangedError(RuntimeError):

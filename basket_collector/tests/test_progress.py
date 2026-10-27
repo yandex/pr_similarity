@@ -3,7 +3,8 @@
 import io
 
 import pytest
-from basket_collector.progress import Progress
+
+from basket_collector.runtime.progress import Progress
 
 
 def test_unknown_discovery_total_and_heartbeat() -> None:

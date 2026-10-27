@@ -8,11 +8,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
+
 from basket_collector.config import GitHubConfig, SourceConfig
-from basket_collector.github import GitHubClient, GitHubError
-from basket_collector.gitlab import GitLabClient
-from basket_collector.http_runtime import HTTPRuntime
-from basket_collector.remote import RemoteError
+from basket_collector.providers.github import GitHubClient, GitHubError
+from basket_collector.providers.gitlab import GitLabClient
+from basket_collector.providers.remote import RemoteError
+from basket_collector.runtime.http_runtime import HTTPRuntime
 
 
 def test_one_loop_no_cookie_replay_and_borrowed_transport() -> None:

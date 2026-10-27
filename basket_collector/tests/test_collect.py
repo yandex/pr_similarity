@@ -4,11 +4,12 @@ from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
+
 from basket_collector.config import CollectConfig, SourceConfig
-from basket_collector.contracts import CollectRecord, Issue, Repository
-from basket_collector.github import GitHubClient, GitHubError
-from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.remote import Candidate, RemoteError
+from basket_collector.models.artifacts import CollectRecord, Issue, Repository
+from basket_collector.providers.github import GitHubClient, GitHubError
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.providers.remote import Candidate, RemoteError
 from basket_collector.stages.collect import (
     collect_change,
     discover_date_range,

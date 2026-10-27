@@ -1,6 +1,6 @@
 # Example baskets
 
-The 2026H1 frozen v2 baskets contain tasks from pandas and OpenSearch PRs merged
+The 2026H1 frozen baskets contain tasks from pandas and OpenSearch PRs merged
 in January–June 2026. Choose 1, 5, 10, 25 or 100 tasks per repository; baskets
 within each repository are disjoint, not nested. They work without rerunning the
 collector or generating tasks again.
@@ -16,8 +16,7 @@ collector or generating tasks again.
 Run from `benchmark/` after [setup and model login](../../README.md#quick-start):
 
 ```bash
-make run CONFIG=examples/chatgpt-oauth.yaml DATASET=examples/baskets/pandas/pandas-2026H1-25.json OUTPUT=./output
-make run CONFIG=examples/chatgpt-oauth.yaml DATASET=examples/baskets/opensearch/opensearch-2026H1-10.json OUTPUT=./output
+make run CONFIG=examples/full.yaml DATASET=examples/baskets/pandas/pandas-2026H1-1.json OUTPUT=./output
 ```
 
 Each basket freezes task statements, change metadata and exact Git revisions.
@@ -26,15 +25,18 @@ agent configuration. No reference patches are embedded; the benchmark retrieves
 public Git sources. OpenSearch is a large repository; check your configured Git
 transfer budget and available disk space before a run.
 
-## Legacy examples
+## Format and saved runs
 
-The original v1 [pandas-25.json](legacy/pandas-25.json) and
-[opensearch-10.json](legacy/opensearch-10.json) are retained byte-for-byte in
-`legacy/`. The current benchmark reads them with an upgrade notice. Existing
-runs must keep their original basket bytes when resuming.
+Each file is a ready-to-use frozen input. Choose a basket size for the task
+budget you want; the sets are disjoint, so a larger file is not a superset of a
+smaller one. Task statements, source revisions and recorded collection lineage
+are part of the input and must stay unchanged.
 
-For a compact synthetic v2 format example, see the
-[GitHub contract fixture](../../tests/fixtures/basket-v2/github.json). Its fake
+A run binds the exact basket bytes and content hash. Reuse those bytes for
+comparisons and resume; a different export requires a new run.
+
+For a compact synthetic format example, see the
+[GitHub contract fixture](../../tests/fixtures/basket-v3/github.json). Its fake
 revisions are for offline validation, not a live run.
 
 [Benchmark](../../README.md) · [PR Similarity](../../../README.md)

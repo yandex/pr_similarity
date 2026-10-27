@@ -7,12 +7,14 @@ from pathlib import Path
 
 import pytest
 import yaml
+from test_agent_input import native_object
+
 from benchmark.config import load_config
 from benchmark.errors import BenchmarkError
-from benchmark.opencode import EventTracker, Invocation
-from benchmark.sandbox import Sandbox
-from benchmark.storage import read_json
-from benchmark.transcript import Transcript
+from benchmark.execution.opencode import EventTracker, Invocation
+from benchmark.execution.sandbox import Sandbox
+from benchmark.execution.transcript import Transcript
+from benchmark.persistence.storage import read_json
 
 
 def test_launch_events_record_root_without_db_lookup() -> None:
@@ -113,7 +115,7 @@ def test_tdd_example_relocates_skill_and_archives_complete_resources(
     )
     invocation.prepare('Task: fix a behavior regression')
     native = read_json(sandbox.runtime_files / 'config.json')
-    assert native['skills']['paths'] == ['/benchmark-runtime/resources/2-0-0/test-driven-development']
+    assert native_object(native['skills'])['paths'] == ['/benchmark-runtime/resources/2-0-0/test-driven-development']
     assert native['instructions'] == ['/benchmark-runtime/resources/0-0-0/agent-tdd.md']
     skill = Path('resources/2-0-0/test-driven-development')
     for name in ('SKILL.md', 'writing-good-tests.md', 'LICENSE', 'UPSTREAM.json'):
@@ -231,7 +233,7 @@ def test_invocation_routes_native_output_and_classifies_after_formatter_failure(
     invocation._environment = {}
     result, tracker = invocation.run(b'fixture prompt', threading.Event())
     assert result.status == 'error' and result.exit_code == 0
-    assert tracker.errors[0]['data']['statusCode'] == 401
+    assert native_object(tracker.errors[0]['data'])['statusCode'] == 401
     assert tracker.root_session_id == 'root'
     assert 'transcript_failed' in result.warnings
     assert read_json(tmp_path / 'attempt/stream_receipt.json')['events_complete']

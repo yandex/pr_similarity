@@ -156,7 +156,7 @@
         "meta",
         "schema_version"
       ],
-      "value": 1
+      "value": 2
     },
     {
       "name": "boolean_version",

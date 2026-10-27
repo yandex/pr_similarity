@@ -3,42 +3,48 @@
 from pathlib import Path
 
 import pytest
-from benchmark.bubblewrap import CAPABILITY_ARGV, MINIMUM_VERSION, _capable, resolve_bubblewrap
-from benchmark.errors import BenchmarkError
-from benchmark.sandbox import Sandbox
 
-OLD_BWRAP = """#!/bin/sh
+from benchmark.errors import BenchmarkError
+from benchmark.execution.bubblewrap import (
+    CAPABILITY_ARGV,
+    MINIMUM_VERSION,
+    _capable,
+    resolve_bubblewrap,
+)
+from benchmark.execution.sandbox import Sandbox
+
+OLD_BWRAP = '''#!/bin/sh
 if [ "$1" = "--version" ]; then
   printf 'bubblewrap 0.6.1\\n'
   exit 0
 fi
 printf 'bwrap: Unknown option %s\\n' "$2" >&2
 exit 1
-"""
+'''
 
-CAPABLE_BWRAP = """#!/bin/sh
+CAPABLE_BWRAP = '''#!/bin/sh
 if [ "$1" = "--version" ]; then
   printf 'bubblewrap 0.8.0\\n'
   exit 0
 fi
 exit 0
-"""
+'''
 
-HOST_FAILURE_BWRAP = """#!/bin/sh
+HOST_FAILURE_BWRAP = '''#!/bin/sh
 if [ "$1" = "--version" ]; then
   printf 'bubblewrap 0.9.0\\n'
   exit 0
 fi
 printf 'bwrap: No permissions to create new namespace\\n' >&2
 exit 1
-"""
+'''
 
 # A rejection may arrive on either stream while the other carries diagnostics.
-MIXED_STREAM_BWRAP = """#!/bin/sh
+MIXED_STREAM_BWRAP = '''#!/bin/sh
 printf 'bwrap: Unknown option --disable-userns\\n'
 printf 'bwrap: warning: unrelated diagnostic\\n' >&2
 exit 1
-"""
+'''
 
 
 def stub(directory: Path, name: str, content: str) -> Path:
@@ -54,9 +60,7 @@ def stub(directory: Path, name: str, content: str) -> Path:
     [(OLD_BWRAP, False), (CAPABLE_BWRAP, True), (HOST_FAILURE_BWRAP, True), (MIXED_STREAM_BWRAP, False)],
     ids=['missing-option', 'capable', 'host-failure', 'rejection-with-diagnostics'],
 )
-def test_probe_reads_the_option_support_from_both_streams(
-    tmp_path: Path, content: str, expected: bool
-) -> None:
+def test_probe_reads_the_option_support_from_both_streams(tmp_path: Path, content: str, expected: bool) -> None:
     """Only a rejected option fails the probe; a host failure stays usable."""
     assert _capable(stub(tmp_path, 'bwrap', content), 10) is expected
 
@@ -74,7 +78,7 @@ def test_incompatible_binary_without_auto_install_reports_actionable_diagnostic(
 ) -> None:
     """The failure names the build and both remedies, and never promises a fallback."""
     old = stub(tmp_path, 'bwrap', OLD_BWRAP)
-    monkeypatch.setattr('benchmark.bubblewrap.shutil.which', lambda name: str(old))
+    monkeypatch.setattr('benchmark.execution.bubblewrap.shutil.which', lambda name: str(old))
     notices = []
     with pytest.raises(BenchmarkError) as caught:
         resolve_bubblewrap('bwrap', tmp_path / 'cache', auto_install=False, on_notice=notices.append)
@@ -99,8 +103,10 @@ def test_incompatible_binary_with_auto_install_warns_before_the_fallback(
 
     old = stub(tmp_path, 'bwrap', OLD_BWRAP)
     extractor = stub(tmp_path, 'dpkg-deb', '#!/bin/sh\nexit 0\n')
-    monkeypatch.setattr('benchmark.bubblewrap.shutil.which', lambda name: str(old) if name == 'bwrap' else str(extractor))
-    monkeypatch.setattr('benchmark.bubblewrap._download_package', unavailable)
+    monkeypatch.setattr(
+        'benchmark.execution.bubblewrap.shutil.which', lambda name: str(old) if name == 'bwrap' else str(extractor)
+    )
+    monkeypatch.setattr('benchmark.execution.bubblewrap._download_package', unavailable)
     notices = []
     with pytest.raises(BenchmarkError) as caught:
         resolve_bubblewrap('bwrap', tmp_path / 'cache', auto_install=True, on_notice=notices.append)
@@ -112,7 +118,7 @@ def test_incompatible_binary_with_auto_install_warns_before_the_fallback(
 def test_capable_system_binary_is_used_without_provisioning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A current system bubblewrap is preferred over the pinned fallback."""
     capable = stub(tmp_path, 'bwrap', CAPABLE_BWRAP)
-    monkeypatch.setattr('benchmark.bubblewrap.shutil.which', lambda name: str(capable))
+    monkeypatch.setattr('benchmark.execution.bubblewrap.shutil.which', lambda name: str(capable))
     notices = []
     resolved = resolve_bubblewrap('bwrap', tmp_path / 'cache', auto_install=False, on_notice=notices.append)
     assert resolved == capable.resolve()
@@ -122,7 +128,7 @@ def test_capable_system_binary_is_used_without_provisioning(tmp_path: Path, monk
 def test_custom_executable_is_never_probed_or_replaced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An explicitly configured name stays the operator's choice."""
     custom = stub(tmp_path, 'my-bwrap', OLD_BWRAP)
-    monkeypatch.setattr('benchmark.bubblewrap.shutil.which', lambda name: str(custom))
+    monkeypatch.setattr('benchmark.execution.bubblewrap.shutil.which', lambda name: str(custom))
     assert resolve_bubblewrap(str(custom), tmp_path / 'cache', auto_install=False) == custom.resolve()
 
 
@@ -130,7 +136,7 @@ def test_absent_custom_executable_is_reported_without_substitution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A configured name that resolves nowhere is never silently replaced."""
-    monkeypatch.setattr('benchmark.bubblewrap.shutil.which', lambda name: None)
+    monkeypatch.setattr('benchmark.execution.bubblewrap.shutil.which', lambda name: None)
     with pytest.raises(BenchmarkError) as caught:
         resolve_bubblewrap('my-bwrap', tmp_path / 'cache', auto_install=True)
     assert caught.value.code == 'sandbox_missing'
@@ -139,7 +145,7 @@ def test_absent_custom_executable_is_reported_without_substitution(
 
 def test_missing_binary_reports_install_guidance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No candidate at all produces actionable install guidance."""
-    monkeypatch.setattr('benchmark.bubblewrap.shutil.which', lambda name: None)
+    monkeypatch.setattr('benchmark.execution.bubblewrap.shutil.which', lambda name: None)
     with pytest.raises(BenchmarkError) as caught:
         resolve_bubblewrap('bwrap', tmp_path / 'cache', auto_install=False)
     assert caught.value.code == 'sandbox_missing'

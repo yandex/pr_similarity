@@ -2,9 +2,9 @@
 
 from typing import Any
 
-from basket_collector.artifact_io import sha256, stage_sha256
 from basket_collector.config import CollectorConfig, TemplateSnapshot, effective_settings
-from basket_collector.contracts import (
+from basket_collector.filters import apply_population
+from basket_collector.models.artifacts import (
     CollectDocument,
     CollectFailure,
     CollectRecord,
@@ -16,7 +16,7 @@ from basket_collector.contracts import (
     SelectionSnapshot,
     TasksDocument,
 )
-from basket_collector.filters import apply_population
+from basket_collector.persistence.artifact_io import sha256, stage_sha256
 
 
 def semantic_record(record: CollectRecord) -> dict[str, Any]:
@@ -105,7 +105,7 @@ def build_selection(
         'failed': [record.model_dump(mode='json') for record in document.failed],
     }
     payload = {
-        'schema_version': 2,
+        'schema_version': 3,
         'input_sha256': sha256(candidate_state),
         'fingerprint': sha256({'tasks': [[record.id, keys[record.id]] for record in selected]}),
         'selected_ids': [record.id for record in selected],

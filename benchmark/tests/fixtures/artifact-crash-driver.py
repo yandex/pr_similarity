@@ -5,11 +5,16 @@ import sys
 import threading
 from pathlib import Path
 
-from benchmark import attempt, coordinator, run_store
 from benchmark.config import load_config
-from benchmark.opencode import EventTracker
-from benchmark.provisioning import Runtime
-from benchmark.storage import bytes_sha256, write_json
+from benchmark.execution.opencode import EventTracker
+from benchmark.execution.provisioning import Runtime
+from benchmark.json_types import JsonObject
+from benchmark.models import Report
+from benchmark.models.evidence import Outcome
+from benchmark.models.runtime import ProvisioningReceipt
+from benchmark.persistence import run_store
+from benchmark.persistence.storage import bytes_sha256, write_json
+from benchmark.runtime import attempt, coordinator
 
 ROOT = Path(sys.argv[1])
 BOUNDARY = sys.argv[2]
@@ -76,7 +81,7 @@ def install() -> None:
     elif BOUNDARY == 'outcome':
         original_accept = coordinator.Coordinator.accept
 
-        def accept(self: coordinator.Coordinator, identifier: str, returned: dict | None) -> str:
+        def accept(self: coordinator.Coordinator, identifier: str, returned: Outcome | None) -> str:
             """Pause with a complete outcome before the writer accepts its state reference."""
             assert returned is not None
             pause(self.run_dir)
@@ -86,9 +91,13 @@ def install() -> None:
     elif BOUNDARY == 'state':
         original_write = run_store.write_json
 
-        def write(path: Path, value: dict, *, preserve_order: bool = False) -> None:
+        def write(path: Path, value: object, *, preserve_order: bool = False) -> None:
             """Pause after completed state commit and before updating the derived report cache."""
-            if path.name == 'report.json' and value['tasks'][0]['processing_status'] == 'completed':
+            if (
+                path.name == 'report.json'
+                and isinstance(value, Report)
+                and value.tasks[0].processing_status == 'completed'
+            ):
                 pause(path.parent)
             original_write(path, value, preserve_order=preserve_order)
 
@@ -97,7 +106,7 @@ def install() -> None:
         assert BOUNDARY == 'native'
         original_event = EventTracker.accept_event
 
-        def event(self: EventTracker, value: dict) -> None:
+        def event(self: EventTracker, value: JsonObject) -> None:
             """Observe an actually live namespaced native child before killing its host parent."""
             original_event(self, value)
             if value.get('type') == 'step_start':
@@ -112,13 +121,14 @@ def main() -> None:
     digest = bytes_sha256(binary.read_bytes())
     runtime = Runtime(
         binary,
-        {
-            'actual_version': '1.18.33',
-            'asset_name': 'offline-native-fixture.py',
-            'platform': 'linux-x64-offline-fixture',
-            'archive_sha256': digest,
-            'binary_sha256': digest,
-        },
+        ProvisioningReceipt(
+            selector='opencode:v1.18.33',
+            actual_version='1.18.33',
+            asset_name='offline-native-fixture.py',
+            platform='linux-x64-offline-fixture',
+            archive_sha256=digest,
+            binary_sha256=digest,
+        ),
     )
     coordinator.provision_opencode = lambda *_args, **_kwargs: runtime
     install()

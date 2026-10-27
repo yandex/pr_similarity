@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 
 import pytest
-from benchmark.opencode import EventTracker
-from benchmark.process import ProcessResult
-from benchmark.transcript import Transcript
+
+from benchmark.execution.opencode import EventTracker
+from benchmark.execution.process import ProcessResult
+from benchmark.execution.transcript import Transcript
 
 
 def test_all_json_objects_and_runtime_streams_are_separate(tmp_path: Path) -> None:
@@ -23,7 +24,7 @@ def test_all_json_objects_and_runtime_streams_are_separate(tmp_path: Path) -> No
     assert 'Final answer' in (tmp_path / 'agent.log').read_text()
     runtime = (tmp_path / 'runtime.log').read_text()
     assert '[stderr]' in runtime and '[stdout]' in runtime
-    assert receipt['events_complete'] and receipt['runtime_complete']
+    assert receipt.events_complete and receipt.runtime_complete
 
 
 def test_formatter_failure_cannot_hide_later_provider_error(tmp_path: Path) -> None:
@@ -41,9 +42,10 @@ def test_formatter_failure_cannot_hide_later_provider_error(tmp_path: Path) -> N
         'stdout', '{"type":"error","sessionID":"root","error":{"name":"APIError","data":{"statusCode":401}}}'
     )
     receipt = transcript.finish(ProcessResult('completed', 0, 1))
-    assert tracker.errors[0]['data']['statusCode'] == 401
+    error_data = tracker.errors[0]['data']
+    assert isinstance(error_data, dict) and error_data['statusCode'] == 401
     assert len((tmp_path / 'events.jsonl').read_text().splitlines()) == 2
-    assert receipt['events_complete'] and not receipt['transcript_complete']
+    assert receipt.events_complete and not receipt.transcript_complete
 
 
 def test_tool_output_truncation_links_exact_raw_line(tmp_path: Path) -> None:
@@ -75,8 +77,9 @@ def test_raw_sink_failure_preserves_provider_classification(tmp_path: Path) -> N
         'stdout', '{"type":"error","sessionID":"root","error":{"name":"APIError","data":{"statusCode":503}}}'
     )
     receipt = transcript.finish(ProcessResult('completed', 0, 1))
-    assert tracker.errors[0]['data']['statusCode'] == 503
-    assert not receipt['events_complete'] and 'event_capture_failed' in receipt['warnings']
+    error_data = tracker.errors[0]['data']
+    assert isinstance(error_data, dict) and error_data['statusCode'] == 503
+    assert not receipt.events_complete and 'event_capture_failed' in receipt.warnings
 
 
 def test_json_escaped_secrets_and_controls_are_safe_in_every_sink(tmp_path: Path) -> None:
@@ -112,5 +115,5 @@ def test_receipt_failure_still_returns_classified_native_error(tmp_path: Path) -
     transcript.accept('stdout', '{"type":"error","error":{"name":"APIError"}}')
     receipt = transcript.finish(ProcessResult('error', 0, 1))
     assert len(tracker.errors) == 1
-    assert 'stream_receipt_failed' in receipt['warnings']
-    assert not receipt['events_complete'] and not receipt['runtime_complete']
+    assert 'stream_receipt_failed' in receipt.warnings
+    assert not receipt.events_complete and not receipt.runtime_complete

@@ -1,8 +1,8 @@
+schema_version: 1
 # USD per 1M tokens; official Standard API rates checked 2026-10-08.
 # https://developers.openai.com/api/docs/pricing
 # https://developers.openai.com/api/docs/changelog (2026-09-29, 272K threshold)
 # API-equivalent estimation, including for OAuth runs; not subscription billing.
-schema_version: 1
 id: openai-standard-gpt-6.1-sol-2026-10-08
 source: https://developers.openai.com/api/docs/pricing
 currency: USD

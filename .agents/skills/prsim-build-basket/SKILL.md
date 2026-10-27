@@ -9,9 +9,9 @@ Read root/collector AGENTS.md and the [collector guide](../../../basket_collecto
 particularly selection, generation and artifact inspection. Use `basket_collector/`,
 its `.venv` and `make help`; start from a complete tracked YAML example.
 
-Collector configuration and stage artifacts must be schema v2. Start a new output
-for a v1 collector workflow; do not convert frozen JSON or resume v1 checkpoints.
-Benchmark/viewer can consume frozen v1 baskets without regenerating them.
+Validate configuration and artifacts with their owning loaders. Follow the
+[saved-data compatibility note](../../../README.md#reading-data-from-earlier-releases)
+when opening existing output. Never edit frozen basket JSON to bypass validation.
 
 Resolve source, period or explicit changes, generation mode, selection and output.
 Preserve config-relative paths and credential variable names. Host Git access,
@@ -25,7 +25,7 @@ Keep retries and model calls inside the authorized scope. Continue interrupted
 work with the same CONFIG; changes to settings, including collector workers, can
 invalidate reuse. Do not apply benchmark's worker-change resume rules here.
 
-Use the [resume rules](../../../basket_collector/README.md#resume-and-partial-results):
+Use the [resume rules](../../../basket_collector/docs/operations.md#resume-and-partial-results):
 
 - `RETRY_FAILED=1` opens a new budget for failed records in collect/filter/generate
   or basket, not export. Deterministic `rejected` records are not retried.
@@ -71,7 +71,7 @@ still need maintenance and cleanup. Do not delete caches/checkpoints or use
 Verify completed exports and actual counts: collected → filtered → generated →
 exported. Selection limit is a maximum; first rejection reasons are sequential.
 Separate filter rejection, failed records at each stage and generation rejection.
-Validate v2 exports with collector models/schema; inspect `meta.coverage` and
+Validate exports with collector models/schema; inspect `meta.coverage` and
 `meta.omissions` alongside stage status/counts and selection fingerprints.
 Preserve the basket name and generator provenance exactly as exported. A model
 name in that label does not set the benchmark agent Model/Effort; absent generator
@@ -80,7 +80,8 @@ metadata stays unknown. Never hand-edit frozen JSON to bypass validation.
 Return config, frozen basket path, actual exported task count, stage status and
 remaining gaps. An existing completed basket needs no regeneration to benchmark.
 
-For an existing public example, use the [frozen basket catalog](../../../benchmark/examples/baskets/README.md):
-2026H1 pandas/OpenSearch v2 baskets have 1, 5, 10, 25 or 100 tasks. They need no
-collector or generation calls. Historical v1 examples are retained in `legacy/`;
-do not regenerate or convert them when preparing a benchmark run.
+The [frozen basket catalog](../../../benchmark/examples/baskets/README.md) contains
+ready-to-use pandas/OpenSearch inputs; no collector rerun is needed.
+Existing runs retain their original basket bytes. See
+[full.yaml](../../../basket_collector/examples/full.yaml) for every collector
+configuration field and the supported alternatives.

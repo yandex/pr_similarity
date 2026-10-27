@@ -1,23 +1,23 @@
 """Internal Python entrypoint; Make owns the user-facing operation interface."""
 
 import argparse
-import json
 import logging
 import os
 import sys
 from pathlib import Path
 
-from benchmark.auth import native_login
+from dotenv import load_dotenv
+
 from benchmark.config import load_config
 from benchmark.errors import OPERATION_ERRORS, BenchmarkError
-from benchmark.provisioning import provision_opencode
-from benchmark.publish import publish
-from benchmark.report import read_report
-from benchmark.repricing import reprice
-from benchmark.rescore import rescore
-from benchmark.runner import run
-from benchmark.visualize import compare, visualize
-from dotenv import load_dotenv
+from benchmark.execution.auth import native_login
+from benchmark.execution.provisioning import provision_opencode
+from benchmark.metrics.rescore import rescore
+from benchmark.presentation.report import read_report
+from benchmark.presentation.visualize import visualize
+from benchmark.pricing.operations import reprice
+from benchmark.publication.publish import publish
+from benchmark.runtime.runner import run
 
 
 class SafeParser(argparse.ArgumentParser):
@@ -58,10 +58,7 @@ def parser() -> argparse.ArgumentParser:
     auth.add_argument('--flow', choices=('headless', 'browser'), default=env('AUTH_FLOW') or 'headless')
     view = commands.add_parser('visualize')
     view.add_argument('--run', type=Path, default=env('RUN'))
-    view.add_argument('--no-browser', choices=('0', '1'), default=env('NO_BROWSER') or '0')
-    comparison = commands.add_parser('compare')
-    comparison.add_argument('--runs-json', default=env('RUNS_JSON'))
-    comparison.add_argument('--no-browser', choices=('0', '1'), default=env('NO_BROWSER') or '0')
+    view.add_argument('--open-browser', choices=('0', '1'), default=env('OPEN_BROWSER') or '0')
     upload = commands.add_parser('publish')
     upload.add_argument('--run', type=Path, default=env('RUN'))
     upload.add_argument('--url', default=env('URL'))
@@ -71,7 +68,7 @@ def parser() -> argparse.ArgumentParser:
     upload.add_argument('--token-env', default=env('TOKEN_ENV'))
     upload.add_argument('--token-prompt', choices=('0', '1'), default=env('TOKEN_PROMPT') or '0')
     upload.add_argument('--progress', choices=('auto', 'plain', 'off'), default=env('PROGRESS') or 'auto')
-    for sub in (launch, price, score, auth, view, comparison, upload):
+    for sub in (launch, price, score, auth, view, upload):
         sub.add_argument(
             '--log-level', choices=('DEBUG', 'INFO', 'WARNING', 'ERROR'), default=env('LOG_LEVEL') or 'INFO'
         )
@@ -101,32 +98,17 @@ def _launch(args: argparse.Namespace) -> int:
         progress=args.progress,
     )
     report = read_report(directory)
-    print(f'Agent run: {report['run']['status']}; report: {directory / 'report.json'}.', file=sys.stderr)
+    print(f"Agent run: {report.run.status}; report: {directory / 'report.json'}.", file=sys.stderr)
     return status
 
 
 def _view(args: argparse.Namespace) -> int:
     """Validate operation inputs and execute the requested command."""
-    if args.no_browser not in ('0', '1'):
-        raise BenchmarkError('invalid_arguments', 'NO_BROWSER accepts only 0 or 1.')
-    if args.command == 'visualize':
-        if args.run is None:
-            raise BenchmarkError('invalid_arguments', 'Visualize requires RUN.')
-        path = visualize(args.run, no_browser=args.no_browser == '1', level=args.log_level)
-    else:
-        if args.runs_json is None:
-            raise BenchmarkError('invalid_arguments', 'Compare requires RUNS_JSON with at least two paths.')
-        try:
-            runs = json.loads(args.runs_json)
-        except ValueError as error:
-            raise BenchmarkError('invalid_arguments', 'RUNS_JSON must be a valid JSON array of run paths.') from error
-        if (
-            not isinstance(runs, list)
-            or len(runs) < 2
-            or any(not isinstance(item, str) or not item.strip() for item in runs)
-        ):
-            raise BenchmarkError('invalid_arguments', 'RUNS_JSON must contain at least two nonempty path strings.')
-        path = compare([Path(item) for item in runs], no_browser=args.no_browser == '1', level=args.log_level)
+    if args.open_browser not in ('0', '1'):
+        raise BenchmarkError('invalid_arguments', 'OPEN_BROWSER accepts only 0 or 1.')
+    if args.run is None:
+        raise BenchmarkError('invalid_arguments', 'Visualize requires RUN.')
+    path = visualize(args.run, open_browser=args.open_browser == '1', level=args.log_level)
     print(f'Saved local HTML: {path}', file=sys.stderr)
     return 0
 
@@ -147,15 +129,15 @@ def dispatch(args: argparse.Namespace) -> int:
         if args.flow not in ('headless', 'browser'):
             raise BenchmarkError('invalid_arguments', 'AUTH_FLOW accepts headless or browser.')
         config = load_config(args.config)
-        if config.data['agent']['auth']['mode'] != 'chatgpt_oauth':
+        if config.data.agent.auth.mode != 'chatgpt_oauth':
             raise BenchmarkError('auth_mode', 'make auth requires agent.auth.mode=chatgpt_oauth.')
         runtime = provision_opencode(
-            config.data['agent']['runtime'],
-            Path(config.data['provisioning']['cache_dir']),
-            timeout=config.data['provisioning']['download_timeout_seconds'],
+            config.data.agent.runtime,
+            Path(config.data.provisioning.cache_dir),
+            timeout=config.data.provisioning.download_timeout_seconds,
         )
-        return native_login(runtime.binary, Path(config.data['agent']['auth']['profile']), flow=args.flow)
-    if args.command in ('visualize', 'compare'):
+        return native_login(runtime.binary, Path(config.data.agent.auth.profile), flow=args.flow)
+    if args.command == 'visualize':
         return _view(args)
     if args.command == 'publish':
         if args.run is None or args.url is None:

@@ -11,10 +11,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from basket_collector import github_source
-from basket_collector.contracts import Issue, Repository
-from basket_collector.git import GitRepository as RealGitRepository
-from basket_collector.sources import SourceDescriptor, issue_id, source_hash
+from basket_collector.models.artifacts import Issue, Repository
+from basket_collector.models.sources import SourceDescriptor, issue_id, source_hash
+from basket_collector.providers import github_source
+from basket_collector.vcs.git import GitRepository as RealGitRepository
 
 _FIXTURE = os.environ.get('BASKET_COLLECTOR_MAKE_FIXTURE')
 

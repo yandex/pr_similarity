@@ -6,16 +6,28 @@ from pathlib import Path
 
 import pytest
 import yaml
-from benchmark.agent_input import freeze_agent_input, save_effective, validate_agent_input
-from benchmark.artifact_refs import reference
-from benchmark.config import load_config
+
+from benchmark.config import RunConfig, load_config
 from benchmark.errors import BenchmarkError
-from benchmark.storage import read_json, write_json
-from benchmark.opencode import Invocation
-from benchmark.sandbox import Sandbox
+from benchmark.execution.agent_input import (
+    freeze_agent_input,
+    save_effective,
+    validate_agent_input,
+)
+from benchmark.execution.opencode import Invocation
+from benchmark.execution.sandbox import Sandbox
+from benchmark.json_types import JsonObject, JsonValue
+from benchmark.persistence.artifact_refs import reference
+from benchmark.persistence.storage import read_json, write_json
 
 
-def config_fixture(tmp_path: Path):
+def native_object(value: JsonValue) -> JsonObject:
+    """Check open native configuration containers before inspecting their keys."""
+    assert isinstance(value, dict)
+    return value
+
+
+def config_fixture(tmp_path: Path) -> RunConfig:
     """Declare real local resources and order-sensitive native permissions."""
     skills = tmp_path / 'tdd'
     skills.mkdir()
@@ -29,21 +41,35 @@ def config_fixture(tmp_path: Path):
         'instructions': ['rules.md'],
     }
     path = tmp_path / 'agent.yaml'
-    path.write_text(yaml.safe_dump({'schema_version': 1, 'agent': {
-        'name': 'fixture', 'runtime': 'opencode:v1.18.33', 'config': {'opencode_json': native},
-    }}, sort_keys=False))
+    path.write_text(
+        yaml.safe_dump(
+            {
+                'schema_version': 1,
+                'agent': {
+                    'name': 'fixture',
+                    'runtime': 'opencode:v1.18.33',
+                    'config': {'opencode_json': native},
+                },
+            },
+            sort_keys=False,
+        )
+    )
     return load_config(path)
 
 
-def test_frozen_input_is_portable_native_json_with_ordered_permissions(tmp_path):
+def test_frozen_input_is_portable_native_json_with_ordered_permissions(tmp_path: Path) -> None:
+    """Verify frozen input is portable native json with ordered permissions."""
     config = config_fixture(tmp_path)
     run = tmp_path / 'run'
     run.mkdir()
     selected = freeze_agent_input(run, config)
-    native = read_json(run / selected['config']['path'])
-    assert native['provider']['openai']['options']['apiKey'] == '{env:OPENAI_API_KEY}'
-    assert list(native['permission']) == ['*', '*.secret']
-    assert native['skills']['paths'] == ['resources/2-0-0/tdd']
+    native = read_json(run / selected.config.path)
+    assert (
+        native_object(native_object(native_object(native['provider'])['openai'])['options'])['apiKey']
+        == '{env:OPENAI_API_KEY}'
+    )
+    assert list(native_object(native['permission'])) == ['*', '*.secret']
+    assert native_object(native['skills'])['paths'] == ['resources/2-0-0/tdd']
     assert native['instructions'] == ['resources/0-0-0/rules.md']
     assert str(tmp_path) not in json.dumps(native)
     validate_agent_input(run, selected, config.identity())
@@ -52,7 +78,8 @@ def test_frozen_input_is_portable_native_json_with_ordered_permissions(tmp_path)
     validate_agent_input(moved, selected, config.identity())
 
 
-def test_changed_resource_after_loader_cannot_enter_frozen_input(tmp_path):
+def test_changed_resource_after_loader_cannot_enter_frozen_input(tmp_path: Path) -> None:
+    """Verify changed resource after loader cannot enter frozen input."""
     config = config_fixture(tmp_path)
     (tmp_path / 'tdd/SKILL.md').write_text('Changed after validation.\n')
     run = tmp_path / 'run'
@@ -62,31 +89,36 @@ def test_changed_resource_after_loader_cannot_enter_frozen_input(tmp_path):
 
 
 @pytest.mark.parametrize('field', ['model', 'permission', 'resource', 'foreign', 'secret'])
-def test_rehashed_tampering_cannot_change_semantic_input(tmp_path, field):
+def test_rehashed_tampering_cannot_change_semantic_input(tmp_path: Path, field: str) -> None:
+    """Verify rehashed tampering cannot change semantic input."""
     config = config_fixture(tmp_path)
     run = tmp_path / 'run'
     run.mkdir()
     selected = freeze_agent_input(run, config)
-    native = read_json(run / selected['config']['path'])
+    native = read_json(run / selected.config.path)
     if field == 'model':
         native['model'] = 'openai/other'
     elif field == 'permission':
-        native['permission'] = dict(reversed(list(native['permission'].items())))
+        native['permission'] = dict(reversed(list(native_object(native['permission']).items())))
     elif field == 'resource':
-        receipt = next(r for r in selected['resources'] if r['path'].endswith('SKILL.md'))
-        (run / receipt['path']).write_text('Forged resource.\n')
-        receipt.update(reference(run, receipt['path']))
+        receipt = next(r for r in selected.resources if r.path.endswith('SKILL.md'))
+        (run / receipt.path).write_text('Forged resource.\n')
+        replacement = reference(run, receipt.path)
+        receipt.size_bytes, receipt.sha256 = replacement.size_bytes, replacement.sha256
     elif field == 'secret':
-        native['provider']['openai']['options']['apiKey'] = 'literal-credential'
+        native_object(native_object(native_object(native['provider'])['openai'])['options'])[
+            'apiKey'
+        ] = 'literal-credential'
     else:
         native['instructions'] = ['../foreign.md']
-    write_json(run / selected['config']['path'], native)
-    selected['config'] = reference(run, selected['config']['path'])
+    write_json(run / selected.config.path, native)
+    selected.config = reference(run, selected.config.path)
     with pytest.raises(BenchmarkError):
         validate_agent_input(run, selected, config.identity())
 
 
-def test_effective_snapshot_is_atomic_and_shared_across_concurrent_attempts(tmp_path):
+def test_effective_snapshot_is_atomic_and_shared_across_concurrent_attempts(tmp_path: Path) -> None:
+    """Verify effective snapshot is atomic and shared across concurrent attempts."""
     run = tmp_path / 'run'
     run.mkdir()
     native = {'model': 'openai/fixture', 'instructions': ['/benchmark-runtime/resources/0-0-0/rules.md']}
@@ -94,11 +126,12 @@ def test_effective_snapshot_is_atomic_and_shared_across_concurrent_attempts(tmp_
         refs = list(pool.map(lambda _: save_effective(run, native), range(16)))
     assert all(ref == refs[0] for ref in refs)
     assert len(list(run.glob('agent/effective/*.json'))) == 1
-    assert read_json(run / refs[0]['path'])['instructions'] == ['resources/0-0-0/rules.md']
+    assert read_json(run / refs[0].path)['instructions'] == ['resources/0-0-0/rules.md']
     assert save_effective(run, {**native, 'model': 'openai/other'}) != refs[0]
 
 
-def test_glob_resources_keep_their_single_semantic_input_slot(tmp_path):
+def test_glob_resources_keep_their_single_semantic_input_slot(tmp_path: Path) -> None:
+    """Verify glob resources keep their single semantic input slot."""
     config = config_fixture(tmp_path)
     (tmp_path / 'extra.md').write_text('Another rule.\n')
     data = yaml.safe_load((tmp_path / 'agent.yaml').read_text())
@@ -108,10 +141,11 @@ def test_glob_resources_keep_their_single_semantic_input_slot(tmp_path):
     run = tmp_path / 'run'
     run.mkdir()
     selected = freeze_agent_input(run, config)
-    assert len(validate_agent_input(run, selected, config.identity())['instructions']) == 2
+    instructions = validate_agent_input(run, selected, config.identity())['instructions']
+    assert isinstance(instructions, list) and len(instructions) == 2
 
 
-def test_ten_task_preparations_use_one_frozen_input_without_rereading_host_resources(tmp_path):
+def test_ten_task_preparations_use_one_frozen_input_without_rereading_host_resources(tmp_path: Path) -> None:
     """Each private launcher uses the frozen snapshot; durable resources stay shared."""
     config = config_fixture(tmp_path)
     run = tmp_path / 'run'
@@ -123,18 +157,21 @@ def test_ten_task_preparations_use_one_frozen_input_without_rereading_host_resou
         private = tmp_path / f'private-{task}'
         source = private / 'source'
         source.mkdir(parents=True)
-        sandbox = Sandbox('/usr/bin/bwrap', source, source, private / 'home', private / 'runtime', Path('/usr/bin/true'))
+        sandbox = Sandbox(
+            '/usr/bin/bwrap', source, source, private / 'home', private / 'runtime', Path('/usr/bin/true')
+        )
         attempt = run / f'tasks/{task + 1:03d}-fixture/attempts/001'
         invocation = Invocation(config, sandbox, attempt, attempt, run_directory=run, agent_input=selected)
         invocation.prepare(f'Task {task}')
         assert (sandbox.runtime_files / 'resources/2-0-0/tdd/SKILL.md').read_bytes() == frozen_skill
         assert not (attempt / 'runtime').exists()
-        assert read_json(attempt / 'launch.json')['agent_input'] == selected
+        assert read_json(attempt / 'launch.json')['agent_input'] == selected.to_wire()
     assert len(list(run.rglob('SKILL.md'))) == 1
     assert len(list(run.glob('agent/opencode.json'))) == 1
 
 
-def test_effective_snapshot_rejects_a_symlink_ancestor_before_writing(tmp_path):
+def test_effective_snapshot_rejects_a_symlink_ancestor_before_writing(tmp_path: Path) -> None:
+    """Verify effective snapshot rejects a symlink ancestor before writing."""
     run = tmp_path / 'run'
     outside = tmp_path / 'outside'
     run.mkdir()

@@ -5,22 +5,24 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from test_neutral_models import example
+
 from basket_collector.config import CollectorConfig
-from basket_collector.contracts import (
+from basket_collector.filters import compact_rejection
+from basket_collector.models.artifacts import (
     BasketDocument,
     CollectRecord,
     FilterRecord,
+    Issue,
     RejectionReason,
     TaskRecord,
 )
-from basket_collector.filters import compact_rejection
-from basket_collector.llm import LLMCallError
+from basket_collector.models.sources import Repository
+from basket_collector.persistence.storage import read_json
 from basket_collector.pipeline import Pipeline
-from basket_collector.remote import Candidate, RemoteError
-from basket_collector.sources import Repository
-from basket_collector.storage import read_json
-from basket_collector.vcs import VCS
-from test_neutral_models import example
+from basket_collector.providers.llm import LLMCallError
+from basket_collector.providers.remote import Candidate, RemoteError
+from basket_collector.vcs.base import VCS
 
 
 def records() -> tuple[BasketDocument, CollectRecord, FilterRecord]:
@@ -91,7 +93,7 @@ class Remote:
         """Refuse unexpected object-validation calls in this scheduler test."""
         raise AssertionError('filter worker is supplied separately')
 
-    def get_closing_issues(self, record: CollectRecord) -> list:
+    def get_closing_issues(self, record: CollectRecord) -> list[Issue]:
         """Refuse unexpected issue requests after an empty boundary."""
         raise AssertionError('filter worker is supplied separately')
 

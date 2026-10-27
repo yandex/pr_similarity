@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 from helpers import archive_fixture
-from viewer.archive import validate_archive
+
 from viewer.config import Limits
 from viewer.errors import ViewerError
+from viewer.validation.archive import validate_archive
 
 
 @pytest.mark.parametrize('field', ['score', 'costs', 'status', 'runtime', 'metric', 'name', 'tags', 'phase'])
@@ -28,7 +29,7 @@ def test_rehashed_inline_projection_cannot_change_saved_evidence(tmp_path: Path,
         elif field == 'runtime':
             report['agent']['resolved_runtime']['binary_sha256'] = 'f' * 64
         elif field == 'metric':
-            report['metric']['implementation_sha256'] = 'f' * 64
+            report['metric']['version'] = 'unsupported-metric-version'
         elif field == 'name':
             report['agent']['name'] = 'Different frozen agent'
         elif field == 'tags':

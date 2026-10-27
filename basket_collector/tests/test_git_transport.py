@@ -11,7 +11,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
-from basket_collector.git import (
+
+from basket_collector.vcs.git import (
     GitAuthenticationError,
     GitRepository,
     GitStopRequested,
@@ -153,7 +154,7 @@ def test_fetch_auth_error_is_safe_and_does_not_try_refs(tmp_path: Path, monkeypa
     )
     executable.chmod(0o700)
     monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
-    monkeypatch.setattr('basket_collector.git.credential_environment', lambda env, _timeout, _stop: env)
+    monkeypatch.setattr('basket_collector.vcs.git.credential_environment', lambda env, _timeout, _stop: env)
     # cat-file must remain native; only the fetch process uses the synthetic failure.
     original = cache.has_commit
     monkeypatch.setattr(cache, 'has_commit', lambda _sha: False)
@@ -178,7 +179,7 @@ def test_native_unshallow_failure_does_not_retry_or_replace_revision(
     )
     executable.chmod(0o700)
     monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
-    monkeypatch.setattr('basket_collector.git.credential_environment', lambda env, _timeout, _stop: env)
+    monkeypatch.setattr('basket_collector.vcs.git.credential_environment', lambda env, _timeout, _stop: env)
     monkeypatch.setattr(cache, 'has_commit', lambda _sha: False)
     with pytest.raises(RejectedChange) as error:
         cache.fetch_commit('a' * 40, ['refs/heads/main'])
@@ -204,7 +205,7 @@ def test_shutdown_reaps_active_git_fetch(tmp_path: Path, monkeypatch: pytest.Mon
     executable.write_text('#!/bin/sh\nprintf "%s" "$$" > "' + str(pid_file) + '"\nsleep 30\n', encoding='utf-8')
     executable.chmod(0o700)
     monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
-    monkeypatch.setattr('basket_collector.git.credential_environment', lambda env, _timeout, _stop: env)
+    monkeypatch.setattr('basket_collector.vcs.git.credential_environment', lambda env, _timeout, _stop: env)
     monkeypatch.setattr(cache, 'has_commit', lambda _sha: False)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(cache.fetch_commit, 'a' * 40, ['refs/heads/main'])

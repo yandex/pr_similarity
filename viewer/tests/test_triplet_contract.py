@@ -4,10 +4,13 @@ from copy import deepcopy
 
 import pytest
 from helpers import documents
-from viewer.contracts import validate_report, validate_triplet_index
+
 from viewer.errors import ViewerError
-from viewer.triplet_paths import triplet_path
+from viewer.models.evidence import ArtifactReceipt
+from viewer.models.report import ReportTask
 from viewer.util import digest
+from viewer.validation.contracts import validate_report, validate_triplet_index
+from viewer.validation.triplet_paths import triplet_path
 
 
 def contract() -> tuple[dict, dict, dict, dict]:
@@ -48,7 +51,12 @@ def test_empty_present_file_and_absent_roles_have_distinct_refs() -> None:
     """Readable refs preserve extension and absent roles are genuinely null."""
     report, task, index, inventory = contract()
     validate_report(report)
-    validate_triplet_index(index, task, inventory, run_id=report['run']['id'])
+    validate_triplet_index(
+        index,
+        ReportTask.model_validate(task),
+        {path: ArtifactReceipt.model_validate({'path': path, **receipt}) for path, receipt in inventory.items()},
+        run_id=report['run']['id'],
+    )
 
 
 @pytest.mark.parametrize('field', ['run_id', 'task_id', 'attempt_id', 'source'])
@@ -57,7 +65,12 @@ def test_each_triplet_owner_is_bound(field: str) -> None:
     report, task, index, inventory = contract()
     index[field] = {'before': 'foreign', 'after': task['after']} if field == 'source' else 'foreign'
     with pytest.raises(ViewerError):
-        validate_triplet_index(index, task, inventory, run_id=report['run']['id'])
+        validate_triplet_index(
+            index,
+            ReportTask.model_validate(task),
+            {path: ArtifactReceipt.model_validate({'path': path, **receipt}) for path, receipt in inventory.items()},
+            run_id=report['run']['id'],
+        )
 
 
 @pytest.mark.parametrize(
@@ -108,7 +121,12 @@ def test_invalid_states_or_receipts_are_rejected(mutation: str) -> None:
     if mutation == 'traversal':
         entry['path'] = '../empty.py'
     with pytest.raises(ViewerError):
-        validate_triplet_index(index, task, inventory, run_id=report['run']['id'])
+        validate_triplet_index(
+            index,
+            ReportTask.model_validate(task),
+            {path: ArtifactReceipt.model_validate({'path': path, **receipt}) for path, receipt in inventory.items()},
+            run_id=report['run']['id'],
+        )
 
 
 def test_report_cannot_route_roles_to_a_foreign_or_numbered_tree() -> None:

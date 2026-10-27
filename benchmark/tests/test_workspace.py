@@ -7,12 +7,15 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from test_basket import payload
+
 from benchmark.errors import BenchmarkError
-from benchmark.git import GitCache
-from benchmark.storage import read_json, write_json
-from benchmark.triplet_paths import triplet_path
-from benchmark.triplets import load_triplets, save_triplets
-from benchmark.workspace import capture_changes, prepare_workspace
+from benchmark.models.basket import BasketRecord, ChangedFile
+from benchmark.persistence.storage import read_json, write_json
+from benchmark.persistence.triplets import load_triplets, save_triplets
+from benchmark.validation.triplet_paths import triplet_path
+from benchmark.vcs.git import GitCache
+from benchmark.vcs.workspace import capture_changes, prepare_workspace
 
 
 def git(path: Path, *args: str) -> str:
@@ -112,11 +115,11 @@ def test_excluded_reference_stays_missed(history: tuple[GitCache, str, str], tmp
     assert captured.excluded == {'src/value.py': ['value.py']}
     index = save_triplets(tmp_path / 'triplets', cache, before, after, captured, 'owner/repo#1', 'attempt')
     triplets = load_triplets(tmp_path / 'triplets')
-    assert index['entries'][1]['path'] == 'src/value.py'
-    assert triplets['src/value.py']['human'].text == 'value = 2\n'
-    assert triplets['src/value.py']['ai'].text == 'value = 1\n'
-    assert not triplets['src/empty.py']['base'].exists
-    assert triplets['src/empty.py']['human'].exists and triplets['src/empty.py']['human'].text == ''
+    assert index.entries[1].path == 'src/value.py'
+    assert triplets['src/value.py'].human.text == 'value = 2\n'
+    assert triplets['src/value.py'].ai.text == 'value = 1\n'
+    assert not triplets['src/empty.py'].base.exists
+    assert triplets['src/empty.py'].human.exists and triplets['src/empty.py'].human.text == ''
 
 
 @pytest.mark.parametrize('content', [b'\x00binary', b'\xffnot-utf8'])
@@ -167,8 +170,9 @@ def test_artifact_corruption_is_not_deletion(history: tuple[GitCache, str, str],
     snapshot = prepare_workspace(cache, before, tmp_path / 'attempt/source', '.')
     directory = tmp_path / 'triplets'
     index = save_triplets(directory, cache, before, after, capture_changes(snapshot, []), 'owner/repo#1', 'attempt')
-    entry = next(item for item in index['entries'] if item['path'] == 'src/empty.py')
-    (directory / entry['files']['human']['path']).write_text('corrupted')
+    entry = next(item for item in index.entries if item.path == 'src/empty.py')
+    assert entry.files.human is not None
+    (directory / entry.files.human.path).write_text('corrupted')
     with pytest.raises(BenchmarkError):
         load_triplets(directory)
 
@@ -222,7 +226,9 @@ def test_missing_exists_cannot_be_reconstructed(history: tuple[GitCache, str, st
     directory = tmp_path / 'triplets'
     save_triplets(directory, cache, before, after, capture_changes(snapshot, []), 'owner/repo#1', 'attempt')
     index = read_json(directory / 'index.json')
-    del index['entries'][0]['exists']
+    entries = index['entries']
+    assert isinstance(entries, list) and isinstance(entries[0], dict)
+    del entries[0]['exists']
     write_json(directory / 'index.json', index)
     with pytest.raises(BenchmarkError):
         load_triplets(directory)
@@ -296,17 +302,15 @@ def test_reference_receipts_are_verified(history: tuple[GitCache, str, str]) -> 
             item[role + '_mode'] = None if entry is None else entry.mode
             item[role + '_blob'] = None if entry is None else entry.oid
         changes.append(item)
-    row = {
-        'revisions': {
-            'before': before,
-            'after': after,
-            'before_tree': cache.run('rev-parse', before + '^{tree}').decode().strip(),
-            'after_tree': cache.run('rev-parse', after + '^{tree}').decode().strip(),
-        },
-        'changes': {'files': changes},
-    }
+    row = BasketRecord.model_validate(payload()['tasks'][0])
+    row.revisions.before, row.revisions.after = before, after
+    row.revisions.before_tree = cache.run('rev-parse', before + '^{tree}').decode().strip()
+    row.revisions.after_tree = cache.run('rev-parse', after + '^{tree}').decode().strip()
+    row.changes.files = [
+        ChangedFile.model_validate({**item, 'status': 'modified', 'additions': 0, 'deletions': 0}) for item in changes
+    ]
     cache.verify_reference(row)
-    changes[0]['after_blob'] = 'f' * 40
+    row.changes.files[0].after_blob = 'f' * 40
     with pytest.raises(BenchmarkError) as caught:
         cache.verify_reference(row)
     assert caught.value.code == 'reference_mismatch'
@@ -346,20 +350,21 @@ def test_triplets_keep_adjacent_variants_and_distinguish_absent_empty(
         'attempt',
         run_id='11111111-1111-4111-8111-111111111111',
     )
-    entry = next(item for item in index['entries'] if item['path'] == 'src/value.py')
-    base = directory / entry['files']['base']['path']
-    human = directory / entry['files']['human']['path']
-    agent = directory / entry['files']['ai']['path']
+    entry = next(item for item in index.entries if item.path == 'src/value.py')
+    assert entry.files.base is not None
+    base = directory / entry.files.base.path
+    assert entry.files.human is not None
+    human = directory / entry.files.human.path
+    assert entry.files.ai is not None
+    agent = directory / entry.files.ai.path
     assert base.parent == human.parent == agent.parent
     assert base.name == 'value_base.py' and human.name == 'value_human.py' and agent.name == 'value_agent.py'
     assert base.read_text() == 'value = 1\n' and human.read_text() == 'value = 2\n'
-    empty = next(entry for entry in index['entries'] if entry['path'] == 'src/empty.py')
-    assert (
-        empty['files']['base'] is None
-        and not (directory / triplet_path(empty['number'], 'src/empty.py', 'base')).exists()
-    )
-    assert empty['exists']['human'] and (directory / empty['files']['human']['path']).read_bytes() == b''
-    assert index['run_id'] == '11111111-1111-4111-8111-111111111111'
+    empty = next(entry for entry in index.entries if entry.path == 'src/empty.py')
+    assert empty.files.base is None and not (directory / triplet_path(empty.number, 'src/empty.py', 'base')).exists()
+    assert empty.files.human is not None
+    assert empty.exists.human and (directory / empty.files.human.path).read_bytes() == b''
+    assert index.run_id == '11111111-1111-4111-8111-111111111111'
 
 
 def test_capture_and_triplets_support_file_becoming_directory(
@@ -377,10 +382,11 @@ def test_capture_and_triplets_support_file_becoming_directory(
     directory = tmp_path / 'triplets'
     index = save_triplets(directory, cache, before, after, captured, 'task', 'attempt')
     states = load_triplets(directory)
-    assert states['src/value.py']['base'].exists and not states['src/value.py']['ai'].exists
-    assert not states['src/value.py/nested.py']['base'].exists
-    child = next(entry for entry in index['entries'] if entry['path'] == 'src/value.py/nested.py')
-    assert (directory / child['files']['ai']['path']).read_text() == 'value = 3\n'
+    assert states['src/value.py'].base.exists and not states['src/value.py'].ai.exists
+    assert not states['src/value.py/nested.py'].base.exists
+    child = next(entry for entry in index.entries if entry.path == 'src/value.py/nested.py')
+    assert child.files.ai is not None
+    assert (directory / child.files.ai.path).read_text() == 'value = 3\n'
 
 
 def test_absent_triplet_rejects_fabricated_source_bytes(history: tuple[GitCache, str, str], tmp_path: Path) -> None:
@@ -390,8 +396,8 @@ def test_absent_triplet_rejects_fabricated_source_bytes(history: tuple[GitCache,
     captured = capture_changes(snapshot, [])
     directory = tmp_path / 'triplets'
     index = save_triplets(directory, cache, before, after, captured, 'task', 'attempt')
-    entry = next(item for item in index['entries'] if item['path'] == 'src/empty.py')
-    target = directory / triplet_path(entry['number'], entry['path'], 'base')
+    entry = next(item for item in index.entries if item.path == 'src/empty.py')
+    target = directory / triplet_path(entry.number, entry.path, 'base')
     assert not target.exists()
     target.write_bytes(b'')
     with pytest.raises(BenchmarkError) as caught:

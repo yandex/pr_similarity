@@ -5,8 +5,9 @@ and `make` interface; this module has no runtime dependency on benchmark/viewer.
 
 - Frozen `basket.json` is the boundary. Preserve exact revisions, source identity,
   workspace and stage lineage; do not hand-edit exports to bypass validation.
-- Only v2 configs/checkpoints are accepted. Start v1 collector workflows in a
-  new output with a v2 config; preserve frozen v1 baskets for the consumers.
+- Validate configuration and saved artifacts with their owning schemas. Use a new
+  output directory when checkpoints are incompatible. Preserve content hashes,
+  but do not add source or lock-file hashes to producer metadata.
 - Follow README resume rules for `RETRY_FAILED`, `ALLOW_PARTIAL` and `RESELECT`.
   Exit code 3 needs inspection, not automatic overwrite. Existing `basket.json`
   can be the previous publication; check selection, coverage and omissions.

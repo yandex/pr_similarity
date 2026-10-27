@@ -11,10 +11,11 @@ import threading
 from pathlib import Path
 
 import pytest
-from benchmark import commands
-from benchmark.commands import Command
-from benchmark.runner import Stop
-from benchmark.storage import read_json
+
+from benchmark.persistence.storage import read_json
+from benchmark.runtime import commands
+from benchmark.runtime.commands import Command
+from benchmark.runtime.runner import Stop
 
 
 def test_warning_at_error_threshold_trace_only_in_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -156,7 +157,7 @@ def test_blocked_debug_stream_cannot_hold_command_or_logging_shutdown(tmp_path: 
         import time
         from pathlib import Path
 
-        from benchmark.commands import Command
+        from benchmark.runtime.commands import Command
 
 
         class Blocked(io.StringIO):

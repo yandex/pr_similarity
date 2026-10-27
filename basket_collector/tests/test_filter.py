@@ -5,8 +5,10 @@ from threading import Event
 from typing import cast
 
 import pytest
+from fixture_helpers import descriptor, repository, retrieval
+
 from basket_collector.config import FilterConfig
-from basket_collector.contracts import (
+from basket_collector.models.artifacts import (
     ChangedFile,
     ChangeRequest,
     Changes,
@@ -21,16 +23,15 @@ from basket_collector.contracts import (
     Revisions,
     SourceRevisions,
 )
-from basket_collector.git import GitRepository
-from basket_collector.remote import RemoteVCS
-from basket_collector.sources import RetrievalReceipt, SourceDescriptor
+from basket_collector.models.sources import RetrievalReceipt, SourceDescriptor
+from basket_collector.providers.remote import RemoteVCS
 from basket_collector.stages.filter import (
     FilterInterrupted,
     SourceChangedError,
     _verify_source,
     process_one,
 )
-from fixture_helpers import descriptor, repository, retrieval
+from basket_collector.vcs.git import GitRepository
 
 BASE = 'a' * 40
 HEAD = 'b' * 40

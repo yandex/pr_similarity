@@ -6,8 +6,10 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from fixture_helpers import native_config, retrieval
+
 from basket_collector.config import CollectorConfig
-from basket_collector.contracts import (
+from basket_collector.models.artifacts import (
     ChangedFile,
     Changes,
     ChangeStats,
@@ -17,13 +19,12 @@ from basket_collector.contracts import (
     ResolvedRevisions,
     SourceRevisions,
 )
-from basket_collector.git import GitRepository
-from basket_collector.github import GitHubClient
-from basket_collector.github_source import GitHubRemoteVCS
+from basket_collector.models.sources import RetrievalReceipt, SourceDescriptor
+from basket_collector.persistence.storage import read_document
 from basket_collector.pipeline import Pipeline
-from basket_collector.sources import RetrievalReceipt, SourceDescriptor
-from basket_collector.storage import read_document
-from fixture_helpers import native_config, retrieval
+from basket_collector.providers.github import GitHubClient
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.vcs.git import GitRepository
 
 SHA = 'a' * 40
 BASE = 'b' * 40
@@ -102,8 +103,6 @@ def _producer() -> Producer:
     """Build stable producer metadata for checkpoint fixtures."""
     return Producer(
         version='test',
-        implementation_sha256=HASH,
-        dependencies_sha256=HASH,
         python_version='3.12.3',
         git_version='git test',
     )
@@ -163,7 +162,7 @@ def test_filter_resumes_only_pending_pr_after_graphql_rate_limit(
     headers: dict[str, str],
 ) -> None:
     """Verify filter resumes only the pending PR after a GraphQL rate limit."""
-    monkeypatch.setattr('basket_collector.github.time.sleep', lambda seconds: None)
+    monkeypatch.setattr('basket_collector.providers.github.time.sleep', lambda seconds: None)
     config = _config(tmp_path)
     requests: list[tuple[str, int]] = []
     limited = True

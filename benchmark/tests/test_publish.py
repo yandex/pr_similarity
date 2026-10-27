@@ -9,14 +9,18 @@ from typing import NoReturn
 
 import httpx
 import pytest
-from benchmark.agent_input import benchmark_settings
-from benchmark.artifact_refs import read_reference, reference
-from benchmark.errors import BenchmarkError
-from benchmark.inference import generated_groups
-from benchmark.publish import publish
-from benchmark.run_store import RunStore
-from benchmark.storage import read_json, write_json
 from test_archive import complete_run
+
+from benchmark.errors import BenchmarkError
+from benchmark.execution.agent_input import benchmark_settings
+from benchmark.models import Report, State
+from benchmark.models.evidence import ConfigIdentity, PublishReceipt, PublishRequest
+from benchmark.models.report import ReportInference
+from benchmark.persistence.artifact_refs import read_reference, reference
+from benchmark.persistence.run_store import RunStore
+from benchmark.persistence.storage import read_json, write_json
+from benchmark.presentation.inference import generated_groups
+from benchmark.publication.publish import publish
 
 TOKEN = 'fixture_token_for_tests_only'
 
@@ -39,9 +43,11 @@ def viewer_transport(handler: Callable[[httpx.Request], httpx.Response]) -> http
                 native_file = archive.extractfile('agent/opencode.json')
                 identity_file = archive.extractfile('config_identity.json')
                 assert native_file is not None and identity_file is not None
-                native_config.clear(); native_config.update(json.loads(native_file.read()))
+                native_config.clear()
+                native_config.update(json.loads(native_file.read()))
                 identity = json.loads(identity_file.read())
-                archived_report.clear(); archived_report.update(report)
+                archived_report.clear()
+                archived_report.update(report)
                 public_tasks[:] = [{'task_id': task['id']} for task in report['tasks']]
             published.update(
                 run_id=report['run']['id'],
@@ -52,44 +58,59 @@ def viewer_transport(handler: Callable[[httpx.Request], httpx.Response]) -> http
                 display_name=report['agent']['name'],
                 tags=report['run']['tags'],
                 inference=report['inference'],
-                tag_groups={**generated_groups(report['inference']), 'setup': report['run']['tags']},
+                tag_groups={
+                    **generated_groups(ReportInference.model_validate(report['inference'])),
+                    'setup': report['run']['tags'],
+                },
                 basket={'name': basket['meta']['name']},
                 pinned=False,
-                benchmark=benchmark_settings(identity),
+                benchmark=benchmark_settings(ConfigIdentity.model_validate(identity)).to_wire(),
             )
         if request.method == 'GET':
             if request.url.path.endswith('/config'):
-                return httpx.Response(200, json={'projection_version': 2,
-                    'report_sha256': published['report_sha256'],
-                    'publication_sha256': published['publication_sha256'],
-                    'identity_sha256': archived_report['config']['identity_sha256'],
-                    'source': archived_report['agent_input']['config'], 'supported': True, 'config': native_config})
+                return httpx.Response(
+                    200,
+                    json={
+                        'projection_version': 2,
+                        'report_sha256': published['report_sha256'],
+                        'publication_sha256': published['publication_sha256'],
+                        'identity_sha256': archived_report['config']['identity_sha256'],
+                        'source': archived_report['agent_input']['config'],
+                        'supported': True,
+                        'config': native_config,
+                    },
+                )
             if request.url.path.endswith('/tasks'):
                 offset = int(request.url.params.get('offset', 0))
-                return httpx.Response(200, json={'total': len(public_tasks),
-                    'items': public_tasks[offset:offset + 200],
-                    'report_sha256': published['report_sha256'],
-                    'publication_sha256': published['publication_sha256']})
+                return httpx.Response(
+                    200,
+                    json={
+                        'total': len(public_tasks),
+                        'items': public_tasks[offset : offset + 200],
+                        'report_sha256': published['report_sha256'],
+                        'publication_sha256': published['publication_sha256'],
+                    },
+                )
             return httpx.Response(200, json=published)
         return handler(request)
 
     return httpx.MockTransport(dispatch)
 
 
-def pending_publication(directory: Path) -> dict | None:
+def pending_publication(directory: Path) -> PublishRequest | None:
     """Resolve the selected immutable journal instead of a mutable pending.json file."""
     store = RunStore.open(directory)
-    selected = store.state['pending_publish']
-    return None if selected is None else read_reference(directory, selected['request'])
+    selected = store.state.pending_publish
+    return None if selected is None else read_reference(directory, selected.request, PublishRequest)
 
 
-def assert_native_unchanged(directory: Path, previous: dict) -> None:
+def assert_native_unchanged(directory: Path, previous: Report) -> None:
     """Publication state may advance while native identity, results and labels remain fixed."""
     current = RunStore.open(directory).snapshot()
-    assert current['tasks'] == previous['tasks']
-    assert current['agent'] == previous['agent']
-    assert current['inference'] == previous['inference']
-    assert current['run']['tags'] == previous['run']['tags']
+    assert current.tasks == previous.tasks
+    assert current.agent == previous.agent
+    assert current.inference == previous.inference
+    assert current.run.tags == previous.run.tags
 
 
 def receipt(request: httpx.Request) -> dict:
@@ -199,6 +220,7 @@ def test_bad_public_readback_keeps_request_pending(
     original = viewer_transport(lambda request: httpx.Response(201, json=receipt(request)))
 
     def corrupted(request: httpx.Request) -> httpx.Response:
+        """Corrupt the selected public readback while preserving successful upload responses."""
         response = original.handle_request(request)
         if request.method != 'GET':
             return response
@@ -222,9 +244,9 @@ def test_interactive_credentials_stay_out_of_artifacts(tmp_path: Path, monkeypat
     """Verify interactive credentials stay out of artifacts."""
     run = complete_run(tmp_path, monkeypatch)
     monkeypatch.delenv('PRSIM_VIEWER_TOKEN', raising=False)
-    monkeypatch.setattr('benchmark.publish._interactive', lambda: None)
+    monkeypatch.setattr('benchmark.publication.publish._interactive', lambda: None)
     monkeypatch.setattr('builtins.input', lambda prompt: 'fixture-login')
-    monkeypatch.setattr('benchmark.publish.getpass.getpass', lambda prompt: 'fixture-hidden-password')
+    monkeypatch.setattr('benchmark.publication.publish.getpass.getpass', lambda prompt: 'fixture-hidden-password')
     events = []
 
     def transport(request: httpx.Request) -> httpx.Response:
@@ -309,7 +331,7 @@ def test_public_readback_mismatch_keeps_exact_request_pending(tmp_path: Path, mo
         )
     assert caught.value.code == 'publish_readback_mismatch'
     pending = pending_publication(directory)
-    assert pending is not None and pending['idempotency_key'] == uploads[0]
+    assert pending is not None and pending.idempotency_key == uploads[0]
     assert not list((directory / 'operations/publish').glob('*/receipt.json'))
 
 
@@ -349,19 +371,21 @@ def test_omitted_historical_payload_does_not_relax_publication_binding(
     monkeypatch.setenv('TEST_VIEWER_TOKEN', TOKEN)
     client = httpx.Client(transport=viewer_transport(lambda request: httpx.Response(200, json=receipt(request))))
     assert publish(directory, 'https://viewer.example', token_env='TEST_VIEWER_TOKEN', client=client) == 0
-    state = read_json(directory / '_meta/state.json')
-    selected = state['last_publish']
-    request = read_reference(directory, selected['request'])
-    (directory / request['payload']['path']).unlink()
+    state = State.model_validate(read_json(directory / '_meta/state.json'))
+    selected = state.last_publish
+    assert selected is not None
+    request = read_reference(directory, selected.request, PublishRequest)
+    (directory / request.payload.path).unlink()
     if kind == 'fingerprint':
-        request['fingerprint']['run_id'] = '44444444-4444-4444-8444-444444444444'
-        write_json(directory / selected['request']['path'], request)
-        selected['request'] = reference(directory, selected['request']['path'])
+        request.fingerprint.run_id = '44444444-4444-4444-8444-444444444444'
+        write_json(directory / selected.request.path, request)
+        selected.request = reference(directory, selected.request.path)
     else:
-        confirmed = read_reference(directory, selected['receipt'])
-        confirmed['server_receipt']['report_sha256'] = '0' * 64
-        write_json(directory / selected['receipt']['path'], confirmed)
-        selected['receipt'] = reference(directory, selected['receipt']['path'])
+        confirmed = read_reference(directory, selected.receipt, PublishReceipt)
+        assert confirmed.server_receipt is not None
+        confirmed.server_receipt.report_sha256 = '0' * 64
+        write_json(directory / selected.receipt.path, confirmed)
+        selected.receipt = reference(directory, selected.receipt.path)
     write_json(directory / '_meta/state.json', state)
     with pytest.raises(BenchmarkError) as caught:
         RunStore.open(directory, allow_omitted_publish_payloads=True)

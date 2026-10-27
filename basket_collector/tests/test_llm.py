@@ -10,8 +10,9 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+
 from basket_collector.config import GenerationConfig
-from basket_collector.llm import (
+from basket_collector.providers.llm import (
     GenerationInterrupted,
     LLMAuthenticationError,
     LLMCallError,
@@ -19,7 +20,7 @@ from basket_collector.llm import (
     LLMConfigurationError,
     RateLimiter,
 )
-from basket_collector.transport_scope import generation_requests, record_scope
+from basket_collector.runtime.transport_scope import generation_requests, record_scope
 
 
 def _config(api: str = 'openai_responses', **overrides: object) -> GenerationConfig:
@@ -363,7 +364,7 @@ def test_stop_during_terminal_retryable_http_error_leaves_request_pending(
 def test_retry_after_delays_next_record_after_exhaustion(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
     """An exhausted record leaves a shared uncapped cooldown for the next record."""
     clock = [100.0]
-    monkeypatch.setattr('basket_collector.llm.time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr('basket_collector.providers.llm.time', SimpleNamespace(monotonic=lambda: clock[0]))
     monkeypatch.setenv('TEST_LLM_KEY', 'fixture')
     sent: list[float] = []
 
@@ -409,7 +410,7 @@ def test_local_llm_request_defects_are_not_record_failures(
 def test_shared_limiter_rechecks_extended_cooldown_for_parallel_workers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Waiting workers share extensions and wake promptly on cancellation without consuming slots."""
     clock = [100.0]
-    monkeypatch.setattr('basket_collector.llm.time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr('basket_collector.providers.llm.time', SimpleNamespace(monotonic=lambda: clock[0]))
     limiter = RateLimiter(100)
     limiter.defer(60)
     limiter.defer(5)
@@ -468,7 +469,7 @@ def test_shared_limiter_rechecks_extended_cooldown_for_parallel_workers(monkeypa
 def test_cooldown_arriving_during_durable_request_reservation(monkeypatch: pytest.MonkeyPatch) -> None:
     """A worker delayed by fsync must honor another worker's Retry-After before sending HTTP."""
     clock = [100.0]
-    monkeypatch.setattr('basket_collector.llm.time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr('basket_collector.providers.llm.time', SimpleNamespace(monotonic=lambda: clock[0]))
     monkeypatch.setenv('TEST_LLM_KEY', 'fixture')
     reserved, release, waiting = threading.Event(), threading.Event(), threading.Event()
     sent: list[float] = []

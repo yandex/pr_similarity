@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0
+
+- Agent attempts use isolated Python 3.12 environments derived from the benchmark
+  setup interpreter. Runtime provenance is frozen per run and verified on resume;
+  standard Python paths and shebangs select the attempt venv. System command
+  directories are copied once per invocation and shared read-only; installed
+  packages remain private to each attempt. Python preparation fails before model
+  calls and retains logs. Historical artifacts remain read-only where supported,
+  with deprecation warnings.
+- Introduce independently owned object models and a layered module layout for
+  collector, benchmark and viewer; preserve CLI and HTTP operation interfaces.
+- Move collector stages/baskets to v3 and run/report/state/archive/native evidence
+  to v2. Keep published basket v1/v2 inputs and viewer reading of old reports.
+  Cross-version resume/reprice/rescore and collector checkpoint resume are unsupported.
+- Ship ten frozen v3 baskets for pandas and OpenSearch, with disjoint sets of
+  1, 5, 10, 25 and 100 tasks per repository. Read existing v1/v2 baskets unchanged
+  with a deprecation warning; preserve saved run inputs and compatibility fixtures.
+- Remove implementation/lock-file fingerprints and calculator source snapshots
+  from persisted identity. Keep semantic metric/calculator versions and exact
+  hashes for artifact content, policies and frozen inputs.
+- Align local HTML with the viewer run page; remove the compare command.
+- Confirm setup with `[Y/n]` for existing environments; upgrade pip before dependencies.
+- Provide complete configuration references under each module's `examples/`,
+  with a GPT-6.1 Sol medium baseline using ChatGPT OAuth and the `baseline` tag.
+  Move detailed operating guides out of the module quick starts.
+- Include configuration examples and module guides in the verified source export
+  and its generated v0.3.0 file manifest.
+
 ## 0.2.0
 
 - Upgrade the basket collector to schema v2 with explicit population coverage,
@@ -20,9 +48,9 @@ Collector v1 checkpoints cannot be resumed by the v2 collector; start a new
 output directory. Existing frozen v1 baskets remain supported. Product release,
 basket schema and agent config versions are independent. Update benchmark and
 viewer together before publishing v2 runs to an older deployment. Follow
-[Upgrade from v0.1](README.md#upgrade-from-v01), including package reinstallation,
+[current format guidance](README.md#reading-data-from-earlier-releases), including package reinstallation,
 SQLite backup and rollback. Persistent hosting is covered by the
-[Linux service recipe](viewer/README.md#persistent-linux-service).
+[Linux service recipe](viewer/docs/deployment.md#persistent-linux-service).
 
 Python 3.12 and Linux x64 agent execution remain the supported benchmark setup.
 OpenCode examples retain 1.18.33; live smoke checks also cover 1.19.3.

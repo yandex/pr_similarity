@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import sys
+import sysconfig
 import time
 from pathlib import Path
 
@@ -62,6 +63,14 @@ def changes() -> None:
     Path('src/naïve file.py').write_text('greeting = "Привет"\n')
 
 
+def mark_attempt() -> None:
+    """Prove a real retried or resumed native attempt never inherits earlier packages."""
+    assert sys.prefix == '/sandbox-home/.venv'
+    marker = Path(sysconfig.get_path('purelib')) / 'previous_attempt_marker.py'
+    assert not marker.exists(), 'A new native attempt inherited an earlier venv.'
+    marker.write_text('ATTEMPT_MARKER = True\n')
+
+
 def main() -> None:
     """Expose version/config and one bounded native run without any provider or network."""
     if '--version' in sys.argv:
@@ -70,6 +79,7 @@ def main() -> None:
         print(os.environ['OPENCODE_CONFIG_CONTENT'])
     else:
         assert 'run' in sys.argv and '--format' in sys.argv
+        mark_attempt()
         assert sys.stdin.buffer.read()
         changes()
         usage()

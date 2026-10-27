@@ -9,21 +9,23 @@ import signal
 import subprocess
 import time
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
-from basket_collector.contracts import (
+from fixture_helpers import task_identity
+
+from basket_collector.models.artifacts import (
     BasketDocument,
     CollectDocument,
     FilterDocument,
     TasksDocument,
 )
-from basket_collector.storage import (
+from basket_collector.persistence.storage import (
     current_producer,
     read_checkpoint,
     read_document,
     stage_sha256,
 )
-from fixture_helpers import task_identity
 
 PROJECT = Path(__file__).resolve().parents[1]
 SITE = Path(__file__).resolve().parent / 'fixtures'
@@ -196,6 +198,30 @@ def test_make_history_rejection_warning_and_empty_exit(
     assert 'rejected: source_history_unavailable;' in saved_log
 
 
+def _assert_wheel_layout(wheel: Path) -> None:
+    """Require the grouped package and reject stale flat modules or unsupported schemas."""
+    groups = {
+        'models': ('artifacts', 'sources', 'frozen_baskets'),
+        'providers': ('github', 'github_source', 'gitlab', 'gitlab_source', 'remote', 'llm'),
+        'vcs': ('git', 'git_auth', 'base'),
+        'persistence': ('artifact_io', 'baskets', 'storage', 'publication', 'checkpoints', 'checkpoint_inputs'),
+        'runtime': ('attempts', 'record_runtime', 'http_runtime', 'transport_scope', 'logs', 'progress'),
+    }
+    with ZipFile(wheel) as archive:
+        names = set(archive.namelist())
+    required = {f'basket_collector/{group}/{module}.py' for group, modules in groups.items() for module in modules}
+    old_names = {
+        {'artifacts': 'contracts', 'base': 'vcs'}.get(module, module)
+        for modules in groups.values()
+        for module in modules
+    }
+    assert required | {'basket_collector/requirements.lock'} <= names
+    assert not {f'basket_collector/{module}.py' for module in old_names} & names
+    assert {name for name in names if name.startswith('basket_collector/schemas/')} == {
+        f'basket_collector/schemas/basket-v{version}.schema.json' for version in (1, 2, 3)
+    }
+
+
 def test_installed_wheel_runs_basket_stages(
     make_fixture: tuple[Path, Path, dict[str, str], Path],
     tmp_path: Path,
@@ -236,6 +262,7 @@ def test_installed_wheel_runs_basket_stages(
     assert built.returncode == 0, built.stdout + built.stderr
     wheels = list(wheel_dir.glob('*.whl'))
     assert len(wheels) == 1
+    _assert_wheel_layout(wheels[0])
     installed_dir = tmp_path / 'installed'
     installed = subprocess.run(
         [
@@ -282,7 +309,7 @@ def test_installed_wheel_runs_basket_stages(
     tasks = read_document(output / 'tasks.json', TasksDocument)
     basket = read_document(output / 'basket.json', BasketDocument)
     assert collected.meta.producer == filtered.meta.producer == tasks.meta.producer == basket.meta.producer
-    assert collected.meta.producer == current_producer(PROJECT)
+    assert collected.meta.producer == current_producer()
     assert filtered.meta.input is not None
     assert tasks.meta.input is not None
     assert basket.meta.input is not None

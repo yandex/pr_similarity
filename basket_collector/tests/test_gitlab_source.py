@@ -4,14 +4,17 @@ import asyncio
 import json
 import threading
 from collections.abc import Callable
+from typing import TypedDict
 
 import httpx
 import pytest
+
 from basket_collector.config import CollectConfig, SourceConfig
-from basket_collector.gitlab import GitLabClient
-from basket_collector.gitlab_source import GitLabRemoteVCS
-from basket_collector.remote import RemoteError, RemoteInterrupted
-from basket_collector.sources import Repository, change_id
+from basket_collector.models.artifacts import JsonValue
+from basket_collector.models.sources import Repository, change_id
+from basket_collector.providers.gitlab import GitLabClient
+from basket_collector.providers.gitlab_source import GitLabRemoteVCS
+from basket_collector.providers.remote import RemoteError, RemoteInterrupted
 from basket_collector.stages.collect import collect_change, discover_date_range
 
 
@@ -28,7 +31,18 @@ def configured(handler: Callable[[httpx.Request], httpx.Response]) -> GitLabRemo
     return GitLabRemoteVCS(config, client=client)
 
 
-def project() -> dict:
+class ProjectFixture(TypedDict):
+    """GitLab project identity and public locator fields."""
+
+    id: int
+    path_with_namespace: str
+    web_url: str
+    http_url_to_repo: str
+    default_branch: str
+    visibility: str
+
+
+def project() -> ProjectFixture:
     """Return canonical metadata while labeling the accessible project private upstream."""
     return {
         'id': 123,
@@ -40,7 +54,7 @@ def project() -> dict:
     }
 
 
-def merged() -> dict:
+def merged() -> dict[str, JsonValue]:
     """Keep source, squash and merge objects distinct in the API fixture."""
     return {
         'id': 9999,

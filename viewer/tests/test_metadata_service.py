@@ -1,14 +1,16 @@
 """Publication and quarantine preserve owner state independently from inference evidence."""
 
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from helpers import archive_fixture, inference
 from test_service import publish, service
-from viewer.archive import ImportedRun, validate_archive
+
 from viewer.errors import ViewerError
-from viewer.util import digest, json_bytes, parse_json
+from viewer.util import digest, json_bytes, parse_json, require_object
+from viewer.validation.archive import ImportedRun, validate_archive
 
 
 def test_refresh_quarantines_old_report_without_pruning_metadata_order_accounts(tmp_path: Path) -> None:
@@ -23,10 +25,10 @@ def test_refresh_quarantines_old_report_without_pruning_metadata_order_accounts(
     old_report = {'schema_version': 1, 'run': {'id': rid}}
     raw = json_bytes(old_report)
     svc.store.put(prefix + 'data/report.json', raw)
-    marker = parse_json(svc.store.get(prefix + 'publication.json', svc.config.limits.json_bytes))
+    marker = require_object(parse_json(svc.store.get(prefix + 'publication.json', svc.config.limits.json_bytes)))
     marker['report_sha256'] = digest(raw)
-    basket = parse_json(svc.store.get(prefix + 'data/basket.json', svc.config.limits.json_bytes))
-    basket['meta']['name'] = 'Quarantined basket'
+    basket = require_object(parse_json(svc.store.get(prefix + 'data/basket.json', svc.config.limits.json_bytes)))
+    require_object(basket['meta'])['name'] = 'Quarantined basket'
     basket_raw = json_bytes(basket)
     invalid_hash = digest(basket_raw)
     svc.store.put(prefix + 'data/basket.json', basket_raw)
@@ -44,16 +46,12 @@ def test_refresh_quarantines_old_report_without_pruning_metadata_order_accounts(
     assert svc.db.owner(rid) == owner_before
     assert svc.store.get('settings/viewer-metadata.json', svc.config.limits.json_bytes) == before_metadata
     assert parse_json(svc.store.get('settings/basket-order.json', svc.config.limits.json_bytes)) == order
-    assert (
-        parse_json(svc.store.get('settings/basket-display.json', svc.config.limits.json_bytes))['items'][invalid_hash]
-        == flags[invalid_hash]
-    )
+    display = require_object(parse_json(svc.store.get('settings/basket-display.json', svc.config.limits.json_bytes)))
+    assert require_object(display['items'])[invalid_hash] == flags[invalid_hash]
     svc.set_order(svc.order)
     assert parse_json(svc.store.get('settings/basket-order.json', svc.config.limits.json_bytes)) == order
-    assert (
-        parse_json(svc.store.get('settings/basket-display.json', svc.config.limits.json_bytes))['items'][invalid_hash]
-        == flags[invalid_hash]
-    )
+    display = require_object(parse_json(svc.store.get('settings/basket-display.json', svc.config.limits.json_bytes)))
+    assert require_object(display['items'])[invalid_hash] == flags[invalid_hash]
     svc.db.close()
 
 
@@ -105,12 +103,12 @@ def test_old_report_shape_is_rejected_before_publication_writes(tmp_path: Path) 
     path = tmp_path / 'old-report.tar.gz'
     archive_fixture(path)
     imported = validate_archive(path, tmp_path / 'old-data', svc.config.limits)
-    imported.report.pop('inference')
+    imported = replace(imported, report=imported.report.model_copy(update={'inference': None}))
     before = list(svc.store.list(''))
     with pytest.raises(ViewerError) as error:
         svc.publish(imported, 'alice', 'old-report')
     assert error.value.code == 'invalid_report'
     assert list(svc.store.list('')) == before
     assert svc.db.operations() == {}
-    assert svc.db.owner(imported.report['run']['id']) is None
+    assert svc.db.owner(imported.report.run.id) is None
     svc.db.close()

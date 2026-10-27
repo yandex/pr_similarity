@@ -4,11 +4,12 @@ import threading
 
 import httpx
 import pytest
-from basket_collector.attempts import AttemptJournal, AttemptRunner
+
 from basket_collector.config import GitHubConfig, RetryPolicy
-from basket_collector.contracts import StageError
-from basket_collector.github import GitHubClient, GitHubError
-from basket_collector.transport_scope import record_owned, record_scope
+from basket_collector.models.artifacts import StageError
+from basket_collector.providers.github import GitHubClient, GitHubError
+from basket_collector.runtime.attempts import AttemptJournal, AttemptRunner
+from basket_collector.runtime.transport_scope import record_owned, record_scope
 
 
 def test_record_retries_are_not_multiplied_by_github_retries() -> None:

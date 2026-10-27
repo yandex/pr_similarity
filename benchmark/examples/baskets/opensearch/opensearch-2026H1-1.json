@@ -1,7 +1,7 @@
 {
   "meta": {
     "schema_family": "pr_similarity_os.basket",
-    "schema_version": 2,
+    "schema_version": 3,
     "stage": "export",
     "status": "completed",
     "input": {
@@ -22,8 +22,6 @@
     "settings_hash": "cf2333b9e5d3f9bca327e3eefe1521f9f134a7e2020d026ef050942133268a4e",
     "producer": {
       "version": "0.1.0",
-      "implementation_sha256": "0d9417f712756e8870175a5c5821d767542bd5767a2f35c834feeacfb8408b40",
-      "dependencies_sha256": "eb6cca247752cc15e326ae3b94ecd7264aee8b0c9fb6e8164479ccd0daf19bc8",
       "python_version": "3.12.15",
       "git_version": "git version 2.34.1"
     },
@@ -59,8 +57,6 @@
         },
         "producer": {
           "version": "0.1.0",
-          "implementation_sha256": "0d9417f712756e8870175a5c5821d767542bd5767a2f35c834feeacfb8408b40",
-          "dependencies_sha256": "eb6cca247752cc15e326ae3b94ecd7264aee8b0c9fb6e8164479ccd0daf19bc8",
           "python_version": "3.12.15",
           "git_version": "git version 2.34.1"
         }
@@ -169,8 +165,6 @@
         },
         "producer": {
           "version": "0.1.0",
-          "implementation_sha256": "0d9417f712756e8870175a5c5821d767542bd5767a2f35c834feeacfb8408b40",
-          "dependencies_sha256": "eb6cca247752cc15e326ae3b94ecd7264aee8b0c9fb6e8164479ccd0daf19bc8",
           "python_version": "3.12.15",
           "git_version": "git version 2.34.1"
         }
@@ -239,8 +233,6 @@
         },
         "producer": {
           "version": "0.1.0",
-          "implementation_sha256": "0d9417f712756e8870175a5c5821d767542bd5767a2f35c834feeacfb8408b40",
-          "dependencies_sha256": "eb6cca247752cc15e326ae3b94ecd7264aee8b0c9fb6e8164479ccd0daf19bc8",
           "python_version": "3.12.15",
           "git_version": "git version 2.34.1"
         }
@@ -302,7 +294,7 @@
       }
     },
     "selection": {
-      "schema_version": 2,
+      "schema_version": 3,
       "sha256": "91d4539a106137ddd7527c9cb60adb38b9962ac697b231effad447501b83f191",
       "input_sha256": "3557ef5d5ae1e5b93535dee89350196e745211703872f94a26996f5fc1eb4d20",
       "fingerprint": "1b4e5f08bc25d627decb1aa3916f1f4ac3df24745dc68e7e5579f143f900b4d7",

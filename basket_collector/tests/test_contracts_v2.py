@@ -1,19 +1,20 @@
-"""Validate per-stage failures and complete-population coverage in the v2 wire contract."""
+"""Validate per-stage failures and complete-population coverage in the v3 wire contract."""
 
 from typing import Any
 
 import pytest
-from basket_collector.contracts import BasketDocument, CollectDocument, FilterDocument, SelectionSnapshot
-from basket_collector.storage import sha256
 from fixture_helpers import task_identity
 from pydantic import ValidationError
 from test_contracts import _basket, _collect, _filter
+
+from basket_collector.models.artifacts import BasketDocument, CollectDocument, FilterDocument, SelectionSnapshot
+from basket_collector.persistence.storage import sha256
 
 
 def selection(identity: str) -> dict[str, Any]:
     """Build a complete independently hashed one-task selection snapshot."""
     data: dict[str, Any] = {
-        'schema_version': 2,
+        'schema_version': 3,
         'input_sha256': 'a' * 64,
         'selected_ids': [identity],
         'generation_keys': {identity: 'd' * 64},
@@ -29,7 +30,7 @@ def selection(identity: str) -> dict[str, Any]:
 def test_collect_failure_needs_no_invented_source_snapshot() -> None:
     """A failed API lookup retains discovery identity and completes its record pass."""
     data = _collect()
-    data['meta']['schema_version'] = 2
+    data['meta']['schema_version'] = 3
     row = data['tasks'].pop()
     data['meta']['counts'].update(succeeded=0, failed=1)
     data['failed'] = [
@@ -50,7 +51,7 @@ def test_collect_failure_needs_no_invented_source_snapshot() -> None:
 def test_filter_keeps_candidates_separate_from_selection() -> None:
     """Selection stores an explicit fingerprint while accepted records remain intact."""
     data = _filter()
-    data['meta']['schema_version'] = 2
+    data['meta']['schema_version'] = 3
     data['selection'] = selection(data['tasks'][0]['id'])
     document = FilterDocument.model_validate(data)
     assert document.meta.counts.succeeded == len(document.tasks) == 1
@@ -68,9 +69,9 @@ def test_selection_rejects_edited_snapshot_contents() -> None:
         SelectionSnapshot.model_validate(data)
 
 
-@pytest.mark.parametrize('version', [None, 1, True, 2.0, '2'])
+@pytest.mark.parametrize('version', [None, 1, 2, True, 3.0, '3'])
 def test_selection_requires_explicit_integer_version(version: object) -> None:
-    """Apply strict v2 version validation to independently stored selections too."""
+    """Apply strict v3 version validation to independently stored selections too."""
     data = selection(task_identity(1))
     if version is None:
         del data['schema_version']
@@ -85,7 +86,7 @@ def test_upstream_failed_makes_complete_generation_export_partial() -> None:
     """Do not hide lost population coverage behind a fully generated selected sample."""
     data = _basket()
     meta = data['meta']
-    meta['schema_version'] = 2
+    meta['schema_version'] = 3
     meta['selection'] = {
         key: value
         for key, value in selection(data['tasks'][0]['id']).items()
@@ -117,9 +118,9 @@ def test_upstream_failed_makes_complete_generation_export_partial() -> None:
         BasketDocument.model_validate(data)
 
 
-@pytest.mark.parametrize('version', [None, 1, True, 2.0, '2'])
-def test_v2_artifacts_refuse_missing_or_noninteger_version(version: object) -> None:
-    """Prevent v1 and malformed documents from entering v2 processing."""
+@pytest.mark.parametrize('version', [None, 1, 2, True, 3.0, '3'])
+def test_v3_artifacts_refuse_missing_or_noninteger_version(version: object) -> None:
+    """Prevent v1 and malformed documents from entering v3 processing."""
     data = _collect()
     if version is None:
         del data['meta']['schema_version']

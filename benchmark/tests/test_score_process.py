@@ -7,13 +7,14 @@ import time
 from pathlib import Path
 
 import pytest
+
 from benchmark.errors import BenchmarkError
-from benchmark.runner import Stop
-from benchmark.score_process import score_saved
-from benchmark.scoring import score_pr
-from benchmark.storage import atomic_write, bytes_sha256, write_json
-from benchmark.triplet_paths import triplet_path
-from benchmark.triplets import load_triplets
+from benchmark.metrics.process import score_saved
+from benchmark.metrics.scoring import score_pr
+from benchmark.persistence.storage import atomic_write, bytes_sha256, write_json
+from benchmark.persistence.triplets import load_triplets
+from benchmark.runtime.runner import Stop
+from benchmark.validation.triplet_paths import triplet_path
 
 
 def triplets(tmp_path: Path) -> Path:
@@ -46,8 +47,8 @@ def test_score_child_matches_direct_scorer(tmp_path: Path) -> None:
     """Verify score child matches direct scorer."""
     directory = triplets(tmp_path)
     result = score_saved(directory, 'triplets', tmp_path / 'scoring.log', threading.Event())
-    assert result['scoring'] == score_pr(load_triplets(directory))
-    assert result['diagnostics'] == []
+    assert result.scoring == score_pr(load_triplets(directory))
+    assert result.diagnostics == []
     assert '"scoring":' not in (tmp_path / 'scoring.log').read_text()
 
 
@@ -56,7 +57,10 @@ def test_invalid_machine_stdout_retains_redacted_diagnostics(tmp_path: Path) -> 
     log = tmp_path / 'scoring.log'
     with pytest.raises(BenchmarkError):
         score_saved(
-            triplets(tmp_path), 'triplets', log, threading.Event(),
+            triplets(tmp_path),
+            'triplets',
+            log,
+            threading.Event(),
             secrets=['PRIVATE_VALUE'],
             argv=[sys.executable, '-c', 'print("PRIVATE_VALUE not-json")'],
         )

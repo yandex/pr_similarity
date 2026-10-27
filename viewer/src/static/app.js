@@ -493,6 +493,16 @@ function makeFile(task, file) {
   value.append(node('span', file.path, 'file-path'), node('span', number(file.score), scoreClass(file.score)), node('span', 'View diff', 'file-action'));
   return value;
 }
+function originalTaskLink(task) {
+  try {
+    const url = new URL(task.url);
+    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
+      const source = node('a', task.kind === 'merge_request' ? 'Original MR' : 'Original PR', 'task-source-link');
+      source.href = url.href; source.target = '_blank'; source.rel = 'noopener noreferrer'; return source;
+    }
+  } catch (_) {}
+  return null;
+}
 function makeTask(task) {
   const view = generation;
   const reportHash = runReportHash;
@@ -500,14 +510,7 @@ function makeTask(task) {
   const details = node('details', null, 'task'); details.dataset.taskId = task.task_id;
   const summary = node('summary');
   const caption = task.repository + ' #' + task.number + ' · ' + task.title;
-  let title = node('span', caption, 'title');
-  try {
-    const url = new URL(task.url);
-    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
-      title = node('a', caption, 'title'); title.href = url.href; title.target = '_blank'; title.rel = 'noopener noreferrer';
-      title.addEventListener('click', event => event.stopPropagation());
-    }
-  } catch (_) {}
+  const title = node('span', caption, 'title');
   const expand = button('Expand task', event => {event.preventDefault(); event.stopPropagation(); details.open = !details.open;}, 'task-toggle');
   expand.setAttribute('aria-label', 'Expand task ' + task.repository + ' #' + task.number);
   const score = node('span', null, 'numeric ' + scoreClass(task.score)); score.append(scoreView(task, 'score'));
@@ -523,11 +526,14 @@ function makeTask(task) {
     expand.setAttribute('aria-label', (details.open ? 'Collapse' : 'Expand') + ' task ' + task.repository + ' #' + task.number);
     if (!details.open || loaded || view !== generation) return;
     loaded = true;
-    const body = node('div', 'Loading task…', 'task-body'); details.append(body);
+    details.querySelector('.task-body')?.remove();
+    const body = node('div', null, 'task-body'), sourceLink = originalTaskLink(task);
+    if (sourceLink) body.append(sourceLink); body.append(node('p', 'Loading task…')); details.append(body);
     try {
       const data = await api('/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(task.task_id) + '?' + taskSelection(reportHash, publicationHash));
       if (view !== generation || !details.isConnected) return;
       body.replaceChildren(node('h3', 'Task condition'), node('pre', data.condition, 'condition'));
+      if (sourceLink) body.prepend(sourceLink);
       const info = node('p', 'Score: ', 'muted'); info.append(scoreView(data, 'score'), ' · F1 files: ', scoreView(data, 'f1_files'), ' · Agent Time: ', durationView(data), ' · Cost: ', costView(data), ' USD'); body.append(info);
       const tokens = node('p', 'Tokens: ', 'muted'); tokens.append(tokensView(data), ' · Total: ', measurement(data.tokens.total)); body.append(tokens);
       body.append(node('h3', 'Files (' + data.files.length + ')'));
@@ -537,7 +543,7 @@ function makeTask(task) {
         const target = [...body.querySelectorAll('button.file')].find(file => file.dataset.fileId === pendingTaskFocus.fileId);
         (target || summary).focus({preventScroll: true}); pendingTaskFocus = null;
       }
-    } catch (error) {if (view !== generation || !details.isConnected) return; body.textContent = error.message; loaded = false; if (error.code === 'run_changed') showError(error);}
+    } catch (error) {if (view !== generation || !details.isConnected) return; body.replaceChildren(node('p', error.message)); if (sourceLink) body.prepend(sourceLink); loaded = false; if (error.code === 'run_changed') showError(error);}
   });
   details.open = expandedTasks.has(task.task_id);
   return details;
@@ -676,7 +682,7 @@ try {
   }
 } catch (_) {}
 $('task-direction').disabled = $('task-sort').value === 'task_order';
-if (detail) { $('page-kind').textContent = 'Run detail'; $('catalogue-filters').hidden = true; $('sorting').hidden = true; $('pinned-only').hidden = true; }
+if (detail) { $('page-kind').textContent = 'Run Report'; $('catalogue-filters').hidden = true; $('sorting').hidden = true; $('pinned-only').hidden = true; }
 if (usersPage || settingsPage) document.querySelector('.controls').hidden = true;
 window.addEventListener('viewer-account-change', () => reload());
 window.viewerAccountReady.then(() => reload());

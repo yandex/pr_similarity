@@ -1,6 +1,7 @@
 """Configurable deployment and resource limits; no hosting provider defaults."""
 
-from dataclasses import dataclass, field, fields
+from collections.abc import Mapping
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -10,6 +11,8 @@ from viewer.util import parse_json, safe_path
 
 @dataclass(frozen=True)
 class Limits:
+    """Bound archive, display and request resource use."""
+
     archive_bytes: int = 1 << 30
     unpacked_bytes: int = 8 << 30
     files: int = 100_000
@@ -32,7 +35,8 @@ class Limits:
     transfer_seconds: int = 900
     staging_free_bytes: int = 10 << 30
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate configured limits before the service starts."""
         for item in fields(self):
             value = getattr(self, item.name)
             if type(value) is not int or value < 0 or (value == 0 and item.name != 'staging_free_bytes'):
@@ -41,6 +45,8 @@ class Limits:
 
 @dataclass(frozen=True)
 class Config:
+    """Configure viewer storage, authentication and serving limits."""
+
     runtime: Path = Path('runtime')
     admin_token_file: Path = Path('runtime/admin-token')
     host: str = '127.0.0.1'
@@ -60,15 +66,16 @@ class Config:
     password_checks: int = 1
     limits: Limits = field(default_factory=Limits)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate configured limits before the service starts."""
         try:
             object.__setattr__(self, 'runtime', Path(self.runtime).expanduser().resolve())
             object.__setattr__(self, 'admin_token_file', Path(self.admin_token_file).expanduser().resolve())
-        except (TypeError,ValueError):
+        except (TypeError, ValueError):
             raise ViewerError('invalid_config', 'Runtime and token paths must be valid local paths.') from None
-        if not isinstance(self.host,str) or not self.host or any(c.isspace() for c in self.host):
+        if not isinstance(self.host, str) or not self.host or any(c.isspace() for c in self.host):
             raise ViewerError('invalid_config', 'Invalid bind host.')
-        if not isinstance(self.prefix,str) or not isinstance(self.bucket,str) or not isinstance(self.storage,str):
+        if not isinstance(self.prefix, str) or not isinstance(self.bucket, str) or not isinstance(self.storage, str):
             raise ViewerError('invalid_config', 'Storage settings must be strings.')
         if self.prefix:
             safe_path(self.prefix.rstrip('/'))
@@ -76,34 +83,89 @@ class Config:
             raise ViewerError('invalid_config', 'Select S3 with a bucket or explicit mock storage.')
         if self.endpoint:
             parts = urlsplit(self.endpoint)
-            if parts.scheme not in ('http','https') or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
+            if (
+                parts.scheme not in ('http', 'https')
+                or not parts.hostname
+                or parts.username
+                or parts.password
+                or parts.query
+                or parts.fragment
+            ):
                 raise ViewerError('invalid_config', 'Invalid storage endpoint.')
-        if type(self.port) is not int or not 0 < self.port < 65536 or type(self.grant_ttl_seconds) is not int or self.grant_ttl_seconds < 1:
+        if (
+            type(self.port) is not int
+            or not 0 < self.port < 65536
+            or type(self.grant_ttl_seconds) is not int
+            or self.grant_ttl_seconds < 1
+        ):
             raise ViewerError('invalid_config', 'Invalid server port or grant TTL.')
         if bool(self.tls_cert) != bool(self.tls_key):
             raise ViewerError('invalid_config', 'TLS needs a certificate and a key.')
         if self.public_origin is not None:
-            if not isinstance(self.public_origin,str):raise ViewerError('invalid_config','Invalid public origin.')
+            if not isinstance(self.public_origin, str):
+                raise ViewerError('invalid_config', 'Invalid public origin.')
             try:
-                origin=urlsplit(self.public_origin)
+                origin = urlsplit(self.public_origin)
                 origin.port
-            except (TypeError,ValueError):
-                raise ViewerError('invalid_config','Invalid public origin.') from None
-            if origin.scheme not in ('http','https') or not origin.hostname or origin.username or origin.password or origin.query or origin.fragment or origin.path not in ('','/'):
-                raise ViewerError('invalid_config','Invalid public origin.')
-            object.__setattr__(self,'public_origin',self.public_origin.rstrip('/'))
-            if origin.scheme=='http' and origin.hostname not in ('localhost','127.0.0.1','::1'):
-                raise ViewerError('invalid_config','Browser authentication requires HTTPS except on loopback.')
-        for value in (self.session_ttl_seconds,self.login_attempts,self.login_window_seconds,self.password_checks):
-            if type(value) is not int or value<1:raise ViewerError('invalid_config','Authentication limits must be positive.')
+            except (TypeError, ValueError):
+                raise ViewerError('invalid_config', 'Invalid public origin.') from None
+            if (
+                origin.scheme not in ('http', 'https')
+                or not origin.hostname
+                or origin.username
+                or origin.password
+                or origin.query
+                or origin.fragment
+                or origin.path not in ('', '/')
+            ):
+                raise ViewerError('invalid_config', 'Invalid public origin.')
+            object.__setattr__(self, 'public_origin', self.public_origin.rstrip('/'))
+            if origin.scheme == 'http' and origin.hostname not in ('localhost', '127.0.0.1', '::1'):
+                raise ViewerError('invalid_config', 'Browser authentication requires HTTPS except on loopback.')
+        for value in (self.session_ttl_seconds, self.login_attempts, self.login_window_seconds, self.password_checks):
+            if type(value) is not int or value < 1:
+                raise ViewerError('invalid_config', 'Authentication limits must be positive.')
 
     @classmethod
-    def load(cls, path: Path):
+    def load(cls, path: Path) -> 'Config':
+        """Load and validate the viewer configuration from its JSON file."""
         value = parse_json(path.read_bytes())
         if not isinstance(value, dict) or set(value) - {f.name for f in fields(cls)}:
             raise ViewerError('invalid_config', 'Unknown configuration field.')
         try:
-            value['limits'] = Limits(**value.get('limits', {}))
+            limits = value.get('limits', {})
+            if not isinstance(limits, dict):
+                raise TypeError('Limits must be an object.')
+            decoded_limits = _decode_config_dataclass(Limits, limits)
         except TypeError:
             raise ViewerError('invalid_config', 'Invalid or unknown limit field.') from None
-        return cls(**value)
+        arguments: dict[str, object] = dict(value)
+        arguments['limits'] = decoded_limits
+        return _decode_config_dataclass(cls, arguments)
+
+
+def _decode_config_dataclass[T: Config | Limits](model: type[T], values: Mapping[str, object]) -> T:
+    """Decode deployment JSON through the dataclasses' existing validation boundary.
+
+    The input has not yet earned the field annotations: __post_init__ owns the
+    accepted values, normalization and diagnostic order. Constructing fields
+    here preserves that contract, including legacy falsy optional values,
+    without claiming that an unchecked JSON mapping is typed constructor data.
+    This adapter is restricted to the two deployment configuration dataclasses.
+    """
+    declared = fields(model)
+    if set(values) - {item.name for item in declared}:
+        raise TypeError('Unknown configuration field.')
+    instance = object.__new__(model)
+    for item in declared:
+        if item.name in values:
+            value = values[item.name]
+        elif item.default is not MISSING:
+            value = item.default
+        elif item.default_factory is not MISSING:
+            value = item.default_factory()
+        else:
+            raise TypeError('Missing configuration field.')
+        object.__setattr__(instance, item.name, value)
+    instance.__post_init__()
+    return instance

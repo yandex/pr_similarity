@@ -4,22 +4,15 @@ import json
 from pathlib import Path
 
 import pytest
-from viewer.basket import basket_summary, validate_basket
-from viewer.basket import sha256 as hash_json
+
 from viewer.util import json_bytes as encode
+from viewer.validation.basket import basket_summary, validate_basket
+from viewer.validation.basket import sha256 as hash_json
 
 
 def document(provider: str, version: int, partial: bool, golden: bool, reused: bool) -> dict:
-    """Build explicit populations with three failures and one selected rejection in v2."""
-    path = (
-        Path(__file__).parent
-        / 'fixtures'
-        / (
-            f'basket-v2/{provider}.json'
-            if version == 2
-            else ('basket.json' if provider == 'github' else 'basket-v1-gitlab.json')
-        )
-    )
+    """Build explicit populations with three failures and one selected rejection in v2/v3."""
+    path = Path(__file__).parent / 'fixtures' / f'basket-v{version}/{provider}.json'
     data = json.loads(path.read_text())
     meta = data['meta']
     if partial:
@@ -68,7 +61,7 @@ def document(provider: str, version: int, partial: bool, golden: bool, reused: b
 
 
 @pytest.mark.parametrize('provider', ['github', 'gitlab'])
-@pytest.mark.parametrize(('version', 'reused'), [(1, False), (2, False), (2, True)])
+@pytest.mark.parametrize(('version', 'reused'), [(1, False), (2, False), (2, True), (3, False), (3, True)])
 @pytest.mark.parametrize('partial', [False, True])
 @pytest.mark.parametrize('golden', [False, True])
 def test_complete_compatibility_matrix(provider: str, version: int, reused: bool, partial: bool, golden: bool) -> None:
@@ -78,5 +71,5 @@ def test_complete_compatibility_matrix(provider: str, version: int, reused: bool
     validate_basket(data)
     summary = basket_summary(data)
     assert summary['failed_count'] == ((1 if version == 1 else 3) if partial else 0)
-    assert summary['rejected_count'] == (1 if partial and version == 2 else 0)
+    assert summary['rejected_count'] == (1 if partial and version in (2, 3) else 0)
     assert encode(data) == content

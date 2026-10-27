@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from basket_collector.config import CollectConfig
-from basket_collector.contracts import CollectRecord, Discovery
-from basket_collector.remote import RemoteError, RemoteVCS
-from basket_collector.sources import Repository
+from basket_collector.models.artifacts import CollectRecord, Discovery
+from basket_collector.models.sources import Repository
+from basket_collector.providers.remote import RemoteError, RemoteVCS
 
 
 @dataclass(frozen=True)

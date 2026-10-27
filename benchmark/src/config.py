@@ -11,11 +11,25 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
-from benchmark.contracts import validate_document
-from benchmark.errors import BenchmarkError
-from benchmark.storage import bytes_sha256
 
-_RESERVED = frozenset({'HOME', 'PATH', 'TMPDIR', 'PYTHONHASHSEED', 'PWD', 'OLDPWD', 'BASH_ENV', 'ENV', 'SHELLOPTS'})
+from benchmark.errors import BenchmarkError
+from benchmark.execution.python_runtime import PYTHON_CONTROLS
+from benchmark.json_types import JsonObject, JsonValue
+from benchmark.models.config import Configuration
+from benchmark.models.evidence import (
+    ConfigIdentity,
+    IdentityInstructions,
+    IdentityResource,
+    IdentitySetup,
+    ResourceFile,
+)
+from benchmark.persistence.storage import bytes_sha256
+from benchmark.validation.contracts import validate_document
+
+_RESERVED = (
+    frozenset({'HOME', 'PATH', 'TMPDIR', 'PYTHONHASHSEED', 'PWD', 'OLDPWD', 'BASH_ENV', 'ENV', 'SHELLOPTS'})
+    | PYTHON_CONTROLS
+)
 _SECRET_KEYS = frozenset(
     {
         'apikey',
@@ -33,7 +47,7 @@ _SECRET_KEYS = frozenset(
 _ENV_REF = re.compile(r'^\{env:[A-Za-z_][A-Za-z_0-9]*\}$')
 
 
-def _defaults() -> dict:
+def _defaults() -> dict[str, object]:
     """Return fresh default configuration values for one load."""
     return {
         'workers': 1,
@@ -59,7 +73,7 @@ class _UniqueLoader(yaml.SafeLoader):
     """Require each YAML mapping to have unique string keys."""
 
 
-def _mapping(loader: _UniqueLoader, node: yaml.MappingNode) -> dict:
+def _mapping(loader: _UniqueLoader, node: yaml.MappingNode) -> dict[str, object]:
     """Require a configuration mapping with a safe field error."""
     result = {}
     for key_node, value_node in node.value:
@@ -90,13 +104,15 @@ def _json_values(value: object, visiting: set[int] | None = None) -> None:
         raise BenchmarkError('invalid_config', 'Configuration must contain finite JSON-compatible values.')
 
 
-def _fill_defaults(data: dict, defaults: dict) -> None:
+def _fill_defaults(data: dict[str, object], defaults: dict[str, object]) -> None:
     """Copy and normalize missing configuration defaults."""
     for key, default in defaults.items():
         if key not in data:
             data[key] = copy.deepcopy(default)
-        elif isinstance(data[key], dict) and isinstance(default, dict):
-            _fill_defaults(data[key], default)
+        else:
+            value = data[key]
+            if isinstance(value, dict) and isinstance(default, dict):
+                _fill_defaults(value, default)
 
 
 def _path(value: str, directory: Path) -> Path:
@@ -136,7 +152,7 @@ def _reserved(key: str) -> bool:
     return key in _RESERVED or key.startswith(('XDG_', 'OPENCODE_', 'GIT_', 'LD_'))
 
 
-def _identity_native(value: object) -> object:
+def _identity_native(value: JsonValue) -> JsonValue:
     """Exclude credential fields while retaining model, endpoint and native order."""
     if isinstance(value, dict):
         return {
@@ -149,7 +165,7 @@ def _identity_native(value: object) -> object:
     return value
 
 
-def _ordered_rules(value: object) -> object:
+def _ordered_rules(value: JsonValue) -> JsonValue:
     """Represent permission mappings as ordered pairs before canonical key sorting."""
     if isinstance(value, dict):
         return {'ordered_entries': [[key, _ordered_rules(child)] for key, child in value.items()]}
@@ -162,19 +178,19 @@ def _ordered_rules(value: object) -> object:
 class RunConfig:
     """Normalized nonsensitive config and immutable content identity."""
 
-    data: dict
+    data: Configuration
     directory: Path
-    _identity: dict
+    _identity: ConfigIdentity
     source_path: Path | None = None
 
-    def identity(self) -> dict:
+    def identity(self) -> ConfigIdentity:
         """Return a defensive copy of the frozen semantic inputs."""
-        return copy.deepcopy(self._identity)
+        return self._identity.model_copy(deep=True)
 
     def credential_environment(self) -> dict[str, str]:
         """Read current bindings without retaining them in config or identity."""
         result = {}
-        for destination, source in self.data['agent']['credentials'].items():
+        for destination, source in self.data.agent.credentials.items():
             value = os.environ.get(source)
             if not value:
                 raise BenchmarkError('credentials_missing', f'Set environment variable {source} before running.')
@@ -182,14 +198,15 @@ class RunConfig:
         return result
 
 
-def _native_resources(native: dict, directory: Path) -> tuple[dict, list[dict]]:
+def _native_resources(native: JsonObject, directory: Path) -> tuple[JsonObject, list[IdentityResource]]:
     """Content-bind explicitly local instructions, skills and plugin resources."""
     semantic = _identity_native(native)
     assert isinstance(semantic, dict)
-    receipts: list[dict] = []
-    groups: list[tuple[dict, str, bool]] = [(semantic, 'instructions', False), (semantic, 'plugin', True)]
-    if isinstance(semantic.get('skills'), dict):
-        groups.append((semantic['skills'], 'paths', False))
+    receipts: list[IdentityResource] = []
+    groups: list[tuple[JsonObject, str, bool]] = [(semantic, 'instructions', False), (semantic, 'plugin', True)]
+    skills = semantic.get('skills')
+    if isinstance(skills, dict):
+        groups.append((skills, 'paths', False))
     for mapping, key, plugin in groups:
         values = mapping.get(key)
         if not isinstance(values, list):
@@ -220,12 +237,14 @@ def _native_resources(native: dict, directory: Path) -> tuple[dict, list[dict]]:
                                 'resource_symlink', 'Local resource directories must not contain symlinks.'
                             )
                         if child.is_file():
-                            items.append({'path': child.relative_to(path).as_posix(), 'sha256': _resource_file(child)})
+                            items.append(
+                                ResourceFile(path=child.relative_to(path).as_posix(), sha256=_resource_file(child))
+                            )
                 else:
-                    items.append({'path': '', 'sha256': _resource_file(path)})
-            receipt = {'field': key, 'index': index, 'files': items}
+                    items.append(ResourceFile(path='', sha256=_resource_file(path)))
+            receipt = IdentityResource(field=key, index=index, files=items)
             receipts.append(receipt)
-            normalized.append({'resource': receipt})
+            normalized.append({'resource': receipt.to_wire()})
         mapping[key] = normalized
     return semantic, receipts
 
@@ -259,57 +278,57 @@ def load_config(path: Path, *, workers: int | None = None) -> RunConfig:
     if isinstance(agent, dict) and isinstance(agent.get('setup'), dict):
         agent['setup'].setdefault('timeout_seconds', 300)
     validate_document('config', data)
-    if any(not tag.strip() or any(ord(char) < 32 or ord(char) == 127 for char in tag) for tag in data['tags']):
+    settings = Configuration.model_validate(data)
+    if any(not tag.strip() or any(ord(char) < 32 or ord(char) == 127 for char in tag) for tag in settings.tags):
         raise BenchmarkError('invalid_tags', 'YAML tags must be nonempty strings without control characters.')
     directory = resolved.parent
-    agent = data['agent']
-    overlap = set(agent['env']) & set(agent['credentials'])
-    secret_env = any(re.search(r'(?:API_KEY|TOKEN|PASSWORD|SECRET)$', key) for key in agent['env'])
-    if overlap or secret_env or any(_reserved(key) for key in (*agent['env'], *agent['credentials'])):
+    agent = settings.agent
+    overlap = set(agent.env) & set(agent.credentials)
+    secret_env = any(re.search(r'(?:API_KEY|TOKEN|PASSWORD|SECRET)$', key) for key in agent.env)
+    if overlap or secret_env or any(_reserved(key) for key in (*agent.env, *agent.credentials)):
         raise BenchmarkError(
             'invalid_environment', 'Environment bindings overlap or override reserved launcher settings.'
         )
-    _native_secrets(agent['config']['opencode_json'])
-    if agent['auth']['mode'] == 'chatgpt_oauth' and 'OPENAI_API_KEY' in agent['credentials']:
+    _native_secrets(agent.config.opencode_json)
+    if agent.auth.mode == 'chatgpt_oauth' and 'OPENAI_API_KEY' in agent.credentials:
         raise BenchmarkError('auth_conflict', 'Remove the OpenAI API-key binding when using ChatGPT OAuth.')
-    for key in ('categories',):
-        agent['retries'][key] = sorted(set(agent['retries'][key]))
-    if data['git']['initial_depth'] > data['git']['max_depth']:
+    agent.retries.categories = sorted(set(agent.retries.categories))
+    if settings.git.initial_depth > settings.git.max_depth:
         raise BenchmarkError('invalid_config', 'git.initial_depth must not exceed git.max_depth.')
-    agent['diff_excludes'] = sorted(set(agent['diff_excludes']))
+    agent.diff_excludes = sorted(set(agent.diff_excludes))
     setup = None
-    if agent['setup'] is not None:
-        script = _path(agent['setup']['script'], directory)
-        setup = {'sha256': _resource_file(script), 'timeout_seconds': agent['setup']['timeout_seconds']}
-        agent['setup']['script'] = str(script)
-    if agent['instructions_file'] is None:
+    if agent.setup is not None:
+        script = _path(agent.setup.script, directory)
+        setup = IdentitySetup(sha256=_resource_file(script), timeout_seconds=agent.setup.timeout_seconds)
+        agent.setup.script = str(script)
+    if agent.instructions_file is None:
         content = files('benchmark').joinpath('resources', 'task_instructions.txt').read_bytes()
     else:
-        instructions = _path(agent['instructions_file'], directory)
-        agent['instructions_file'] = str(instructions)
+        instructions = _path(agent.instructions_file, directory)
+        agent.instructions_file = str(instructions)
         try:
             content = instructions.read_bytes()
             content.decode('utf-8')
         except (OSError, UnicodeError) as exc:
             raise BenchmarkError('resource_missing', 'Instructions must be a readable UTF-8 file.') from exc
-    if agent['auth']['profile'] is not None:
-        agent['auth']['profile'] = str(_path(agent['auth']['profile'], directory))
-    data['provisioning']['cache_dir'] = str(_path(data['provisioning']['cache_dir'], directory))
-    executable = data['sandbox']['executable']
+    if agent.auth.profile is not None:
+        agent.auth.profile = str(_path(agent.auth.profile, directory))
+    settings.provisioning.cache_dir = str(_path(settings.provisioning.cache_dir, directory))
+    executable = settings.sandbox.executable
     if '/' in executable or executable.startswith('~'):
-        data['sandbox']['executable'] = str(_path(executable, directory))
-    native, resources = _native_resources(agent['config']['opencode_json'], directory)
-    identity = {
-        'identity_version': 1,
-        'runtime': agent['runtime'],
-        'auth_mode': agent['auth']['mode'],
-        'native_config': native,
-        'timeout_seconds': agent['timeout_seconds'],
-        'setup': setup,
-        'instructions': {'protocol': 'benchmark_task_v1', 'sha256': bytes_sha256(content)},
-        'resources': resources,
-        'retries': copy.deepcopy(agent['retries']),
-        'diff_excludes': agent['diff_excludes'].copy(),
-        'env': agent['env'].copy(),
-    }
-    return RunConfig(data, directory, identity, source_path=resolved)
+        settings.sandbox.executable = str(_path(executable, directory))
+    native, resources = _native_resources(agent.config.opencode_json, directory)
+    identity = ConfigIdentity(
+        identity_version=1,
+        runtime=agent.runtime,
+        auth_mode=agent.auth.mode,
+        native_config=native,
+        timeout_seconds=agent.timeout_seconds,
+        setup=setup,
+        instructions=IdentityInstructions(protocol='benchmark_task_v1', sha256=bytes_sha256(content)),
+        resources=resources,
+        retries=agent.retries.model_copy(deep=True),
+        diff_excludes=agent.diff_excludes.copy(),
+        env=agent.env.copy(),
+    )
+    return RunConfig(settings, directory, identity, source_path=resolved)

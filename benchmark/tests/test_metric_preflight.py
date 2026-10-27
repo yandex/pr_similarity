@@ -4,11 +4,13 @@ from pathlib import Path
 
 import codebleu.utils
 import pytest
-from benchmark import coordinator, runner
+from test_runner import config_and_basket
+
 from benchmark.errors import BenchmarkError
 from benchmark.metrics import codebleu as metric
-from benchmark.storage import read_json
-from test_runner import config_and_basket
+from benchmark.models.report import Report
+from benchmark.persistence.storage import read_json
+from benchmark.runtime import coordinator, runner
 
 
 def test_broken_grammar_fails_before_native_provisioning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -29,7 +31,9 @@ def test_broken_grammar_fails_before_native_provisioning(tmp_path: Path, monkeyp
     try:
         code, directory = runner.run(config, basket, output=tmp_path / 'runs')
         assert code == 1
-        assert read_json(directory / 'report.json')['run']['error']['code'] == 'metric_unavailable'
+        report = Report.model_validate(read_json(directory / 'report.json'))
+        assert report.run.error is not None
+        assert report.run.error.code == 'metric_unavailable'
         assert provisioned == []
     finally:
         metric.require_dependencies.cache_clear()
@@ -79,5 +83,18 @@ def test_real_invalid_syntax_keeps_triplet_fallback_contract() -> None:
     metric.compute_codebleu_components.cache_clear()
     try:
         assert metric.compute_codebleu_components('def broken(:\n', 'x = 2', 'python') is None
+    finally:
+        metric.compute_codebleu_components.cache_clear()
+
+
+def test_missing_dependency_symbol_after_preflight_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep a removed dependency API distinct from content-specific parser fallback."""
+    metric.require_dependencies()
+    monkeypatch.delattr(codebleu.utils, 'get_tree_sitter_language')
+    metric.compute_codebleu_components.cache_clear()
+    try:
+        with pytest.raises(BenchmarkError) as failure:
+            metric.compute_codebleu_components('x = 1', 'x = 2', 'python')
+        assert failure.value.code == 'metric_unavailable'
     finally:
         metric.compute_codebleu_components.cache_clear()

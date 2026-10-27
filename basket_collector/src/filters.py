@@ -4,10 +4,9 @@ import hashlib
 import math
 import re
 from pathlib import PurePosixPath
-from typing import cast
 
 from basket_collector.config import FilterConfig, IssuesConfig
-from basket_collector.contracts import (
+from basket_collector.models.artifacts import (
     Changes,
     ChangeStats,
     CollectRecord,
@@ -22,11 +21,8 @@ from basket_collector.contracts import (
 
 def _reason(code: str, message: str, observed: object, expected: object) -> RejectionReason:
     """Build a structured, deterministic PR rejection reason."""
-    return RejectionReason(
-        code=code,
-        message=message,
-        observed=cast(JsonValue, observed),
-        expected=cast(JsonValue, expected),
+    return RejectionReason.model_validate(
+        {'code': code, 'message': message, 'observed': observed, 'expected': expected}
     )
 
 
@@ -42,7 +38,7 @@ def compact_rejection(
     if stats is not None:
         observed = reason.observed
         detail: dict[str, JsonValue] = dict(observed) if isinstance(observed, dict) else {'value': observed}
-        detail.setdefault('stats', cast(JsonValue, stats.model_dump(mode='json')))
+        detail.setdefault('stats', stats.model_dump(mode='json'))
         reason = reason.model_copy(update={'observed': detail})
     return RejectedRecord(
         id=record.id,

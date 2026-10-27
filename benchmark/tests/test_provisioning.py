@@ -10,9 +10,10 @@ from pathlib import Path
 
 import httpx
 import pytest
+
 from benchmark.errors import BenchmarkError
-from benchmark.provisioning import probe_version, provision_opencode
-from benchmark.storage import file_lock
+from benchmark.execution.provisioning import probe_version, provision_opencode
+from benchmark.persistence.storage import file_lock
 
 
 def archive(name: str = 'opencode', body: bytes = b'#!/bin/sh\nprintf "1.18.33\\n"\n') -> bytes:
@@ -64,8 +65,8 @@ def test_checked_cache_does_not_repeat_download(tmp_path: Path) -> None:
     one = provision_opencode('opencode:v1.18.33', tmp_path, client=client)
     two = provision_opencode('opencode:v1.18.33', tmp_path, client=client)
     assert one.binary == two.binary
-    assert one.receipt['actual_version'] == '1.18.33'
-    assert one.receipt['digest_verified'] is True
+    assert one.receipt.actual_version == '1.18.33'
+    assert one.receipt.digest_verified is True
     assert len(calls) == 2
 
 

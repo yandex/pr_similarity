@@ -9,15 +9,16 @@ from pathlib import Path
 import httpx
 import jsonschema
 import pytest
+
 from basket_collector.config import CollectorConfig, GitHubConfig
-from basket_collector.contracts import BasketDocument
-from basket_collector.git import GitRepository
-from basket_collector.github import GitHubClient
-from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.gitlab import GitLabClient
-from basket_collector.gitlab_source import GitLabRemoteVCS
+from basket_collector.models.artifacts import BasketDocument
+from basket_collector.persistence.storage import read_document
 from basket_collector.pipeline import Pipeline
-from basket_collector.storage import read_document
+from basket_collector.providers.github import GitHubClient
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.providers.gitlab import GitLabClient
+from basket_collector.providers.gitlab_source import GitLabRemoteVCS
+from basket_collector.vcs.git import GitRepository
 
 
 def github_response(before: str, after: str) -> Callable[[httpx.Request], httpx.Response]:
@@ -191,7 +192,7 @@ def test_mocked_issue_pipeline_exports_neutral_basket(
         assert row.workspace == '.' and row.diff_policy == 'git_source_changes_v1'
         assert row.provenance.generation.attempts == 0
         assert row.provenance.retrieval.before_tree == row.revisions.before_tree
-        schema = json.loads(files('basket_collector').joinpath('schemas/basket-v2.schema.json').read_text())
+        schema = json.loads(files('basket_collector').joinpath('schemas/basket-v3.schema.json').read_text())
         jsonschema.Draft202012Validator(schema).validate(basket.model_dump(mode='json'))
     finally:
         native.close()

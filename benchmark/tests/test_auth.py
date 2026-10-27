@@ -8,9 +8,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-from benchmark.auth import auth_snapshot
+
 from benchmark.errors import BenchmarkError
-from benchmark.storage import file_lock, read_json
+from benchmark.execution.auth import auth_snapshot
+from benchmark.persistence.storage import file_lock, read_json
 
 
 def profile(directory: Path, *, expiry: int = 4000000) -> Path:
@@ -144,4 +145,6 @@ def test_refresh_rotation_is_saved_before_pending_cancellation(tmp_path: Path) -
         with pytest.raises(BenchmarkError) as caught:
             auth_snapshot(root, 1800, clock=lambda: 1000, cancel=cancel, client=client)
         assert caught.value.code == 'operation_cancelled'
-    assert read_json(root / 'data/opencode/auth.json')['openai']['refresh'] == 'rotated-refresh'
+    provider = read_json(root / 'data/opencode/auth.json')['openai']
+    assert isinstance(provider, dict)
+    assert provider['refresh'] == 'rotated-refresh'

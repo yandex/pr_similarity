@@ -8,8 +8,12 @@ from typing import Any
 
 import httpx
 import pytest
+from test_contracts import _collect
+from test_gitlab_source import configured, merged, project
+from test_pipeline import TIME, FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
+
 from basket_collector.config import CollectorConfig
-from basket_collector.contracts import (
+from basket_collector.models.artifacts import (
     BasketDocument,
     CollectDocument,
     FilterDocument,
@@ -17,15 +21,12 @@ from basket_collector.contracts import (
     RejectedRecord,
     RejectionReason,
 )
-from basket_collector.github_source import GitHubRemoteVCS
+from basket_collector.models.sources import change_id
+from basket_collector.persistence.storage import StorageError, read_checkpoint, read_document, stage_sha256
 from basket_collector.pipeline import Pipeline, PipelineInterrupted, Shutdown
-from basket_collector.progress import Progress
-from basket_collector.remote import ChangeRejected, RemoteError, RemoteInterrupted
-from basket_collector.sources import change_id
-from basket_collector.storage import StorageError, read_checkpoint, read_document, stage_sha256
-from test_contracts import _collect
-from test_gitlab_source import configured, merged, project
-from test_pipeline import TIME, FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.providers.remote import ChangeRejected, RemoteError, RemoteInterrupted
+from basket_collector.runtime.progress import Progress
 
 
 def rejection(number: int = 2) -> RejectedRecord:
