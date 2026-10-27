@@ -67,9 +67,11 @@ def _request(config: Config, method: str, path: str, body: dict | None = None, a
     try:
         with urlopen(request, timeout=10) as response:
             return parse_json(response.read(1 << 20))
-    except HTTPError as e:
+    except HTTPError as error:
         raise ViewerError(
-            'admin_request_failed', 'Administrative API rejected the operation (HTTP ' + str(e.code) + ').', e.code
+            'admin_request_failed',
+            'Administrative API rejected the operation (HTTP ' + str(error.code) + ').',
+            error.code,
         ) from None
     except (URLError, TimeoutError):
         raise ViewerError('server_unavailable', 'Viewer is unavailable.', 503) from None
@@ -279,11 +281,11 @@ def main() -> int:
         if result is not None:
             print(json.dumps(result))
         return 0
-    except (ViewerError, OSError) as e:
+    except (ViewerError, OSError) as error:
         print(
             (
-                e.message
-                if isinstance(e, ViewerError)
+                error.message
+                if isinstance(error, ViewerError)
                 else 'Local operation failed; check configuration and file permissions.'
             ),
             file=sys.stderr,

@@ -91,8 +91,8 @@ class ViewerService:
         """Read a stored JSON document or copy the caller default when absent."""
         try:
             return parse_json(self.store.get(key, self.config.limits.json_bytes))
-        except ViewerError as e:
-            if e.status == 404:
+        except ViewerError as error:
+            if error.status == 404:
                 return deepcopy(default)
             raise
 

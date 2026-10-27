@@ -156,8 +156,8 @@ class S3Store(Store):
         """Invoke the SDK and translate storage failures to public errors."""
         try:
             return getattr(self.client, method)(Bucket=self.bucket, **kwargs)
-        except ClientError as e:
-            if e.response['Error']['Code'] in ('NoSuchKey', '404', 'NotFound'):
+        except ClientError as error:
+            if error.response['Error']['Code'] in ('NoSuchKey', '404', 'NotFound'):
                 raise ViewerError('not_found', 'Object not found.', 404) from None
             raise StorageError() from None
         except BotoCoreError:

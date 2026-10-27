@@ -124,7 +124,7 @@ without a selected price creates a coverage gap even if an older reprice exists.
 No accepted pricing is `not_requested`; no native attempt is `not_started`.
 A known subtotal is only the measured/priced part, never a complete unknown total.
 
-`operations/reprice/<uuid>/` stores `request.json`, `policy.yaml`, `calculator/`,
+`operations/reprice/<uuid>/` stores `request.json`, `policy.yaml`,
 `input_state.json`, `input_report.json`, `result.json` and `receipt.json`.
 The full result includes all state-registered attempts and lossless Decimal
 subtotals; final task rows retain only their selected attempt estimate. Raw
