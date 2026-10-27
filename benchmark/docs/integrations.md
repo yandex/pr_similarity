@@ -88,10 +88,12 @@ mcp:
 Replace the executable/arguments with your installed server and bind `RAG_TOKEN`
 through `agent.credentials`. `command` is executable plus arguments, not a shell
 expression: `$HOME` is not expanded there. Use `/sandbox-home/...` or an
-executable on the fixed PATH. For a Python package, setup can create a venv at
-`$HOME/.venv` and install exact package versions using its interpreter's `-m pip`,
-provided system Python has venv/pip support. The pinned OpenCode binary does not
-supply Node/npm/Python toolchains required by arbitrary servers.
+executable on the fixed PATH. For a Python package, install exact package versions
+with `python -m pip install ...` in setup. The runner creates a private Python 3.12
+venv at `$HOME/.venv` before setup; setup and the MCP server share that environment.
+See the [Python environment contract](python.md#python-inside-an-attempt).
+The pinned OpenCode binary does not supply Node/npm or other toolchains required
+by arbitrary servers.
 
 An MCP connection can fail while the model still runs. Verify connection status
 in setup, for example with `/benchmark-bin/opencode mcp list`, and inspect agent
