@@ -5,13 +5,14 @@ from pathlib import Path
 
 import httpx
 import pytest
-from basket_collector.config import GenerationConfig
-from basket_collector.contracts import TasksDocument
-from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.llm import LLMClient, LLMConfigurationError
-from basket_collector.pipeline import Pipeline
-from basket_collector.storage import read_checkpoint, read_document
 from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
+
+from basket_collector.config import GenerationConfig
+from basket_collector.models.artifacts import TasksDocument
+from basket_collector.persistence.storage import read_checkpoint, read_document
+from basket_collector.pipeline import Pipeline
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.providers.llm import LLMClient, LLMConfigurationError
 
 
 @pytest.mark.parametrize('api', ['openai_completions', 'openai_responses'])

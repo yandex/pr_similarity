@@ -2,7 +2,7 @@
 
 import posixpath
 
-from basket_collector.contracts import (
+from basket_collector.models.artifacts import (
     BasketChangeRequest,
     BasketChanges,
     BasketDocument,
@@ -15,8 +15,8 @@ from basket_collector.contracts import (
     TasksDocument,
     format_agent_task,
 )
+from basket_collector.persistence.storage import expected_input, receipt
 from basket_collector.selection import omissions
-from basket_collector.storage import expected_input, receipt
 
 
 def project_record(record: TaskRecord, *, include_golden_diff: bool) -> BasketRecord:

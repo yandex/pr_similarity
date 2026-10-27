@@ -3,7 +3,8 @@
 from pathlib import PurePosixPath
 
 import pytest
-from benchmark.triplet_paths import triplet_path
+
+from benchmark.validation.triplet_paths import triplet_path
 
 
 @pytest.mark.parametrize('source', ['src/main.py', 'src/file.test.ts', 'naïve file.py', '.env', 'LICENSE'])

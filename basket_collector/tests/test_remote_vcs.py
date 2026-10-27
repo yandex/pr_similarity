@@ -3,10 +3,11 @@
 import json
 
 import httpx
+
 from basket_collector.config import CollectConfig, SourceConfig
-from basket_collector.github import GitHubClient
-from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.sources import change_id
+from basket_collector.models.sources import change_id
+from basket_collector.providers.github import GitHubClient
+from basket_collector.providers.github_source import GitHubRemoteVCS
 from basket_collector.stages.collect import collect_change, discover_date_range
 
 

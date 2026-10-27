@@ -1,4 +1,4 @@
-/* Dark palette and component treatment from pr_sim_view; OSS data and navigation. */
+/* Shared dark palette and components for run and catalogue pages. */
 :root{
   color-scheme:dark;--bg:#05070c;--bg2:#080b12;--panel:#0b0f17;--panel2:#0e1420;--elev:#111826;
   --border:#18222f;--border2:#22303f;--text:#e6f0f7;--text2:#9fb2c2;--muted:#5f7183;

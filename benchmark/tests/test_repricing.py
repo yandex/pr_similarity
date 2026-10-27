@@ -6,17 +6,20 @@ from pathlib import Path
 
 import pytest
 import yaml
-from benchmark import attempt as executor
-from benchmark import repricing as module
-from benchmark import run_store
-from benchmark.artifact_refs import read_reference
-from benchmark.commands import Command
-from benchmark.errors import BenchmarkError
-from benchmark.pricing import load_policy
-from benchmark.run_store import RunStore
-from benchmark.storage import read_json, run_lock
 from test_operation_workflows import empty_run, stopped_run
 from test_pricing import policy
+
+from benchmark.errors import BenchmarkError
+from benchmark.models import Report
+from benchmark.models.evidence import ArtifactReceipt, OperationReceipt, OperationResult
+from benchmark.persistence import run_store
+from benchmark.persistence.artifact_refs import read_reference
+from benchmark.persistence.run_store import RunStore
+from benchmark.persistence.storage import read_json, run_lock
+from benchmark.pricing import operations as module
+from benchmark.pricing.policy import load_policy
+from benchmark.runtime import attempt as executor
+from benchmark.runtime.commands import Command
 
 
 def make_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
@@ -34,25 +37,28 @@ def test_two_reprices_keep_immutable_operations_and_native_cost(
 ) -> None:
     """Changed tariffs replace only accepted estimates and retain the previous input projection."""
     directory, path = make_run(tmp_path, monkeypatch)
-    before = read_json(directory / 'report.json')
+    before = Report.model_validate(read_json(directory / 'report.json'))
     assert module.reprice(directory, path) == 0
-    first = read_json(directory / 'report.json')
-    assert first['tasks'][0]['telemetry']['api_equivalent']['amount'] == pytest.approx(0.0002024)
+    first = Report.model_validate(read_json(directory / 'report.json'))
+    assert first.tasks[0].telemetry.api_equivalent is not None
+    assert first.tasks[0].telemetry.api_equivalent.amount == pytest.approx(0.0002024)
     data = yaml.safe_load(path.read_text())
     data['models'][0]['rates']['input'] = '3'
     path.write_text(yaml.safe_dump(data))
     assert module.reprice(directory, path) == 0
-    second = read_json(directory / 'report.json')
-    assert second['tasks'][0]['telemetry']['api_equivalent']['amount'] == pytest.approx(0.0002424)
-    assert second['tasks'][0]['telemetry']['cost'] == before['tasks'][0]['telemetry']['cost']
-    assert second['tasks'][0]['scoring'] == before['tasks'][0]['scoring']
+    second = Report.model_validate(read_json(directory / 'report.json'))
+    assert second.tasks[0].telemetry.api_equivalent is not None
+    assert second.tasks[0].telemetry.api_equivalent.amount == pytest.approx(0.0002424)
+    assert second.tasks[0].telemetry.cost == before.tasks[0].telemetry.cost
+    assert second.tasks[0].scoring == before.tasks[0].scoring
     store = RunStore.open(directory)
     selected = store.last_operation('reprice')
     assert selected is not None
-    receipt = read_reference(directory, selected['receipt'])
-    assert read_reference(directory, receipt['input_report']) == first
-    result = read_reference(directory, selected['result'])
-    assert result['attempts'][0]['result']['known_subtotal'] == '0.000242400000'
+    receipt = read_reference(directory, selected.receipt, OperationReceipt)
+    assert read_reference(directory, receipt.input_report, Report) == first
+    result = read_reference(directory, selected.result, OperationResult)
+    assert result.attempts is not None
+    assert result.attempts[0].result.known_subtotal == '0.000242400000'
     assert not (directory / 'repricing').exists() and not list(directory.glob('report_backup_*.json'))
 
 
@@ -70,8 +76,11 @@ def test_same_semantic_inputs_record_noop_without_state_or_report_change(
     assert (directory / 'report.json').read_bytes() == report
     assert (directory / '_meta/state.json').read_bytes() == state
     assert RunStore.open(directory).last_operation('reprice') == selected
-    receipts = [read_json(item) for item in (directory / 'operations/reprice').glob('*/receipt.json')]
-    assert sorted(receipt['status'] for receipt in receipts) == ['completed', 'no_op']
+    receipts = [
+        OperationReceipt.model_validate(read_json(item))
+        for item in (directory / 'operations/reprice').glob('*/receipt.json')
+    ]
+    assert sorted(receipt.status for receipt in receipts) == ['completed', 'no_op']
 
 
 def test_usage_corruption_is_rejected_before_command_or_selection(
@@ -81,8 +90,9 @@ def test_usage_corruption_is_rejected_before_command_or_selection(
     directory, path = make_run(tmp_path, monkeypatch)
     content = (directory / '_meta/state.json').read_bytes()
     invocations = set((directory / '_meta/invocations').iterdir())
-    row = RunStore.open(directory).snapshot()['tasks'][0]
-    ledger = directory / row['telemetry']['usage_ledger']['path']
+    row = RunStore.open(directory).snapshot().tasks[0]
+    assert row.telemetry.usage_ledger is not None
+    ledger = directory / row.telemetry.usage_ledger.path
     ledger.write_bytes(ledger.read_bytes() + b'\\n')
     with pytest.raises(BenchmarkError):
         module.reprice(directory, path)
@@ -100,11 +110,13 @@ def test_unknown_model_has_null_total_and_exact_known_subtotal(tmp_path: Path, m
     store = RunStore.open(directory)
     selected = store.last_operation('reprice')
     assert selected is not None
-    result = read_reference(directory, selected['result'])
-    row = store.snapshot()['tasks'][0]
-    assert row['telemetry']['api_equivalent']['amount'] is None
-    assert row['telemetry']['cost']['amount'] == 2
-    assert result['attempts'][0]['result']['known_subtotal'] == '0E-12'
+    result = read_reference(directory, selected.result, OperationResult)
+    row = store.snapshot().tasks[0]
+    assert row.telemetry.api_equivalent is not None
+    assert row.telemetry.api_equivalent.amount is None
+    assert row.telemetry.cost.amount == 2
+    assert result.attempts is not None
+    assert result.attempts[0].result.known_subtotal == '0E-12'
 
 
 def test_preallocated_pricing_reuses_outer_lease_and_freezes_before_execution(
@@ -117,8 +129,11 @@ def test_preallocated_pricing_reuses_outer_lease_and_freezes_before_execution(
         command = Command(directory, 'reprice')
         try:
             request = module.freeze_pricing(directory, load_policy(path), command, store=store)
-            operation = directory / 'operations/reprice' / request['calculation_id']
+            operation = directory / 'operations/reprice' / request.calculation_id
             assert (operation / 'request.json').is_file() and not (operation / 'input_state.json').exists()
+            assert request.calculator_version == module.CALCULATOR_VERSION
+            assert [Path(item.path).name for item in request.frozen_artifacts] == ['policy.yaml']
+            assert not (operation / 'calculator').exists()
             assert module.apply_pricing(directory, request, command, store=store) == 0
             assert (operation / 'input_state.json').is_file()
         finally:
@@ -136,13 +151,14 @@ def test_reprice_prices_exact_current_and_history_attempts(tmp_path: Path, monke
     store = RunStore.open(directory)
     selected = store.last_operation('reprice')
     assert selected is not None
-    result = read_reference(directory, selected['result'])
-    receipt = read_reference(directory, selected['receipt'])
-    assert [item['sequence'] for item in result['attempts']] == [1, 2]
-    assert receipt['details']['coverage']['all_attempts']['known_subtotal'] == '0.000404800000'
-    assert receipt['details']['coverage']['final']['known_subtotal'] == '0.000202400000'
-    assert store.state['tasks'][0]['history'][0]['pricing'] == selected
-    assert store.state['tasks'][0]['pricing'] == selected
+    result = read_reference(directory, selected.result, OperationResult)
+    receipt = read_reference(directory, selected.receipt, OperationReceipt)
+    assert result.attempts is not None and receipt.details.coverage is not None
+    assert [item.sequence for item in result.attempts] == [1, 2]
+    assert receipt.details.coverage.all_attempts.known_subtotal == '0.000404800000'
+    assert receipt.details.coverage.final.known_subtotal == '0.000202400000'
+    assert store.state.tasks[0].history[0].pricing == selected
+    assert store.state.tasks[0].pricing == selected
 
 
 def test_partial_pricing_keeps_positive_known_subtotal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,11 +179,13 @@ def test_partial_pricing_keeps_positive_known_subtotal(tmp_path: Path, monkeypat
     store = RunStore.open(directory)
     selected = store.last_operation('reprice')
     assert selected is not None
-    result = read_reference(directory, selected['result'])['attempts'][0]['result']
-    assert result['status'] == 'partial' and result['amount'] is None
-    assert result['known_subtotal'] == '0.000151800000'
-    assert result['priced_requests'] == 3 and result['total_requests'] == 4
-    assert store.snapshot()['tasks'][0]['telemetry']['cost']['amount'] == 2
+    operation_result = read_reference(directory, selected.result, OperationResult)
+    assert operation_result.attempts is not None
+    result = operation_result.attempts[0].result
+    assert result.status == 'partial' and result.amount is None
+    assert result.known_subtotal == '0.000151800000'
+    assert result.priced_requests == 3 and result.total_requests == 4
+    assert store.snapshot().tasks[0].telemetry.cost.amount == 2
 
 
 def test_abandoned_complete_operation_is_not_adopted_on_reopen(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -196,7 +214,7 @@ def test_abandoned_complete_operation_is_not_adopted_on_reopen(tmp_path: Path, m
     assert module.reprice(directory, path) == 0
     accepted = RunStore.open(directory).last_operation('reprice')
     assert accepted is not None
-    assert accepted['id'] != receipts[0].parent.name
+    assert accepted.id != receipts[0].parent.name
     assert receipts[0].read_bytes() == frozen_receipt
 
 
@@ -219,14 +237,15 @@ def test_pricing_state_commit_survives_derived_report_failure(tmp_path: Path, mo
     selected = store.last_operation('reprice')
     assert selected is not None
     store.rebuild()
-    assert store.snapshot()['tasks'][0]['telemetry']['api_equivalent']['amount'] == pytest.approx(0.0002024)
-    assert read_json(directory / 'report.json') == store.snapshot()
+    estimate = store.snapshot().tasks[0].telemetry.api_equivalent
+    assert estimate is not None and estimate.amount == pytest.approx(0.0002024)
+    assert read_json(directory / 'report.json') == store.snapshot().to_wire()
 
 
-def test_damaged_calculator_closes_failed_operation_without_state_change(
+def test_changed_calculator_version_closes_failed_operation_without_state_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Frozen calculator corruption cannot silently use current code or replace accepted prices."""
+    """A changed semantic calculator version cannot replace the frozen operation inputs."""
     directory, path = make_run(tmp_path, monkeypatch)
     before = (directory / '_meta/state.json').read_bytes()
     with run_lock(directory) as lease:
@@ -234,10 +253,10 @@ def test_damaged_calculator_closes_failed_operation_without_state_change(
         command = Command(directory, 'reprice')
         try:
             request = module.freeze_pricing(directory, load_policy(path), command, store=store)
-            (directory / request['calculator_path'] / 'pricing.py').write_text('damaged')
+            monkeypatch.setattr(module, 'CALCULATOR_VERSION', 'incompatible-calculator')
             with pytest.raises(BenchmarkError):
                 module.apply_pricing(directory, request, command, store=store)
-            receipt = directory / 'operations/reprice' / request['calculation_id'] / 'receipt.json'
+            receipt = directory / 'operations/reprice' / request.calculation_id / 'receipt.json'
             assert read_json(receipt)['status'] == 'failed'
         finally:
             command.close()
@@ -250,9 +269,9 @@ def test_missing_sealed_usage_is_not_recovered_from_file_presence(
     """Unowned ledger bytes are not pricing inputs even if they lie beside a valid receipt."""
     original = executor._Attempt.inventory
 
-    def omit_usage(self: executor._Attempt) -> list[dict]:
+    def omit_usage(self: executor._Attempt) -> list[ArtifactReceipt]:
         """Simulate a producer that left the ledger out of its explicit seal inventory."""
-        return [item for item in original(self) if not item['path'].endswith('/telemetry/usage.json')]
+        return [item for item in original(self) if not item.path.endswith('/telemetry/usage.json')]
 
     monkeypatch.setattr(executor._Attempt, 'inventory', omit_usage)
     directory, path = make_run(tmp_path, monkeypatch)
@@ -271,7 +290,7 @@ def test_zero_attempt_reprice_has_exact_root_selection_and_noop(tmp_path: Path) 
     assert module.reprice(directory, path) == 1
     selected = RunStore.open(directory).last_operation('reprice')
     assert selected is not None
-    assert read_reference(directory, selected['result'])['attempts'] == []
+    assert read_reference(directory, selected.result, OperationResult).attempts == []
     before = (directory / '_meta/state.json').read_bytes()
     report = (directory / 'report.json').read_bytes()
     assert module.reprice(directory, path) == 1

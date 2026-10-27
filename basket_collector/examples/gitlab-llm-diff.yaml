@@ -1,6 +1,6 @@
+schema_version: 2
 # One merged Go test fix. GITLAB_TOKEN is required even for this public project.
 # https://gitlab.com/gitlab-org/gitlab-runner/-/merge_requests/7494
-schema_version: 2
 env_file: ../.env
 dataset:
   name: gitlab-runner-llm-diff

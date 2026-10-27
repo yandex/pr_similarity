@@ -3,18 +3,19 @@
 from pathlib import Path
 
 import pytest
-from basket_collector import artifact_io
-from basket_collector.contracts import BasketDocument, CollectDocument, FilterDocument, TasksDocument
-from basket_collector.publication import PublicationStore
-from basket_collector.storage import StorageError, receipt
 from test_contracts import _basket, _collect, _filter, _tasks
 from test_contracts_v2 import selection
+
+from basket_collector.models.artifacts import BasketDocument, CollectDocument, FilterDocument, TasksDocument
+from basket_collector.persistence import artifact_io
+from basket_collector.persistence.publication import PublicationStore
+from basket_collector.persistence.storage import StorageError, receipt
 
 
 def document(title: str = 'original') -> CollectDocument:
     """Build a completed source snapshot with a configurable semantic change."""
     data = _collect()
-    data['meta']['schema_version'] = 2
+    data['meta']['schema_version'] = 3
     data['tasks'][0]['change_request']['title'] = title
     return CollectDocument.model_validate(data)
 
@@ -53,12 +54,13 @@ def test_crash_before_pointer_switch_preserves_previous_publication(
     assert loaded is not None and loaded['tasks'][0]['change_request']['title'] == 'original'
 
 
-def test_legacy_output_is_refused_even_before_new_publication(tmp_path: Path) -> None:
-    """Do not bootstrap, import or overwrite a version-one working directory."""
+@pytest.mark.parametrize('version', [1, 2])
+def test_legacy_output_is_refused_even_before_new_publication(tmp_path: Path, version: int) -> None:
+    """Do not bootstrap, import or overwrite an earlier-format working directory."""
     path = tmp_path / 'collected.json'
-    path.write_text('{"meta":{"schema_version":1}}')
+    path.write_text('{"meta":{"schema_version":' + str(version) + '}}')
     original = path.read_bytes()
-    with pytest.raises(StorageError, match='version 2'):
+    with pytest.raises(StorageError, match='version 3'):
         PublicationStore(tmp_path).commit(document(), {})
     assert path.read_bytes() == original and not (tmp_path / '.current').exists()
 
@@ -102,7 +104,7 @@ def test_atomic_writer_syncs_new_directory_entries(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(artifact_io, '_fsync_directory', synced.append)
     output = tmp_path / 'new-output'
     work = output / '.work'
-    artifact_io.atomic_write(work / 'filter.json', {'schema_version': 2})
+    artifact_io.atomic_write(work / 'filter.json', {'schema_version': 3})
     assert synced == [tmp_path, output, work]
 
 
@@ -136,7 +138,7 @@ def test_previous_export_survives_upstream_revision(tmp_path: Path) -> None:
     lineage = []
     for payload, model in zip(payloads, (CollectDocument, FilterDocument, TasksDocument, BasketDocument), strict=True):
         payload['meta'].update(
-            schema_version=2,
+            schema_version=3,
             lineage=lineage,
             input={'stage': lineage[-1]['stage'], 'sha256': lineage[-1]['sha256']} if lineage else None,
         )

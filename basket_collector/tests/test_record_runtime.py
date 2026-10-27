@@ -4,10 +4,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from basket_collector.attempts import AttemptJournal
+
 from basket_collector.config import RetryPolicy
-from basket_collector.contracts import StageError
-from basket_collector.record_runtime import RecordRuntime
+from basket_collector.models.artifacts import StageError
+from basket_collector.runtime.attempts import AttemptJournal
+from basket_collector.runtime.record_runtime import RecordRuntime
 
 
 class Interrupted(RuntimeError):

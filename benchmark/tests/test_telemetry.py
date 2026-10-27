@@ -5,8 +5,9 @@ import lzma
 import sqlite3
 from pathlib import Path
 
-from benchmark.storage import read_json
-from benchmark.telemetry import TelemetryResult, capture_telemetry
+from benchmark.execution.telemetry import TelemetryResult, capture_telemetry
+from benchmark.models import Usage
+from benchmark.persistence.storage import read_json
 
 
 def native_db(path: Path) -> sqlite3.Connection:
@@ -66,7 +67,7 @@ def test_wal_snapshot_counts_all_owned_sessions_once(tmp_path: Path) -> None:
     finally:
         connection.close()
     assert result.archive_complete
-    assert result.data['tokens'] == {
+    assert result.data.tokens.to_wire() == {
         'input': 40,
         'output': 8,
         'reasoning': 4,
@@ -74,13 +75,14 @@ def test_wal_snapshot_counts_all_owned_sessions_once(tmp_path: Path) -> None:
         'cache_write': 0,
         'total': 64,
     }
-    assert result.data['cost']['amount'] == 2
-    assert result.data['session_counts'] == {'root': 1, 'subagent': 2, 'detached': 1}
-    ledger = read_json(tmp_path / 'telemetry/usage.json')
+    assert result.data.cost.amount == 2
+    assert result.data.session_counts is not None
+    assert result.data.session_counts.to_wire() == {'root': 1, 'subagent': 2, 'detached': 1}
+    ledger = Usage.model_validate(read_json(tmp_path / 'telemetry/usage.json'))
     encoded = (tmp_path / 'telemetry/usage.json').read_bytes()
-    assert encoded == (json.dumps(ledger, ensure_ascii=False, allow_nan=False, indent=2) + '\n').encode()
-    assert len(ledger['requests']) == 4
-    assert ledger['requests'][0]['billing_tokens']['output'] == 3
+    assert encoded == (json.dumps(ledger.to_wire(), ensure_ascii=False, allow_nan=False, indent=2) + '\n').encode()
+    assert len(ledger.requests) == 4
+    assert ledger.requests[0].billing_tokens.output == 3
     dump = lzma.decompress((tmp_path / 'telemetry/opencode.sqlite.xz').read_bytes())
     assert b'NEVER_ARCHIVE_SECRET' not in dump
     assert b'NEVER_ARCHIVE_SECRET' not in (tmp_path / 'telemetry/usage.json').read_bytes()
@@ -96,20 +98,20 @@ def test_unknown_cache_stays_unknown(tmp_path: Path) -> None:
     connection.commit()
     result = capture(tmp_path / 'telemetry', source)
     connection.close()
-    assert result.data['tokens']['cache_write'] is None
-    assert result.data['tokens']['cache_read'] == 12
-    ledger = read_json(tmp_path / 'telemetry/usage.json')
-    request = next(item for item in ledger['requests'] if item['session_id'] == 'root')
-    assert request['billing_tokens']['cache_write'] is None
+    assert result.data.tokens.cache_write is None
+    assert result.data.tokens.cache_read == 12
+    ledger = Usage.model_validate(read_json(tmp_path / 'telemetry/usage.json'))
+    request = next(item for item in ledger.requests if item.session_id == 'root')
+    assert request.billing_tokens.cache_write is None
 
 
 def test_dump_failure_is_diagnostic_not_a_fake_zero(tmp_path: Path) -> None:
     """Verify dump failure is diagnostic not a fake zero."""
     result = capture(tmp_path / 'telemetry', tmp_path / 'absent.db')
     assert not result.archive_complete
-    assert result.data['status'] == 'unavailable'
-    assert result.data['tokens']['input'] is None
-    assert result.data['diagnostics'][0]['code'] == 'telemetry_unavailable'
+    assert result.data.status == 'unavailable'
+    assert result.data.tokens.input is None
+    assert result.data.diagnostics[0].code == 'telemetry_unavailable'
 
 
 def test_not_started_requires_no_fake_dump(tmp_path: Path) -> None:

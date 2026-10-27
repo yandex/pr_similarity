@@ -8,16 +8,30 @@ import tomllib
 from pathlib import Path
 
 MODULES = ('basket_collector', 'benchmark', 'viewer')
-ROOT_FILES = ('README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGELOG.md', 'LICENSE',
-              'CONTRIBUTING.md', 'NOTICES', '.gitignore')
+ROOT_FILES = (
+    'README.md',
+    'AGENTS.md',
+    'CLAUDE.md',
+    'CHANGELOG.md',
+    'LICENSE',
+    'CONTRIBUTING.md',
+    'NOTICES',
+    '.gitignore',
+)
 SKILLS = ('prsim-build-basket', 'prsim-run-benchmark', 'prsim-analyze-run', 'prsim-publish-run')
-MODULE_FILES = ('README.md', 'AGENTS.md', 'CLAUDE.md', 'Makefile', 'pyproject.toml',
-                '.gitignore', '.env.example', 'requirements.lock',
-                'requirements-build.lock', 'config.yaml', 'config.smoke-live.yaml',
-                'config.example.json', 'config.mock.example.json')
-SOURCE_DIRS = ('src', 'tests', 'examples', 'prompts', 'ops')
-TRANSIENT_DIRS = frozenset({'.venv', '__pycache__', '.pytest_cache', '.ruff_cache',
-                          'build', 'dist', '*.egg-info'})
+MODULE_FILES = (
+    'README.md',
+    'AGENTS.md',
+    'CLAUDE.md',
+    'Makefile',
+    'pyproject.toml',
+    '.gitignore',
+    '.env.example',
+    'requirements.lock',
+    'requirements-build.lock',
+)
+SOURCE_DIRS = ('src', 'tests', 'examples', 'prompts', 'ops', 'docs')
+TRANSIENT_DIRS = frozenset({'.venv', '__pycache__', '.pytest_cache', '.ruff_cache', 'build', 'dist', '*.egg-info'})
 PRIVATE_NAMES = frozenset({'.env', 'auth.json', 'output', 'runtime', 'cache', 'cache.lock', 'runs', 'artifacts'})
 MANIFEST = 'release-manifest.json'
 
@@ -25,8 +39,16 @@ MANIFEST = 'release-manifest.json'
 def private_path(path: str) -> bool:
     """Identify operator state, while preserving the public .env.example template."""
     parts = Path(path).parts
-    return any(part in PRIVATE_NAMES or part.startswith('config.local.')
-               or part in TRANSIENT_DIRS or part.endswith('.egg-info') for part in parts)
+    for index, part in enumerate(parts):
+        source_package = index == 2 and parts[0] in MODULES and parts[1] == 'src' and part == 'runtime'
+        if (
+            (part in PRIVATE_NAMES and not source_package)
+            or part.startswith('config.local.')
+            or part in TRANSIENT_DIRS
+            or part.endswith('.egg-info')
+        ):
+            return True
+    return False
 
 
 def regular_file(root: Path, relative: str) -> Path:
@@ -80,10 +102,21 @@ def source_inventory(root: Path) -> list[str]:
 
 
 def file_record(root: Path, relative: str) -> dict:
+    """Record a regular file's relative path, byte size, SHA-256 and executable bit.
+
+    Raises:
+        ValueError: If the path is unsafe, linked or not a regular file.
+        OSError: If the file cannot be read or inspected.
+
+    """
     path = regular_file(root, relative)
     content = path.read_bytes()
-    return {'path': relative, 'size_bytes': len(content), 'sha256': hashlib.sha256(content).hexdigest(),
-            'executable': bool(path.stat().st_mode & stat.S_IXUSR)}
+    return {
+        'path': relative,
+        'size_bytes': len(content),
+        'sha256': hashlib.sha256(content).hexdigest(),
+        'executable': bool(path.stat().st_mode & stat.S_IXUSR),
+    }
 
 
 def check_release(root: Path) -> dict:
@@ -117,21 +150,43 @@ def check_release(root: Path) -> dict:
         raise ValueError('Module release versions disagree.')
     if manifest.get('release_version') != next(iter(versions)):
         raise ValueError('Manifest release version differs from module metadata.')
-    for family in ('run', 'report', 'state', 'usage'):
-        source = root / 'benchmark/src/schemas' / ('benchmark-' + family + '-v1.schema.json')
-        target = root / 'viewer/src/schemas' / (family + '-v1.json')
+    for family, consumer, version in (
+        ('run', 'run', 2),
+        ('report', 'report', 2),
+        ('state', 'state', 2),
+        ('manifest', 'archive', 2),
+        ('usage', 'usage', 1),
+        ('basket', 'basket', 1),
+        ('basket', 'basket', 2),
+        ('basket', 'basket', 3),
+    ):
+        source = root / 'benchmark/src/schemas' / f'benchmark-{family}-v{version}.schema.json'
+        target = root / 'viewer/src/schemas' / f'{consumer}-v{version}.json'
         if source.read_bytes() != target.read_bytes():
             raise ValueError('Producer/consumer schema differs: ' + family)
+    if (root / 'basket_collector/src/schemas/basket-v3.schema.json').read_bytes() != (
+        root / 'benchmark/src/schemas/benchmark-basket-v3.schema.json'
+    ).read_bytes():
+        raise ValueError('Collector/benchmark basket schema differs.')
     vendor = root / 'benchmark/examples/skills/test-driven-development'
     upstream = json.loads((vendor / 'UPSTREAM.json').read_bytes())
     for entry in upstream['files']:
         if hashlib.sha256(regular_file(vendor, entry['path']).read_bytes()).hexdigest() != entry['sha256']:
             raise ValueError('Vendored input differs from its provenance: ' + entry['path'])
-    return {'version': versions.pop(), 'files': len(records), 'size_bytes': sum(r['size_bytes'] for r in records),
-            'manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest()}
+    return {
+        'version': versions.pop(),
+        'files': len(records),
+        'size_bytes': sum(r['size_bytes'] for r in records),
+        'manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+    }
 
 
 def main() -> int:
+    """Print the verified release summary and return zero on success.
+
+    Invalid inventories, metadata or unreadable files terminate the CLI with
+    status 1; malformed command-line arguments use argparse's status 2.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
     args = parser.parse_args()

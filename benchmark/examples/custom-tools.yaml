@@ -1,7 +1,7 @@
+schema_version: 1
 # Complete sandbox CLI integration; run from benchmark/.
 # make auth CONFIG=examples/custom-tools.yaml AUTH_FLOW=headless
 # make run CONFIG=examples/custom-tools.yaml DATASET=/path/to/basket.json WORKERS=1
-schema_version: 1
 workers: 1
 agent:
   name: chatgpt-doc-search

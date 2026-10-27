@@ -1,0 +1,4 @@
+"""Recursive JSON value types shared by artifact models and file boundaries."""
+
+type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]

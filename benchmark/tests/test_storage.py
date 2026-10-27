@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 
 import pytest
-from benchmark import storage
-from benchmark.contracts import validate_document
+
 from benchmark.errors import BenchmarkError
-from benchmark.storage import (
+from benchmark.persistence import storage
+from benchmark.persistence.storage import (
     atomic_write,
     canonical_bytes,
     read_json,
@@ -15,6 +15,7 @@ from benchmark.storage import (
     sha256,
     write_json,
 )
+from benchmark.validation.contracts import validate_document
 
 
 @pytest.mark.parametrize('text', ['{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '[]', 'null'])
@@ -97,7 +98,11 @@ def test_native_snapshot_preserves_mapping_rule_order(tmp_path: Path) -> None:
     path = tmp_path / 'config.json'
     write_json(path, native, preserve_order=True)
     restored = read_json(path)
-    assert list(restored['permission']['bash']) == ['rm *', '*']
+    permission = restored['permission']
+    assert isinstance(permission, dict)
+    bash = permission['bash']
+    assert isinstance(bash, dict)
+    assert list(bash) == ['rm *', '*']
 
 
 def test_document_writer_is_pretty_without_changing_semantic_identity(tmp_path: Path) -> None:
@@ -110,4 +115,8 @@ def test_document_writer_is_pretty_without_changing_semantic_identity(tmp_path: 
     assert path.read_bytes() == expected
     assert sha256(read_json(path)) == before
     assert storage.document_bytes(data) == expected
-    assert list(read_json(path)['permission']['bash']) == ['rm *', '*']
+    permission = read_json(path)['permission']
+    assert isinstance(permission, dict)
+    bash = permission['bash']
+    assert isinstance(bash, dict)
+    assert list(bash) == ['rm *', '*']

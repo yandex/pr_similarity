@@ -1,6 +1,6 @@
+schema_version: 1
 # OpenAI agent customized with the vendored Superpowers TDD skill.
 # Set OPENAI_API_KEY and choose a model available to your account.
-schema_version: 1
 workers: 1
 agent:
   name: openai-tdd

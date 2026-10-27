@@ -9,8 +9,6 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 import yaml
-from basket_collector.contracts import JsonValue, TaskContent
-from basket_collector.sources import canonical_server
 from dotenv import load_dotenv
 from pydantic import (
     BaseModel,
@@ -23,6 +21,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from basket_collector.models.artifacts import JsonValue, TaskContent
+from basket_collector.models.sources import canonical_server
 
 
 class ConfigModel(BaseModel):

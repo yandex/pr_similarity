@@ -3,12 +3,16 @@
 import json
 import threading
 
+from jinja2 import StrictUndefined, TemplateError, meta, nodes
+from jinja2.sandbox import SandboxedEnvironment
+
 from basket_collector.config import (
     GenerationConfig,
     TemplateSnapshot,
     load_template_snapshot,
 )
-from basket_collector.contracts import (
+from basket_collector.filters import compact_rejection
+from basket_collector.models.artifacts import (
     FilterRecord,
     Generation,
     RejectedRecord,
@@ -16,14 +20,11 @@ from basket_collector.contracts import (
     TaskContent,
     TaskRecord,
 )
-from basket_collector.filters import compact_rejection
-from basket_collector.llm import (
+from basket_collector.providers.llm import (
     GenerationInterrupted,
     LLMClient,
     LLMConfigurationError,
 )
-from jinja2 import StrictUndefined, TemplateError, meta, nodes
-from jinja2.sandbox import SandboxedEnvironment
 
 _BLOCKED_NODES = (
     nodes.Call,
@@ -153,7 +154,31 @@ def generate_record(
     stop_event: threading.Event | None = None,
     template_snapshot: TemplateSnapshot | None = None,
 ) -> TaskRecord | RejectedRecord:
-    """Process one PR; interruption propagates so the coordinator leaves it pending."""
+    """Build one task while leaving interrupted work pending for the coordinator.
+
+    Args:
+        record: Filtered change and its selected issue and diff context.
+        config: Task source, prompt templates and generation limits.
+        llm_client: Optional caller-owned client, never closed here. When absent,
+            the LLM path creates and closes its own client locally.
+        stop_event: Cooperative cancellation signal checked before generation
+            and passed to a locally created client.
+        template_snapshot: Frozen prompt texts; absent snapshots are loaded
+            from the configured template files.
+
+    Returns:
+        TaskRecord with task content and generation provenance on success.
+        RejectedRecord for missing issue context, an invalid direct issue title
+        or rendered prompts exceeding the configured input limit.
+
+    Raises:
+        GenerationInterrupted: If cancellation interrupts generation.
+        LLMConfigurationError: If templates or client configuration are invalid.
+        LLMCallError: If the provider call fails or its output is unusable.
+        LLMAuthenticationError: If the provider rejects authentication.
+        ValidationError: If the assembled task violates the persisted model.
+
+    """
     if stop_event is not None and stop_event.is_set():
         raise GenerationInterrupted()
     issue_ids = [issue.id for issue in record.issues]

@@ -5,7 +5,10 @@ import zlib
 from pathlib import Path
 
 import pytest
-from basket_collector.git import (
+from test_git import run, source
+
+from basket_collector.models.sources import SourceDescriptor
+from basket_collector.vcs.git import (
     GitInfrastructureError,
     GitReferenceUnavailable,
     GitRepository,
@@ -13,8 +16,6 @@ from basket_collector.git import (
     GitTimeoutError,
     RejectedChange,
 )
-from basket_collector.sources import SourceDescriptor
-from test_git import run, source
 
 
 @pytest.fixture

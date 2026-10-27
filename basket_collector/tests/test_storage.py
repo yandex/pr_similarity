@@ -3,9 +3,14 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from basket_collector.contracts import (
+from fixture_helpers import descriptor
+from pydantic import ValidationError
+
+from basket_collector import __version__
+from basket_collector.models.artifacts import (
     ChangeRequest,
     CollectDocument,
     CollectMeta,
@@ -20,25 +25,24 @@ from basket_collector.contracts import (
     StageError,
     StageStatus,
 )
-from basket_collector.storage import (
+from basket_collector.persistence.storage import (
     StageStore,
     StorageError,
     atomic_write,
+    current_producer,
+    read_checkpoint,
     read_document,
     read_json,
     sha256,
     single_writer,
     stage_sha256,
 )
-from fixture_helpers import descriptor
 
 
 def _producer() -> Producer:
     """Build a stable producer identity for artifact tests."""
     return Producer(
         version='0.1.0',
-        implementation_sha256='a' * 64,
-        dependencies_sha256='b' * 64,
         python_version='3.12.3',
         git_version='git version 2',
     )
@@ -76,7 +80,7 @@ def _document(*, status: StageStatus = 'completed', title: str = 'Example') -> C
     )
     return CollectDocument(
         meta=CollectMeta(
-            schema_version=2,
+            schema_version=3,
             status=status,
             input=None,
             settings=settings,
@@ -100,6 +104,16 @@ def _document(*, status: StageStatus = 'completed', title: str = 'Example') -> C
         ),
         tasks=[row],
     )
+
+
+def test_collect_input_is_reported_as_storage_error(tmp_path: Path) -> None:
+    """Reject an input receipt on collect through the public document reader."""
+    payload = _document().model_dump(mode='json')
+    payload['meta']['input'] = {'stage': 'collect', 'sha256': 'a' * 64}
+    path = tmp_path / 'collected.json'
+    path.write_text(json.dumps(payload))
+    with pytest.raises(StorageError, match='collect must omit input'):
+        read_document(path, CollectDocument)
 
 
 def test_stage_hash_ignores_only_execution_times() -> None:
@@ -264,3 +278,60 @@ def test_completed_work_is_recovered_after_crash_before_promotion(
     assert resumed == replacement
     assert state is None
     assert read_document(store.path, CollectDocument) == replacement
+
+
+def test_producer_does_not_read_source_or_dependency_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Build producer metadata without inspecting installed code or lock files."""
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        """Fail if producer identity inspects source or dependency files."""
+        raise AssertionError('producer must not read source or dependency files')
+
+    monkeypatch.setattr(Path, 'rglob', forbidden)
+    monkeypatch.setattr(Path, 'read_bytes', forbidden)
+    monkeypatch.setattr(
+        'basket_collector.persistence.storage.subprocess.run',
+        lambda *args, **kwargs: SimpleNamespace(stdout='git version fixture\n'),
+    )
+    producer = current_producer().model_dump(mode='json')
+    assert set(producer) == {'version', 'python_version', 'git_version'}
+    assert producer['version'] == __version__
+    assert producer['git_version'] == 'git version fixture'
+
+
+def test_producer_rejects_removed_implementation_fields() -> None:
+    """Do not accept old source-digest metadata in the current persisted format."""
+    for name in ('implementation_sha256', 'dependencies_sha256'):
+        value = _producer().model_dump(mode='json')
+        value[name] = 'a' * 64
+        with pytest.raises(ValidationError, match=name):
+            Producer.model_validate(value)
+
+
+@pytest.mark.parametrize('checkpoint', [False, True])
+def test_document_reader_preserves_programming_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkpoint: bool
+) -> None:
+    """Unexpected validator bugs propagate instead of becoming invalid-input errors."""
+    path = tmp_path / 'document.json'
+    atomic_write(path, {'checkpoint': {}} if checkpoint else {})
+
+    def broken_validator(value: object) -> CollectDocument:
+        """Model a programming error inside document validation."""
+        raise TypeError('validator bug')
+
+    monkeypatch.setattr(CollectDocument, 'model_validate', broken_validator)
+    reader = read_checkpoint if checkpoint else read_document
+    with pytest.raises(TypeError, match='validator bug'):
+        reader(path, CollectDocument)
+
+
+@pytest.mark.parametrize('checkpoint', [False, True])
+def test_document_reader_wraps_validation_errors(tmp_path: Path, checkpoint: bool) -> None:
+    """Invalid persisted data still produces a storage error with its validation cause."""
+    path = tmp_path / 'document.json'
+    atomic_write(path, {'checkpoint': {}} if checkpoint else {})
+    reader = read_checkpoint if checkpoint else read_document
+    with pytest.raises(StorageError, match='invalid .*document') as caught:
+        reader(path, CollectDocument)
+    assert isinstance(caught.value.__cause__, ValidationError)

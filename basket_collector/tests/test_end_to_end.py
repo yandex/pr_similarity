@@ -5,14 +5,15 @@ from pathlib import Path
 
 import httpx
 import pytest
-from basket_collector.config import CollectorConfig
-from basket_collector.contracts import BasketDocument, Producer
-from basket_collector.git import GitRepository
-from basket_collector.github import GitHubClient
-from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.pipeline import Pipeline
-from basket_collector.storage import read_document
 from fixture_helpers import local_git, native_config
+
+from basket_collector.config import CollectorConfig
+from basket_collector.models.artifacts import BasketDocument, Producer
+from basket_collector.persistence.storage import read_document
+from basket_collector.pipeline import Pipeline
+from basket_collector.providers.github import GitHubClient
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.vcs.git import GitRepository
 
 
 def _git(directory: Path, *args: str) -> str:
@@ -126,8 +127,6 @@ def test_complete_offline_basket_uses_exact_git_and_saved_issue(
 
     producer = Producer(
         version='fixture',
-        implementation_sha256='a' * 64,
-        dependencies_sha256='b' * 64,
         python_version='3.12.3',
         git_version='git test',
     )
@@ -145,7 +144,7 @@ def test_complete_offline_basket_uses_exact_git_and_saved_issue(
         assert [item.path for item in basket.tasks[0].changes.files] == [(Path(workspace) / 'main.py').as_posix()]
         assert basket.tasks[0].agent_task == 'Task: Add program\n\nSubtasks:\n- Write main.py'
         assert basket.tasks[0].workspace == workspace
-        assert basket.meta.schema_version == 2
+        assert basket.meta.schema_version == 3
         assert not basket.meta.partial
         first_bytes = (output / 'basket.json').read_bytes()
         first_calls = list(calls)

@@ -5,15 +5,15 @@ description: Use when publishing a requested PR Similarity run to an HTTPS viewe
 
 # Publish a run
 
-Read root/benchmark AGENTS.md, the [publication guide](../../../benchmark/README.md#publish-to-a-leaderboard)
-and [viewer guide](../../../viewer/README.md#use-the-leaderboard). Use benchmark's
+Read root/benchmark AGENTS.md, the [publication guide](../../../benchmark/docs/publication.md#publish-to-a-leaderboard)
+and [viewer guide](../../../viewer/docs/leaderboard.md#use-the-leaderboard). Use benchmark's
 `.venv` and Make interface. Resolve the exact stopped run and HTTPS origin;
 validate current registry/state and complete native evidence first.
-Both basket v1/v2 are supported; preserve archived basket bytes and hashes.
-Do not substitute a newer collector export or convert v1 to suppress its notice.
-For v2, check report/basket coverage and omissions as well as task identity;
-collector omissions are not failed agent attempts. Confirm the target viewer
-supports v2 before publishing a v2 run to an older deployment.
+Preserve archived basket bytes and hashes. Follow the
+[saved-data compatibility note](../../../README.md#reading-data-from-earlier-releases).
+Check
+coverage and omissions as well as task identity: collector omissions are not
+failed agent attempts. Confirm the viewer uses the same current contracts.
 
 Diagnosis, config preparation and dry-run do not authorize upload. An explicit
 publication request authorizes that upload without repeated confirmation.
@@ -38,7 +38,7 @@ Confirm the closed receipt and original archive/report/basket hashes, server
 owner and idempotency identity. Read back HTTPS run/config/tasks and
 the `model [effort]` label and its origins (no brackets or internal effort tag
 when the level is unknown); compare results to the frozen archived report, not a later
-local reprice. Config readback confirms projection v2 and the frozen native input source;
+local reprice. Config readback validates the projection and the frozen native input source;
 harness timeout/retries/exclusions are separate run metadata. Paginated task
 readback confirms original order/identity and publication binding.
 Server name/Setup are separate editable metadata. An overwrite

@@ -1,0 +1,74 @@
+schema_version: 2
+# Collect a fixed month, filter locally, then generate at most ten tasks.
+# Repository: https://github.com/pandas-dev/pandas
+env_file: ../.env
+dataset:
+  name: pandas-january-2026-10
+  description: Seeded sample of small Python changes merged in January 2026
+  maintainers: [your-github-login]
+output_dir: ../output/examples/github-pandas-date-range
+cache_dir: ../cache/examples/github-pandas-date-range
+source:
+  provider: github
+  project: pandas-dev/pandas
+  request_timeout_seconds: 30
+  requests_per_second: 1
+  max_pages: 1000
+collect:
+  selection: date_range
+  # Half-open UTC interval: includes merged_from, excludes merged_before.
+  merged_from: '2026-01-01T00:00:00Z'
+  merged_before: '2026-02-01T00:00:00Z'
+  default_branch_only: true
+  # Discovery cap, independent of the final sample size.
+  max_changes: 1000000
+filter:
+  workers: 2
+  size:
+    min_lines: 5
+    max_lines: 500
+    max_chars: 50000
+    max_files: 8
+  files:
+    enabled: true
+    source_extensions: [.py]
+    min_source_proportion: 0.5
+    # Allowed patterns apply to EVERY changed file; required ones need ONE match.
+    allowed_path_patterns: []
+    required_path_patterns: ['^pandas/']
+    forbidden_path_patterns: ['(^|/)(docs?|\.github)/']
+  issues:
+    allow_no_issue: true
+    allow_multiple_issues: true
+  percentile:
+    enabled: true
+    metric: changed_lines
+    # Tail counts round down: fewer than 10 survivors means no trimming.
+    lower_fraction: 0.1
+    upper_fraction: 0.1
+  selection:
+    shuffle: true
+    seed: 0
+    limit: 10
+generation:
+  source: llm
+  context: diff
+  workers: 2
+  requests_per_second: 1
+  request_timeout_seconds: 120
+  max_retries: 2
+  max_input_chars: 60000
+  templates:
+    system: ../prompts/system.jinja2
+    user: ../prompts/diff.jinja2
+  llm:
+    api: openai_completions
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-4.1-mini
+    parameters:
+      temperature: 0.2
+      max_output_tokens: 4096
+export:
+  # The golden diff is exported for inspection; it is not part of agent_task.
+  include_golden_diff: true

@@ -4,9 +4,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from basket_collector.contracts import SourceRevisions
-from basket_collector.git import GitRepository
-from basket_collector.sources import SourceDescriptor, source_hash
+
+from basket_collector.models.artifacts import SourceRevisions
+from basket_collector.models.sources import SourceDescriptor, source_hash
+from basket_collector.vcs.git import GitRepository
 
 
 def git(directory: Path, *arguments: str) -> str:

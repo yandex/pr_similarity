@@ -1,0 +1,67 @@
+schema_version: 1
+# Complete harness configuration: GPT-6.1 Sol medium baseline via ChatGPT OAuth.
+# From benchmark/: make auth CONFIG=examples/full.yaml
+# Then: make run CONFIG=examples/full.yaml DATASET=/path/to/basket.json
+# Paths are relative to this YAML, except ~ paths. Secrets never belong here.
+workers: 1                       # Concurrent tasks; Make WORKERS can override this.
+tags: [baseline]                 # User Setup tags, preserved in order.
+
+agent:
+  name: baseline
+  runtime: opencode:v1.18.33      # Exact runtime version, downloaded and cached.
+  auth:
+    mode: chatgpt_oauth
+    profile: ~/.local/share/prsimbm/chatgpt  # Private reusable login, outside runs.
+    refresh_timeout_seconds: 30
+    expiry_margin_seconds: 60
+    # API-key alternative: mode: api_key, profile: null; bind credentials below.
+  config:
+    # Native OpenCode options, not an exhaustive schema for third-party plugins.
+    # The selected runtime owns these fields. Keep model and provider keys aligned.
+    opencode_json:
+      model: openai/gpt-6.1-sol
+      permission:
+        '*': allow              # Unattended agent inside the source-only sandbox.
+      provider:
+        openai:
+          models:
+            gpt-6.1-sol:
+              options:
+                reasoningEffort: medium
+      # Optional native resources (disabled for the baseline):
+      # skills:
+      #   paths: [./skills/test-driven-development]
+      # instructions: [./agent-tdd.md]
+      # For MCP/provider endpoint examples, see ../docs/configuration.md.
+  timeout_seconds: 1800          # Agent time; excludes setup.
+  setup: null                   # No setup script for the baseline.
+  # To enable setup, replace null with this mapping:
+  # setup:
+  #   script: ./setup-custom-tools.sh
+  #   timeout_seconds: 300
+  instructions_file: null        # Keep the built-in task prompt prefix.
+  retries:
+    max_retries: 1              # Additional attempts for infrastructure failures.
+    categories: []              # Opt-in: agent_error, timeout_no_changes, timeout, no_changes.
+  diff_excludes: []             # Agent changes only; human targets remain scored.
+  env: {}                       # Nonsecret string values, e.g. DOC_SEARCH_ROOT: /repo/docs.
+  credentials: {}               # OAuth requires no OPENAI_API_KEY binding.
+  # API-key alternative: {OPENAI_API_KEY: OPENAI_API_KEY} (sandbox name: host name).
+
+sandbox:
+  backend: bubblewrap
+  executable: bwrap
+  auto_install: true            # Use the verified cached build if discovery is incompatible.
+
+shutdown:
+  grace_seconds: 10             # Graceful process shutdown before forced cleanup.
+
+provisioning:
+  cache_dir: ~/.cache/prsimbm
+  download_timeout_seconds: 120
+
+git:
+  timeout_seconds: 120
+  initial_depth: 1
+  max_depth: 4096
+  max_transfer_bytes: 536870912 # Bytes per source retrieval; increase explicitly if needed.

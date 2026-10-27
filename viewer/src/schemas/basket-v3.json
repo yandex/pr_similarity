@@ -1,0 +1,1263 @@
+{
+  "$defs": {
+    "BasketChangeRequest": {
+      "additionalProperties": false,
+      "description": "Frozen provider-neutral change request metadata.",
+      "properties": {
+        "author": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Author"
+        },
+        "kind": {
+          "enum": [
+            "pull_request",
+            "merge_request"
+          ],
+          "type": "string"
+        },
+        "merged_at": {
+          "title": "Merged At",
+          "type": "string"
+        },
+        "number": {
+          "exclusiveMinimum": 0,
+          "title": "Number",
+          "type": "integer"
+        },
+        "repository": {
+          "title": "Repository",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "number",
+        "url",
+        "title",
+        "author",
+        "merged_at",
+        "kind"
+      ],
+      "title": "BasketChangeRequest",
+      "type": "object"
+    },
+    "BasketChanges": {
+      "additionalProperties": false,
+      "description": "Expose changed-file metadata without the reference patch.",
+      "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/$defs/ChangedFile"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "stats": {
+          "$ref": "#/$defs/ChangeStats"
+        }
+      },
+      "required": [
+        "files",
+        "stats"
+      ],
+      "title": "BasketChanges",
+      "type": "object"
+    },
+    "BasketMeta": {
+      "additionalProperties": false,
+      "description": "Frozen v3 basket with complete stage coverage and explicit omissions.",
+      "properties": {
+        "completed_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Completed At"
+        },
+        "counts": {
+          "$ref": "#/$defs/Counts"
+        },
+        "coverage": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InputReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lineage": {
+          "items": {
+            "$ref": "#/$defs/LineageReceipt"
+          },
+          "title": "Lineage",
+          "type": "array"
+        },
+        "maintainers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Maintainers",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "omissions": {
+          "items": {
+            "$ref": "#/$defs/Omission"
+          },
+          "type": "array"
+        },
+        "partial": {
+          "title": "Partial",
+          "type": "boolean"
+        },
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "repository": {
+          "$ref": "#/$defs/Repository"
+        },
+        "schema_family": {
+          "const": "pr_similarity_os.basket",
+          "default": "pr_similarity_os.basket",
+          "title": "Schema Family",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 3,
+          "type": "integer"
+        },
+        "selection": {
+          "$ref": "#/$defs/SelectionReceipt"
+        },
+        "settings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Settings",
+          "type": "object"
+        },
+        "settings_hash": {
+          "title": "Settings Hash",
+          "type": "string"
+        },
+        "stage": {
+          "const": "export",
+          "default": "export",
+          "title": "Stage",
+          "type": "string"
+        },
+        "started_at": {
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "interrupted",
+            "failed",
+            "completed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "input",
+        "settings",
+        "settings_hash",
+        "producer",
+        "lineage",
+        "repository",
+        "started_at",
+        "updated_at",
+        "completed_at",
+        "counts",
+        "error",
+        "name",
+        "description",
+        "maintainers",
+        "partial",
+        "schema_version",
+        "omissions",
+        "coverage",
+        "selection"
+      ],
+      "title": "BasketMeta",
+      "type": "object"
+    },
+    "BasketRecord": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "change_request": {
+                "properties": {
+                  "kind": {
+                    "const": "merge_request"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provenance": {
+                "properties": {
+                  "source_revisions": {
+                    "properties": {
+                      "diff_version_id": {
+                        "pattern": "^[1-9][0-9]*$",
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "Frozen source, revisions, changes and executable task text.",
+      "properties": {
+        "agent_task": {
+          "title": "Agent Task",
+          "type": "string"
+        },
+        "change_request": {
+          "$ref": "#/$defs/BasketChangeRequest"
+        },
+        "changes": {
+          "$ref": "#/$defs/BasketChanges"
+        },
+        "diff_policy": {
+          "const": "git_source_changes_v1",
+          "type": "string"
+        },
+        "golden_diff": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Golden Diff"
+        },
+        "id": {
+          "pattern": "^change:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "revisions": {
+          "$ref": "#/$defs/BasketRevisions"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceDescriptor"
+        },
+        "task": {
+          "$ref": "#/$defs/TaskContent"
+        },
+        "workspace": {
+          "title": "Workspace",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revisions",
+        "changes",
+        "task",
+        "agent_task",
+        "workspace",
+        "provenance",
+        "change_request",
+        "source",
+        "diff_policy"
+      ],
+      "title": "BasketRecord",
+      "type": "object"
+    },
+    "BasketRevisions": {
+      "additionalProperties": false,
+      "description": "Expose the frozen before and after Git revisions.",
+      "properties": {
+        "after": {
+          "title": "After",
+          "type": "string"
+        },
+        "after_tree": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "before": {
+          "title": "Before",
+          "type": "string"
+        },
+        "before_tree": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "policy": {
+          "const": "change_merge_base_v1",
+          "type": "string"
+        }
+      },
+      "required": [
+        "policy",
+        "before",
+        "after",
+        "before_tree",
+        "after_tree"
+      ],
+      "title": "BasketRevisions",
+      "type": "object"
+    },
+    "ChangeStats": {
+      "additionalProperties": false,
+      "description": "Summarize changed files, lines, and patch characters.",
+      "properties": {
+        "additions": {
+          "minimum": 0,
+          "title": "Additions",
+          "type": "integer"
+        },
+        "changed_lines": {
+          "minimum": 0,
+          "title": "Changed Lines",
+          "type": "integer"
+        },
+        "deletions": {
+          "minimum": 0,
+          "title": "Deletions",
+          "type": "integer"
+        },
+        "files_count": {
+          "minimum": 0,
+          "title": "Files Count",
+          "type": "integer"
+        },
+        "patch_chars": {
+          "minimum": 0,
+          "title": "Patch Chars",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "files_count",
+        "additions",
+        "deletions",
+        "changed_lines",
+        "patch_chars"
+      ],
+      "title": "ChangeStats",
+      "type": "object"
+    },
+    "ChangedFile": {
+      "additionalProperties": false,
+      "description": "Describe one changed regular file and its Git blob sides.",
+      "properties": {
+        "additions": {
+          "minimum": 0,
+          "title": "Additions",
+          "type": "integer"
+        },
+        "after_blob": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "After Blob"
+        },
+        "after_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "100644",
+                "100755"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "After Mode"
+        },
+        "before_blob": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Before Blob"
+        },
+        "before_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "100644",
+                "100755"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Before Mode"
+        },
+        "deletions": {
+          "minimum": 0,
+          "title": "Deletions",
+          "type": "integer"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "added",
+            "modified",
+            "deleted"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "status",
+        "additions",
+        "deletions",
+        "before_blob",
+        "after_blob",
+        "before_mode",
+        "after_mode"
+      ],
+      "title": "ChangedFile",
+      "type": "object"
+    },
+    "Counts": {
+      "additionalProperties": false,
+      "description": "Track the mutually exclusive outcomes of stage input records.",
+      "properties": {
+        "failed": {
+          "minimum": 0,
+          "title": "Failed",
+          "type": "integer"
+        },
+        "input": {
+          "minimum": 0,
+          "title": "Input",
+          "type": "integer"
+        },
+        "pending": {
+          "minimum": 0,
+          "title": "Pending",
+          "type": "integer"
+        },
+        "rejected": {
+          "minimum": 0,
+          "title": "Rejected",
+          "type": "integer"
+        },
+        "succeeded": {
+          "minimum": 0,
+          "title": "Succeeded",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input",
+        "succeeded",
+        "rejected",
+        "failed",
+        "pending"
+      ],
+      "title": "Counts",
+      "type": "object"
+    },
+    "Coverage": {
+      "additionalProperties": false,
+      "properties": {
+        "collect": {
+          "$ref": "#/$defs/Counts"
+        },
+        "discovery": {
+          "$ref": "#/$defs/Discovery"
+        },
+        "filter": {
+          "$ref": "#/$defs/Counts"
+        },
+        "generate": {
+          "$ref": "#/$defs/Counts"
+        },
+        "selected": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "discovery",
+        "collect",
+        "filter",
+        "selected",
+        "generate"
+      ],
+      "type": "object"
+    },
+    "Discovery": {
+      "additionalProperties": false,
+      "properties": {
+        "capped": {
+          "type": "boolean"
+        },
+        "matched": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "selected": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "matched",
+        "selected",
+        "capped"
+      ],
+      "type": "object"
+    },
+    "Generation": {
+      "additionalProperties": false,
+      "description": "Record task provenance, attempts, and optional API details.",
+      "properties": {
+        "attempts": {
+          "minimum": 0,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "input_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "issue_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Issue Ids",
+          "type": "array"
+        },
+        "request_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Request Sha256"
+        },
+        "response_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Response Id"
+        },
+        "response_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Response Model"
+        },
+        "reused_from": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "issue_ids",
+        "attempts",
+        "response_id",
+        "response_model",
+        "usage",
+        "request_sha256",
+        "input_sha256"
+      ],
+      "title": "Generation",
+      "type": "object"
+    },
+    "InputReceipt": {
+      "additionalProperties": false,
+      "description": "Identify the immediate input stage and its content digest.",
+      "properties": {
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "stage": {
+          "enum": [
+            "collect",
+            "filter",
+            "generate",
+            "export"
+          ],
+          "title": "Stage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stage",
+        "sha256"
+      ],
+      "title": "InputReceipt",
+      "type": "object"
+    },
+    "IssueRef": {
+      "additionalProperties": false,
+      "description": "Expose a linked issue identity and URL without its body.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "url"
+      ],
+      "title": "IssueRef",
+      "type": "object"
+    },
+    "JsonValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "LineageReceipt": {
+      "additionalProperties": false,
+      "description": "Record an ancestor stage and its exact settings and producer.",
+      "properties": {
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "settings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Settings",
+          "type": "object"
+        },
+        "settings_hash": {
+          "title": "Settings Hash",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "stage": {
+          "enum": [
+            "collect",
+            "filter",
+            "generate",
+            "export"
+          ],
+          "title": "Stage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stage",
+        "sha256",
+        "settings_hash",
+        "settings",
+        "producer"
+      ],
+      "title": "LineageReceipt",
+      "type": "object"
+    },
+    "Omission": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^change:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "failed",
+            "rejected"
+          ]
+        },
+        "result_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "stage": {
+          "enum": [
+            "collect",
+            "filter",
+            "generate"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "stage",
+        "kind",
+        "code",
+        "result_sha256"
+      ],
+      "type": "object"
+    },
+    "Producer": {
+      "additionalProperties": false,
+      "description": "Identify the implementation and environment that wrote a stage.",
+      "properties": {
+        "git_version": {
+          "title": "Git Version",
+          "type": "string"
+        },
+        "python_version": {
+          "title": "Python Version",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "python_version",
+        "git_version"
+      ],
+      "title": "Producer",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "Expose issue references and task-generation metadata.",
+      "properties": {
+        "generation": {
+          "$ref": "#/$defs/Generation"
+        },
+        "issue_refs": {
+          "items": {
+            "$ref": "#/$defs/IssueRef"
+          },
+          "title": "Issue Refs",
+          "type": "array"
+        },
+        "retrieval": {
+          "$ref": "#/$defs/RetrievalReceipt"
+        },
+        "source_revisions": {
+          "$ref": "#/$defs/SourceRevisions"
+        }
+      },
+      "required": [
+        "issue_refs",
+        "generation",
+        "retrieval",
+        "source_revisions"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "Repository": {
+      "additionalProperties": false,
+      "properties": {
+        "default_branch": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "minLength": 3,
+          "type": "string"
+        },
+        "project_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "provider": {
+          "enum": [
+            "github",
+            "gitlab"
+          ],
+          "type": "string"
+        },
+        "server_url": {
+          "format": "uri",
+          "pattern": "^https://[^\\s@?#]+$",
+          "type": "string"
+        },
+        "web_url": {
+          "format": "uri",
+          "pattern": "^https://[^\\s@?#]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "server_url",
+        "project_id",
+        "path",
+        "web_url",
+        "default_branch"
+      ],
+      "type": "object"
+    },
+    "RetrievalReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "after_tree": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "before": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "before_tree": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "checked_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "checked_at",
+        "source_sha256",
+        "before",
+        "after",
+        "before_tree",
+        "after_tree"
+      ],
+      "type": "object"
+    },
+    "SelectionReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "generation_keys": {
+          "additionalProperties": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "propertyNames": {
+            "pattern": "^change:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "input_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 3,
+          "type": "integer"
+        },
+        "selected_ids": {
+          "items": {
+            "pattern": "^change:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "sha256",
+        "input_sha256",
+        "fingerprint",
+        "selected_ids",
+        "generation_keys"
+      ],
+      "type": "object"
+    },
+    "SourceDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "fetch_refs": {
+          "items": {
+            "pattern": "^refs/[^\\s:~^?*\\[\\\\]+$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "fetch_url": {
+          "format": "uri",
+          "pattern": "^https://[^\\s@?#]+$",
+          "type": "string"
+        },
+        "vcs": {
+          "const": "git",
+          "type": "string"
+        }
+      },
+      "required": [
+        "vcs",
+        "fetch_url",
+        "fetch_refs"
+      ],
+      "type": "object"
+    },
+    "SourceRevisions": {
+      "additionalProperties": false,
+      "description": "Preserve normalized hosting revision evidence before local Git resolution.",
+      "properties": {
+        "base_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Base Sha",
+          "type": "string"
+        },
+        "commits_count": {
+          "exclusiveMinimum": 0,
+          "title": "Commits Count",
+          "type": "integer"
+        },
+        "diff_version_id": {
+          "anyOf": [
+            {
+              "pattern": "^[1-9][0-9]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Diff Version Id"
+        },
+        "expected_base_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expected Base Sha"
+        },
+        "head_repository": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Head Repository"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "merge_commit_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Merge Commit Sha"
+        },
+        "squash_commit_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Squash Commit Sha"
+        },
+        "target_branch": {
+          "minLength": 1,
+          "title": "Target Branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "base_sha",
+        "head_sha",
+        "merge_commit_sha",
+        "head_repository",
+        "expected_base_sha",
+        "squash_commit_sha",
+        "commits_count",
+        "target_branch",
+        "diff_version_id"
+      ],
+      "title": "SourceRevisions",
+      "type": "object"
+    },
+    "StageError": {
+      "additionalProperties": false,
+      "description": "Persist a stage error and whether the operation can be retried.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "StageError",
+      "type": "object"
+    },
+    "TaskContent": {
+      "additionalProperties": false,
+      "description": "Store a generated task and optional ordered subtasks.",
+      "properties": {
+        "subtasks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Subtasks",
+          "type": "array"
+        },
+        "task": {
+          "title": "Task",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task",
+        "subtasks"
+      ],
+      "title": "TaskContent",
+      "type": "object"
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "description": "Record optional token counts returned by generation.",
+      "properties": {
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "total_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Tokens"
+        }
+      },
+      "title": "Usage",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Canonical standalone GitHub/GitLab frozen basket, schema v3.",
+  "properties": {
+    "meta": {
+      "$ref": "#/$defs/BasketMeta"
+    },
+    "tasks": {
+      "items": {
+        "$ref": "#/$defs/BasketRecord"
+      },
+      "minItems": 1,
+      "title": "Tasks",
+      "type": "array"
+    }
+  },
+  "required": [
+    "meta",
+    "tasks"
+  ],
+  "title": "Frozen GitHub/GitLab basket v3",
+  "type": "object"
+}

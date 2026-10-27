@@ -1,6 +1,5 @@
 """Scheduler state transitions are checked independently of paid model behaviour."""
 
-import copy
 import json
 import os
 import signal
@@ -8,32 +7,76 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
-from typing import NoReturn, cast
+from types import ModuleType
+from typing import Literal, NoReturn
 
 import pytest
 import yaml
-from benchmark import attempt as attempt_module
-from benchmark import coordinator, runner, scoring
-from benchmark.archive import create_archive, verify_archive
-from benchmark.artifact_refs import ArtifactReference, reference
-from benchmark.commands import Command
-from benchmark.config import RunConfig, load_config
-from benchmark.errors import BenchmarkError
-from benchmark.git import GitCache
-from benchmark.layout import TaskRegistration, attempt_path
-from benchmark.opencode import EventTracker, Invocation
-from benchmark.process import ProcessResult, run_process
-from benchmark.provisioning import Runtime
-from benchmark.report import pending_task, unavailable_scoring
-from benchmark.run_store import RunStore
-from benchmark.runner import Stop, run
-from benchmark.sources import task_identity
-from benchmark.storage import file_lock, read_json, run_lock, utc_now, write_json
-from benchmark.telemetry import capture_telemetry
-from benchmark.workspace import CapturedChanges, Workspace
+from python_fixtures import (
+    freeze_python,
+    python_probe,
+    python_receipt,
+    write_python_probe,
+)
 from test_basket import payload
 from test_telemetry import native_db
+
+from benchmark.config import RunConfig, load_config
+from benchmark.errors import BenchmarkError
+from benchmark.execution.opencode import EventTracker, Invocation
+from benchmark.execution.process import ProcessResult, run_process
+from benchmark.execution.provisioning import Runtime
+from benchmark.execution.python_runtime import PythonRuntime
+from benchmark.execution.sandbox import Sandbox
+from benchmark.execution.telemetry import capture_telemetry
+from benchmark.metrics import scoring
+from benchmark.models import Report, Run, State
+from benchmark.models.basket import BasketRecord, BasketV3, Generation
+from benchmark.models.evidence import (
+    EvidenceStatus,
+    NativeIdentity,
+    NativeTiming,
+    Outcome,
+    ScoringEvidence,
+    Seal,
+    SealEvidence,
+    Start,
+)
+from benchmark.models.report import (
+    ReportAgentResolvedRuntime,
+    ReportAttempt,
+    ReportCounts,
+    ReportError,
+    ReportInfra,
+    ReportTaskChanges,
+    ReportTaskExecution,
+    ReportTaskScoring,
+    TaskDraft,
+)
+from benchmark.models.runtime import ProvisioningReceipt, SandboxReceipt
+from benchmark.models.sources import task_identity
+from benchmark.models.telemetry import TelemetryReceipt
+from benchmark.models.triplets import TripletIndex, TripletSource
+from benchmark.persistence.artifact_refs import ArtifactReference, reference
+from benchmark.persistence.layout import TaskRegistration, attempt_path
+from benchmark.persistence.run_store import RunStore
+from benchmark.persistence.storage import (
+    file_lock,
+    read_json,
+    run_lock,
+    sha256,
+    utc_now,
+    write_json,
+)
+from benchmark.presentation.report import pending_task, unavailable_scoring
+from benchmark.publication.archive import create_archive, verify_archive
+from benchmark.runtime import attempt as attempt_module
+from benchmark.runtime import coordinator, runner
+from benchmark.runtime.attempt import AttemptExecutor
+from benchmark.runtime.commands import Command
+from benchmark.runtime.runner import Stop, run
+from benchmark.vcs.git import GitCache
+from benchmark.vcs.workspace import CapturedChanges, Workspace
 
 
 def config_and_basket(
@@ -61,105 +104,102 @@ def provision_fixture(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     """Substitute a verified runtime receipt for offline scheduler tests."""
     runtime = Runtime(
         Path('/usr/bin/true'),
-        {
-            'actual_version': '1.18.33',
-            'asset_name': 'opencode-linux-x64-baseline.tar.gz',
-            'platform': 'linux-x64-glibc-baseline',
-            'archive_sha256': 'a' * 64,
-            'binary_sha256': 'b' * 64,
-        },
+        ProvisioningReceipt(
+            selector='opencode:v1.18.33',
+            actual_version='1.18.33',
+            asset_name='opencode-linux-x64-baseline.tar.gz',
+            platform='linux-x64-glibc-baseline',
+            archive_sha256='a' * 64,
+            binary_sha256='b' * 64,
+        ),
     )
     monkeypatch.setattr(coordinator, 'provision_opencode', lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(
+        coordinator, 'prepare_python', lambda *_args, **_kwargs: PythonRuntime(Path('/usr'), python_receipt())
+    )
+    monkeypatch.setattr(Sandbox, 'prepare_python', lambda *_args, **_kwargs: python_probe())
+    monkeypatch.setattr(Sandbox, 'check_python', lambda *_args, **_kwargs: python_probe())
     return coordinator
 
 
 def _fixture_native_row(
-    basket_row: dict,
-    metadata: dict,
+    basket_row: BasketRecord,
+    metadata: ReportAttempt,
     kind: str,
     stop: Stop,
     relative: Path,
     directory: Path,
-    identity: dict,
-) -> dict:
+    identity: NativeIdentity,
+) -> TaskDraft:
     """Close controlled native facts and source receipts before any host score fixture."""
     row = pending_task(basket_row)
-    row.update(processing_status='completed', final_attempt=copy.deepcopy(metadata))
-    row['final_attempt']['finished_at'] = utc_now()
-    row['artifacts']['outcome'] = (relative / 'outcome.json').as_posix()
-    row['artifacts']['triplets_manifest'] = (relative / 'triplets/index.json').as_posix()
-    row['setup']['status'] = 'skipped'
-    row['execution'] = {
-        'status': 'timeout' if kind == 'timeout' else ('error' if kind in ('agent_error', 'auth') else 'completed'),
-        'exit_code': 0,
-        'duration_seconds': 1,
-    }
+    row.processing_status = 'completed'
+    row.final_attempt = metadata.model_copy(deep=True)
+    row.final_attempt.finished_at = utc_now()
+    row.artifacts.outcome = (relative / 'outcome.json').as_posix()
+    row.artifacts.triplets_manifest = (relative / 'triplets/index.json').as_posix()
+    row.setup.status = 'skipped'
+    row.execution = ReportTaskExecution(
+        status='timeout' if kind == 'timeout' else 'error' if kind in ('agent_error', 'auth') else 'completed',
+        exit_code=0,
+        duration_seconds=1,
+    )
     (directory / 'agent.diff').write_text('')
-    row['changes'] = {'status': 'empty', 'files_count': 0, 'diff': (relative / 'agent.diff').as_posix()}
+    row.changes = ReportTaskChanges(status='empty', files_count=0, diff=(relative / 'agent.diff').as_posix())
     write_json(
         directory / 'triplets/index.json',
-        {
-            'version': 1,
-            'run_id': identity['run_id'],
-            'task_id': row['id'],
-            'attempt_id': metadata['id'],
-            'source': {'before': row['before'], 'after': row['after']},
-            'entries': [],
-        },
+        TripletIndex(
+            version=1,
+            run_id=identity.run_id,
+            task_id=row.id,
+            attempt_id=metadata.id,
+            source=TripletSource(before=row.before, after=row.after),
+            entries=[],
+        ),
     )
     if kind in ('infra', 'auth'):
-        row['infrastructure_error'] = {
-            'stage': 'agent' if kind == 'auth' else 'prepare',
-            'code': 'auth_required' if kind == 'auth' else 'fixture',
-            'message': 'Synthetic native failure',
-            'paths': [],
-        }
-    if kind in ('infra', 'auth'):
-        row['scoring'] = unavailable_scoring('unavailable', row['infrastructure_error'])
-        row['artifacts']['triplets_manifest'] = None
+        row.infrastructure_error = ReportInfra(
+            stage='agent' if kind == 'auth' else 'prepare',
+            code='auth_required' if kind == 'auth' else 'fixture',
+            message='Synthetic native failure',
+            paths=[],
+        )
+        row.scoring = unavailable_scoring('unavailable', row.infrastructure_error)
+        row.artifacts.triplets_manifest = None
     if kind == 'interrupt':
-        row['processing_status'] = 'interrupted'
-        row['execution'].update(status='cancelled', exit_code=None)
+        row.processing_status = 'interrupted'
+        row.execution.status, row.execution.exit_code = 'cancelled', None
         stop.signal(signal.SIGINT, None)
-    fatal = {'code': 'auth_required', 'message': 'Renew provider credentials and resume.'} if kind == 'auth' else None
-    if fatal is not None:
+    if kind == 'auth':
         stop.set()
     return row
 
 
-def _fixture_score(row: dict, scoring_error: dict | None) -> None:
+def _fixture_score(row: TaskDraft, scoring_error: ReportError | None) -> None:
     """Keep host score availability separate from native infrastructure errors."""
-    row['scoring'] = (
-        unavailable_scoring('unavailable', row['infrastructure_error'])
-        if row['infrastructure_error'] is not None
-        else (
-            unavailable_scoring('unavailable', scoring_error)
-            if scoring_error
-            else {
-                'status': 'available',
-                'error': None,
-                'Mf_mlp': 1,
-                'LCf_mlp': 1,
-                'files': [],
-                'counts': dict.fromkeys(
-                    [
-                        'human_files',
-                        'agent_files',
-                        'matched_files',
-                        'missed_files',
-                        'extra_files',
-                        'human_loc',
-                        'agent_loc',
-                        'loc_weight',
-                    ],
-                    0,
-                ),
-            }
+    if row.infrastructure_error is not None or scoring_error is not None:
+        row.scoring = unavailable_scoring('unavailable', row.infrastructure_error or scoring_error)
+    else:
+        row.scoring = ReportTaskScoring(
+            status='available',
+            error=None,
+            Mf_mlp=1,
+            LCf_mlp=1,
+            files=[],
+            counts=ReportCounts(
+                human_files=0,
+                agent_files=0,
+                matched_files=0,
+                missed_files=0,
+                extra_files=0,
+                human_loc=0,
+                agent_loc=0,
+                loc_weight=0,
+            ),
         )
-    )
 
 
-def _fixture_streams(directory: Path, relative: Path, identity: dict, row: dict) -> None:
+def _fixture_streams(directory: Path, relative: Path, identity: NativeIdentity, row: TaskDraft) -> None:
     """Save explicit empty no-native streams and usage receipts for the controlled fixture."""
     for name in ('events.jsonl', 'runtime.log', 'agent.log'):
         (directory / name).write_bytes(b'')
@@ -178,12 +218,13 @@ def _fixture_streams(directory: Path, relative: Path, identity: dict, row: dict)
     )
     if (directory / 'telemetry/receipt.json').exists():
         return
+    assert row.final_attempt is not None
     capture_telemetry(
         directory / 'no-private-native-db',
         directory / 'telemetry',
-        run_id=identity['run_id'],
-        task_id=row['id'],
-        attempt_id=row['final_attempt']['id'],
+        run_id=identity.run_id,
+        task_id=row.id,
+        attempt_id=row.final_attempt.id,
         runtime='opencode:v1.18.33',
         root_id=None,
         opencode_started=False,
@@ -192,7 +233,7 @@ def _fixture_streams(directory: Path, relative: Path, identity: dict, row: dict)
 
 
 def _fixture_seal(
-    run_dir: Path, relative: Path, identity: dict, row: dict
+    run_dir: Path, relative: Path, identity: NativeIdentity, row: TaskDraft
 ) -> tuple[list[ArtifactReference], ArtifactReference]:
     """Freeze complete fixture evidence before constructing any host score result."""
     directory = run_dir / relative
@@ -210,123 +251,152 @@ def _fixture_seal(
     telemetry_receipt = directory / 'telemetry/receipt.json'
     if telemetry_receipt.is_file():
         receipts.append(reference(run_dir, telemetry_receipt.relative_to(run_dir).as_posix()))
-    for field in ('session_db', 'usage_ledger'):
-        if row['telemetry'][field] is not None:
-            receipts.append(reference(run_dir, row['telemetry'][field]['path']))
-    seal = {
-        'agent_input': read_json(run_dir / 'run.json')['agent_input'],
-        'schema_family': 'pr_similarity_os.seal',
-        'schema_version': 1,
-        **identity,
-        'task': copy.deepcopy(row),
-        'native_timing': {
-            'started_at': row['final_attempt']['started_at'],
-            'finished_at': row['final_attempt']['finished_at'],
-            'duration_seconds': 1,
-        },
-        'evidence': {
-            'required': {'status': 'saved', 'missing': []},
-            'streams': {'status': 'saved'},
-            'usage': {'archive_complete': True},
-        },
-        'archive_complete': True,
-        'artifact_receipts': receipts,
-    }
+    for receipt in (row.telemetry.session_db, row.telemetry.usage_ledger):
+        if receipt is not None:
+            receipts.append(reference(run_dir, receipt.path))
+    assert row.final_attempt is not None
+    if identity.python_runtime is not None:
+        receipts.append(identity.python_runtime)
+        receipts.append(write_python_probe(run_dir, relative, identity.python_runtime))
+    seal = Seal(
+        schema_family='pr_similarity_os.seal',
+        schema_version=2,
+        run_id=identity.run_id,
+        basket_sha256=identity.basket_sha256,
+        config_identity_sha256=identity.config_identity_sha256,
+        metric=identity.metric,
+        runtime_binary_sha256=identity.runtime_binary_sha256,
+        python_runtime=identity.python_runtime,
+        agent_input=Run.model_validate(read_json(run_dir / 'run.json')).agent_input,
+        task=row.model_copy(deep=True),
+        native_timing=NativeTiming(
+            started_at=row.final_attempt.started_at, finished_at=row.final_attempt.finished_at, duration_seconds=1
+        ),
+        evidence=SealEvidence(
+            required=EvidenceStatus(status='saved', missing=[]),
+            streams=EvidenceStatus(status='saved'),
+            usage=EvidenceStatus(status='saved', archive_complete=True),
+        ),
+        archive_complete=True,
+        artifact_receipts=receipts,
+    )
     write_json(directory / 'seal.json', seal)
-    seal_ref = reference(run_dir, (relative / 'seal.json').as_posix())
-    return receipts, seal_ref
+    return receipts, reference(run_dir, (relative / 'seal.json').as_posix())
 
 
 def fake_attempt(
     sequence: list[str],
     *,
     token_counts: list[int] | None = None,
-    before_seal: Callable[[dict, Path, Path, dict], None] | None = None,
-) -> Callable[..., dict]:
+    before_seal: Callable[[TaskDraft, Path, Path, NativeIdentity], None] | None = None,
+) -> AttemptExecutor:
     """Build registered fixtures that write immutable native seal and host/outcome facts."""
 
     def attempt(
         config: RunConfig,
-        basket_row: dict,
+        basket_row: BasketRecord,
         run_dir: Path,
-        identity: dict,
+        identity: NativeIdentity,
         runtime: Runtime,
         bwrap: Path,
         command: Command,
-        metadata: dict,
+        metadata: ReportAttempt,
         stop: Stop,
         *,
         registration: TaskRegistration,
-    ) -> dict:
+    ) -> Outcome:
         """Assert reservation authority before closing explicitly owned fixture evidence."""
-        relative = attempt_path(registration, metadata['sequence'])
+        relative = attempt_path(registration, metadata.sequence)
         directory = run_dir / relative
         assert directory.is_dir()
-        start = read_json(directory / 'start.json')
-        assert start['attempt'] == metadata and start['task_id'] == basket_row['id']
-        state = read_json(run_dir / '_meta/state.json')
-        selected = next(row for row in state['tasks'] if row['id'] == basket_row['id'])
-        assert selected['attempt'] == metadata and selected['start'] == reference(run_dir, str(relative / 'start.json'))
+        start = Start.model_validate(read_json(directory / 'start.json'))
+        assert start.attempt == metadata and start.task_id == basket_row.id
+        state = State.model_validate(read_json(run_dir / '_meta/state.json'))
+        selected = next(row for row in state.tasks if row.id == basket_row.id)
+        assert selected.attempt == metadata and selected.start == reference(run_dir, str(relative / 'start.json'))
         assert (run_dir / 'run.json').is_file()
-        assert command.metadata['config_snapshot'].startswith('_meta/invocations/')
+        assert command.metadata.config_snapshot is not None and command.metadata.config_snapshot.startswith(
+            '_meta/invocations/'
+        )
         kind = sequence.pop(0)
         row = _fixture_native_row(basket_row, metadata, kind, stop, relative, directory, identity)
         if token_counts:
-            row['telemetry']['tokens']['total'] = token_counts.pop(0)
-            row['telemetry']['total_source'] = 'reported'
+            row.telemetry.tokens.total = token_counts.pop(0)
+            row.telemetry.total_source = 'reported'
         if before_seal is not None:
             before_seal(row, directory, run_dir, identity)
         _fixture_streams(directory, relative, identity, row)
         receipts, seal_ref = _fixture_seal(run_dir, relative, identity, row)
         scoring_error = (
-            {'code': 'scoring_worker_failed', 'message': 'Synthetic host failure'} if kind == 'score_error' else None
+            ReportError(code='scoring_worker_failed', message='Synthetic host failure')
+            if kind == 'score_error'
+            else None
         )
         _fixture_score(row, scoring_error)
-        score = {
-            'schema_family': 'pr_similarity_os.scoring',
-            'schema_version': 1,
-            'run_id': identity['run_id'],
-            'task_id': row['id'],
-            'attempt_id': metadata['id'],
-            'seal': seal_ref,
-            'scoring': row['scoring'],
-            'metric': identity['metric'],
-            'diagnostics': [],
-            'error': scoring_error,
-        }
+        score = ScoringEvidence(
+            schema_family='pr_similarity_os.scoring',
+            schema_version=2,
+            run_id=identity.run_id,
+            task_id=row.id,
+            attempt_id=metadata.id,
+            seal=seal_ref,
+            scoring=row.scoring,
+            metric=identity.metric,
+            diagnostics=[],
+            error=scoring_error,
+        )
         write_json(directory / 'scoring.json', score)
         score_ref = reference(run_dir, (relative / 'scoring.json').as_posix())
         fatal = (
-            {'code': 'auth_required', 'message': 'Renew provider credentials and resume.'} if kind == 'auth' else None
+            ReportError(code='auth_required', message='Renew provider credentials and resume.')
+            if kind == 'auth'
+            else None
         )
-        outcome = {
-            'agent_input': read_json(run_dir / 'run.json')['agent_input'],
-            'schema_family': 'pr_similarity_os.outcome',
-            'schema_version': 1,
-            **identity,
-            'task': row,
-            'seal': seal_ref,
-            'scoring_result': score_ref,
-            'scoring_error': scoring_error,
-            'fatal': fatal,
-            'archive_complete': True,
-            'artifact_receipts': receipts + [seal_ref, score_ref],
-        }
+        outcome = Outcome(
+            schema_family='pr_similarity_os.outcome',
+            schema_version=2,
+            run_id=identity.run_id,
+            basket_sha256=identity.basket_sha256,
+            config_identity_sha256=identity.config_identity_sha256,
+            metric=identity.metric,
+            runtime_binary_sha256=identity.runtime_binary_sha256,
+            python_runtime=identity.python_runtime,
+            agent_input=Run.model_validate(read_json(run_dir / 'run.json')).agent_input,
+            task=row,
+            seal=seal_ref,
+            scoring_result=score_ref,
+            scoring_error=scoring_error,
+            fatal=fatal,
+            archive_complete=True,
+            artifact_receipts=receipts + [seal_ref, score_ref],
+        )
         write_json(directory / 'outcome.json', outcome)
         return outcome
 
     return attempt
 
 
-class _CancelledInvocation:
+class _CancelledInvocation(Invocation):
     """Call the real cancellation branch before Popen and retain its empty owned log."""
 
     agent_started = False
     _environment = None
 
-    def __init__(self, logs: Path, cwd: Path) -> None:
+    def __init__(self, config: RunConfig, logs: Path, cwd: Path) -> None:
         """Bind an owned log directory and fixture working directory."""
-        self.logs = logs
+        super().__init__(
+            config,
+            Sandbox(
+                '/usr/bin/true',
+                cwd / 'sandbox-source',
+                cwd / 'sandbox-source',
+                cwd / 'home',
+                cwd / 'runtime',
+                Path('/usr/bin/true'),
+            ),
+            logs,
+            logs,
+        )
         self.cwd = cwd
 
     def run(self, _prompt: bytes, stop: Stop) -> tuple[ProcessResult, EventTracker]:
@@ -381,9 +451,10 @@ def test_infrastructure_always_retries_and_report_is_last_attempt(
     config, basket = config_and_basket(tmp_path, retries=1)
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['infra', 'success']))
     assert code == 0
-    report = read_json(directory / 'report.json')
-    assert report['tasks'][0]['final_attempt']['sequence'] == 2
-    assert report['tasks'][0]['infrastructure_error'] is None
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    assert report.tasks[0].final_attempt is not None
+    assert report.tasks[0].final_attempt.sequence == 2
+    assert report.tasks[0].infrastructure_error is None
     assert len(list((directory / 'tasks').glob('*/attempts/*/outcome.json'))) == 2
 
 
@@ -394,10 +465,11 @@ def test_timeout_category_preserves_last_result_and_exhaustion(tmp_path: Path, m
     code, directory = run(
         config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['timeout', 'timeout'])
     )
-    report = read_json(directory / 'report.json')
-    assert code == 0 and report['run']['status'] == 'completed'
-    assert report['tasks'][0]['execution']['status'] == 'timeout'
-    assert report['tasks'][0]['final_attempt']['retry_index'] == 1
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    assert code == 0 and report.run.status == 'completed'
+    assert report.tasks[0].execution.status == 'timeout'
+    assert report.tasks[0].final_attempt is not None
+    assert report.tasks[0].final_attempt.retry_index == 1
 
 
 def test_resume_resets_retry_budget_and_preserves_attempt_history(
@@ -410,10 +482,12 @@ def test_resume_resets_retry_budget_and_preserves_attempt_history(
     assert code == 130
     code, _ = run(config, basket, resume=directory, attempt_function=fake_attempt(['timeout', 'success']))
     assert code == 0
-    report = read_json(directory / 'report.json')
-    assert report['tasks'][0]['final_attempt']['sequence'] == 3
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    assert report.tasks[0].final_attempt is not None
+    assert report.tasks[0].final_attempt.sequence == 3
     starts = [
-        read_json(path)['attempt']['retry_index'] for path in (directory / 'tasks').glob('*/attempts/*/start.json')
+        Start.model_validate(read_json(path)).attempt.retry_index
+        for path in (directory / 'tasks').glob('*/attempts/*/start.json')
     ]
     assert sorted(starts) == [0, 0, 1]
 
@@ -425,13 +499,14 @@ def test_cancel_before_native_spawn_preserves_not_started_telemetry_for_resume_a
     config, basket = config_and_basket(tmp_path)
     runtime = Runtime(
         Path('/usr/bin/true'),
-        {
-            'actual_version': '1.18.33',
-            'asset_name': 'fixture.tar.gz',
-            'platform': 'fixture',
-            'archive_sha256': 'a' * 64,
-            'binary_sha256': 'b' * 64,
-        },
+        ProvisioningReceipt(
+            selector='opencode:v1.18.33',
+            actual_version='1.18.33',
+            asset_name='fixture.tar.gz',
+            platform='fixture',
+            archive_sha256='a' * 64,
+            binary_sha256='b' * 64,
+        ),
     )
 
     def prepare_agents(session: object) -> None:
@@ -440,26 +515,30 @@ def test_cancel_before_native_spawn_preserves_not_started_telemetry_for_resume_a
         session.runtime = runtime
         session.bwrap = Path('/usr/bin/true')
         session.report = session.store.snapshot()
-        session.report['agent']['resolved_runtime'] = {
-            'version': '1.18.33',
-            'asset_name': 'fixture.tar.gz',
-            'platform': 'fixture',
-            'archive_sha256': 'a' * 64,
-            'binary_sha256': 'b' * 64,
-            'receipt': '_meta/runtime.json',
-        }
+        session.report.agent.resolved_runtime = ReportAgentResolvedRuntime(
+            version='1.18.33',
+            asset_name='fixture.tar.gz',
+            platform='fixture',
+            archive_sha256='a' * 64,
+            binary_sha256='b' * 64,
+            receipt='_meta/runtime.json',
+        )
         write_json(session.run_dir / '_meta/runtime.json', runtime.receipt)
+        session.report.agent.python_runtime = freeze_python(session.run_dir)
         session.persist()
         write_json(
-            session.run_dir / '_meta/sandbox.json', {'backend': 'fixture', 'binary_sha256': 'c' * 64, 'network': False}
+            session.run_dir / '_meta/sandbox.json',
+            SandboxReceipt(backend='fixture', version='fixture', binary_sha256='c' * 64, network='host'),
         )
 
     def cancelled_prepare(state: attempt_module._Attempt) -> None:
         """Reach the real agent/capture/finalization path with cancellation before native spawn."""
-        state.cache = cast(GitCache, SimpleNamespace(stop=None))
-        state.workspace = cast(Workspace, SimpleNamespace())
+        state.cache = GitCache(tmp_path / 'fixture-cache', state.basket_row.source.fetch_url)
+        state.workspace = Workspace(tmp_path, tmp_path, '.', 'fixture', state.cache, state.row.before)
         state.prompt = b'fixture'
-        state.invocation = cast(Invocation, _CancelledInvocation(state.logs, tmp_path))
+        assert state.report_identity.python_runtime is not None
+        write_python_probe(state.run_dir, state.relative, state.report_identity.python_runtime)
+        state.invocation = _CancelledInvocation(state.config, state.logs, tmp_path)
         state.stop.signal(signal.SIGINT, None)
 
     monkeypatch.setattr(coordinator.Coordinator, 'prepare_agents', prepare_agents)
@@ -470,27 +549,40 @@ def test_cancel_before_native_spawn_preserves_not_started_telemetry_for_resume_a
     successful = fake_attempt(['success'])
     calls = 0
 
-    def attempts(*args: object, **kwargs: object) -> dict:
-        """Use real _Attempt.execute first, then a complete no-native fixture after resume."""
+    def attempts(
+        config: RunConfig,
+        basket_row: BasketRecord,
+        run_dir: Path,
+        identity: NativeIdentity,
+        runtime: Runtime,
+        bwrap: Path,
+        command: Command,
+        metadata: ReportAttempt,
+        stop: Stop,
+        *,
+        registration: TaskRegistration,
+    ) -> Outcome | None:
+        """Use real native execution first, then a closed fixture after resume."""
         nonlocal calls
         calls += 1
-        if calls == 1:
-            outcome = cast(Callable[..., dict | None], runner.run_attempt)(*args, **kwargs)
-            assert isinstance(outcome, dict)
-            return outcome
-        return successful(*args, **kwargs)
+        target = runner.run_attempt if calls == 1 else successful
+        return target(
+            config, basket_row, run_dir, identity, runtime, bwrap, command, metadata, stop, registration=registration
+        )
 
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=attempts)
     assert code == 130
-    first = read_json(next((directory / 'tasks').glob('*/attempts/*/outcome.json')))
-    assert first['archive_complete']
-    receipt = read_json(next((directory / 'tasks').glob('*/attempts/*/telemetry/receipt.json')))
-    assert receipt['status'] == 'not_started' and receipt['archive_complete']
+    first = Outcome.model_validate(read_json(next((directory / 'tasks').glob('*/attempts/*/outcome.json'))))
+    assert first.archive_complete
+    receipt = TelemetryReceipt.model_validate(
+        read_json(next((directory / 'tasks').glob('*/attempts/*/telemetry/receipt.json')))
+    )
+    assert receipt.status == 'not_started' and receipt.archive_complete
 
     assert run(config, basket, resume=directory, attempt_function=attempts)[0] == 0
     assert calls == 2
     archive = create_archive(directory, tmp_path / 'resumed.tar.gz')
-    assert verify_archive(archive.path)['complete']
+    assert verify_archive(archive.path).complete
 
 
 def test_completed_resume_calls_no_agent_and_preserves_final_attempt(
@@ -500,14 +592,14 @@ def test_completed_resume_calls_no_agent_and_preserves_final_attempt(
     provision_fixture(monkeypatch)
     config, basket = config_and_basket(tmp_path)
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['success']))
-    before = read_json(directory / 'report.json')['tasks'][0]
+    before = Report.model_validate(read_json(directory / 'report.json')).tasks[0]
 
     def forbidden(*_args: object, **_kwargs: object) -> None:
         """Fail if the tested path unexpectedly starts native work or HTTP."""
         raise AssertionError('completed task reran')
 
     code, _ = run(config, basket, resume=directory, attempt_function=forbidden)
-    assert code == 0 and read_json(directory / 'report.json')['tasks'][0] == before
+    assert code == 0 and Report.model_validate(read_json(directory / 'report.json')).tasks[0] == before
 
 
 def test_resume_identity_changes_fail_before_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -541,10 +633,10 @@ def test_automatic_pricing_gap_is_distinct_from_agent_run_failure(
         level='ERROR',
     )
     assert code == 1
-    report = read_json(directory / 'report.json')
-    assert report['run']['status'] == 'completed'
-    assert report['summary']['scored_tasks'] == 1
-    assert report['summary']['infrastructure_error_tasks'] == 0
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    assert report.run.status == 'completed'
+    assert report.summary.scored_tasks == 1
+    assert report.summary.infrastructure_error_tasks == 0
     console = capsys.readouterr().err
     assert 'Agent run status: completed' in console
     assert 'nonzero exit code for pricing gaps' in console
@@ -558,29 +650,30 @@ def test_resume_records_abandoned_attempt_and_starts_fresh(tmp_path: Path, monke
     def partial(*args: object, **kwargs: object) -> None:
         """Leave only an owned runtime log, without pretending a native outcome exists."""
         run_dir, metadata = args[2], args[7]
-        assert isinstance(run_dir, Path) and isinstance(metadata, dict)
+        assert isinstance(run_dir, Path) and isinstance(metadata, ReportAttempt)
         registration = kwargs['registration']
-        assert isinstance(registration, dict)
-        (run_dir / attempt_path(registration, metadata['sequence']) / 'runtime.log').write_text(
+        assert isinstance(registration, TaskRegistration)
+        (run_dir / attempt_path(registration, metadata.sequence) / 'runtime.log').write_text(
             'partial fixture evidence\n'
         )
         raise RuntimeError('worker ended before native seal')
 
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=partial)
     assert code == 1
-    before = read_json(directory / '_meta/state.json')['tasks'][0]
-    first = directory / RunStore.open(directory).attempt_directory(before['id'], 1)
+    before = State.model_validate(read_json(directory / '_meta/state.json')).tasks[0]
+    first = directory / RunStore.open(directory).attempt_directory(before.id, 1)
     start = (first / 'start.json').read_bytes()
-    assert before['seal'] is None and before['outcome'] is None
+    assert before.seal is None and before.outcome is None
     code, _ = run(config, basket, resume=directory, attempt_function=fake_attempt(['success']))
     assert code == 0
-    current = read_json(directory / 'report.json')
-    assert current['tasks'][0]['final_attempt']['sequence'] == 2
+    current = Report.model_validate(read_json(directory / 'report.json'))
+    assert current.tasks[0].final_attempt is not None
+    assert current.tasks[0].final_attempt.sequence == 2
     assert (first / 'start.json').read_bytes() == start
     assert (first / 'runtime.log').read_text() == 'partial fixture evidence\n'
     assert not (first / 'outcome.json').exists()
-    history = read_json(directory / '_meta/state.json')['tasks'][0]['history']
-    assert len(history) == 1 and history[0]['seal'] is None and history[0]['outcome'] is None
+    history = State.model_validate(read_json(directory / '_meta/state.json')).tasks[0].history
+    assert len(history) == 1 and history[0].seal is None and history[0].outcome is None
 
 
 def test_corrupt_closed_outcome_blocks_resume_without_native_replay(
@@ -625,7 +718,7 @@ def test_unexpected_worker_error_is_friendly_and_saved_at_debug(
 
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=broken, level='ERROR')
     assert code == 1
-    assert read_json(directory / 'report.json')['run']['status'] == 'failed'
+    assert Report.model_validate(read_json(directory / 'report.json')).run.status == 'failed'
     console = capsys.readouterr().err
     assert 'Traceback' not in console and 'fixture internal failure details' not in console
     logs = ''.join(path.read_text() for path in directory.glob('_meta/invocations/*/benchmark.log'))
@@ -645,10 +738,11 @@ def test_missing_metric_dependency_saves_failed_preflight_report(
 
     monkeypatch.setattr(scoring, 'require_dependencies', absent)
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt([]))
-    report = read_json(directory / 'report.json')
-    assert code == 1 and report['run']['status'] == 'failed'
-    assert report['run']['error']['code'] == 'metric_dependencies_missing'
-    assert report['summary']['pending_tasks'] == report['basket']['total_tasks']
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    assert code == 1 and report.run.status == 'failed'
+    assert report.run.error is not None
+    assert report.run.error.code == 'metric_dependencies_missing'
+    assert report.summary.pending_tasks == report.basket.total_tasks
     assert not list((directory / 'tasks').glob('*/attempts/*/start.json'))
 
 
@@ -660,9 +754,10 @@ def test_retry_history_keeps_all_usage_but_report_uses_final_800_tokens(
     config, basket = config_and_basket(tmp_path, retries=2)
     totals = iter([1000, 1500, 800])
 
-    def measured(row: dict, attemptdir: Path, directory: Path, identity: dict) -> None:
+    def measured(row: TaskDraft, attemptdir: Path, directory: Path, identity: NativeIdentity) -> None:
         """Capture one native database before sealing its immutable usage receipts."""
-        source = tmp_path / (row['final_attempt']['id'] + '.db')
+        assert row.final_attempt is not None
+        source = tmp_path / (row.final_attempt.id + '.db')
         db = native_db(source)
         total = next(totals)
         try:
@@ -676,9 +771,9 @@ def test_retry_history_keeps_all_usage_but_report_uses_final_800_tokens(
             captured = capture_telemetry(
                 source,
                 attemptdir / 'telemetry',
-                run_id=identity['run_id'],
-                task_id=row['id'],
-                attempt_id=row['final_attempt']['id'],
+                run_id=identity.run_id,
+                task_id=row.id,
+                attempt_id=row.final_attempt.id,
                 runtime='opencode:v1.18.33',
                 root_id='root',
                 opencode_started=True,
@@ -686,7 +781,7 @@ def test_retry_history_keeps_all_usage_but_report_uses_final_800_tokens(
             )
         finally:
             db.close()
-        row['telemetry'] = captured.data
+        row.telemetry = captured.data
 
     code, directory = run(
         config,
@@ -695,11 +790,15 @@ def test_retry_history_keeps_all_usage_but_report_uses_final_800_tokens(
         attempt_function=fake_attempt(['infra', 'infra', 'success'], before_seal=measured),
     )
     assert code == 0
-    final = read_json(directory / 'report.json')['tasks'][0]['telemetry']
-    assert final['tokens']['total'] == 800
-    assert final['tokens']['cache_read'] is None and final['tokens']['cache_write'] is None
-    histories = [read_json(path) for path in (directory / 'tasks').glob('*/attempts/*/outcome.json')]
-    assert sorted(row['task']['telemetry']['tokens']['total'] for row in histories) == [800, 1000, 1500]
+    final = Report.model_validate(read_json(directory / 'report.json')).tasks[0].telemetry
+    assert final.tokens.total == 800
+    assert final.tokens.cache_read is None and final.tokens.cache_write is None
+    histories = [
+        Outcome.model_validate(read_json(path)) for path in (directory / 'tasks').glob('*/attempts/*/outcome.json')
+    ]
+    saved_totals = [row.task.telemetry.tokens.total for row in histories]
+    assert all(value is not None for value in saved_totals)
+    assert sorted(value for value in saved_totals if value is not None) == [800, 1000, 1500]
 
 
 @pytest.mark.parametrize('max_retries', [0, 2], ids=['no_automatic_retry', 'automatic_retry_budget'])
@@ -710,14 +809,16 @@ def test_provider_auth_failure_remains_pending_for_explicit_resume(
     provision_fixture(monkeypatch)
     config, basket = config_and_basket(tmp_path, retries=max_retries)
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['auth']))
-    first = read_json(directory / 'report.json')
-    assert code == 1 and first['run']['status'] == 'failed'
-    assert first['tasks'][0]['processing_status'] == 'retry_pending'
-    assert first['tasks'][0]['infrastructure_error']['code'] == 'auth_required'
+    first = Report.model_validate(read_json(directory / 'report.json'))
+    assert code == 1 and first.run.status == 'failed'
+    assert first.tasks[0].processing_status == 'retry_pending'
+    assert first.tasks[0].infrastructure_error is not None
+    assert first.tasks[0].infrastructure_error.code == 'auth_required'
     assert run(config, basket, resume=directory, attempt_function=fake_attempt(['success']))[0] == 0
-    last = read_json(directory / 'report.json')['tasks'][0]
-    assert last['final_attempt']['sequence'] == 2 and last['final_attempt']['retry_index'] == 0
-    assert last['infrastructure_error'] is None
+    last = Report.model_validate(read_json(directory / 'report.json')).tasks[0]
+    assert last.final_attempt is not None
+    assert last.final_attempt.sequence == 2 and last.final_attempt.retry_index == 0
+    assert last.infrastructure_error is None
 
 
 def test_preflight_interrupt_stays_interrupted_with_pending_queue(
@@ -734,10 +835,10 @@ def test_preflight_interrupt_stays_interrupted_with_pending_queue(
 
     monkeypatch.setattr(coordinator, 'provision_opencode', interrupted)
     code, directory = run(config, basket, output=tmp_path / 'runs')
-    report = read_json(directory / 'report.json')
-    assert code == 130 and report['run']['status'] == 'interrupted'
-    assert report['run']['error'] is None
-    assert all(row['infrastructure_error'] is None and row['final_attempt'] is None for row in report['tasks'])
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    assert code == 130 and report.run.status == 'interrupted'
+    assert report.run.error is None
+    assert all(row.infrastructure_error is None and row.final_attempt is None for row in report.tasks)
 
 
 @pytest.mark.parametrize('boundary', ['accept_fact', 'accept'])
@@ -747,39 +848,73 @@ def test_scheduler_failure_cancels_sibling_process_before_pool_unwinds(
     """Cancel a real sibling child when main-thread validation or persistence fails."""
     provision_fixture(monkeypatch)
     config, basket = config_and_basket(tmp_path)
-    data = read_json(basket)
-    second = copy.deepcopy(data['tasks'][0])
-    second['id'] = task_identity(data['meta']['repository'], 'pull_request', 2)
-    second['change_request'].update(number=2, url='https://github.com/owner/repo/pull/2')
-    data['tasks'].append(second)
-    data['meta']['counts'].update(input=2, succeeded=2)
+    data = BasketV3.model_validate(read_json(basket))
+    second = data.tasks[0].model_copy(deep=True)
+    second.id = task_identity(data.meta.repository, 'pull_request', 2)
+    second.change_request.number, second.change_request.url = 2, 'https://github.com/owner/repo/pull/2'
+    data.tasks.append(second)
+    data.meta.counts.input = data.meta.counts.succeeded = 2
+    for counts in (data.meta.coverage.collect, data.meta.coverage.filter, data.meta.coverage.generate):
+        counts.input = counts.succeeded = 2
+    data.meta.coverage.discovery.matched = data.meta.coverage.discovery.selected = data.meta.coverage.selected = 2
+    selection = data.meta.selection
+    selection.selected_ids.append(second.id)
+    assert isinstance(second.provenance.generation, Generation)
+    selection.generation_keys[second.id] = second.provenance.generation.input_sha256
+    selection.fingerprint = sha256(
+        {'tasks': [[identifier, selection.generation_keys[identifier]] for identifier in selection.selected_ids]}
+    )
     write_json(basket, data)
     started = threading.Event()
     results: list[ProcessResult] = []
     failure_time: list[float] = []
     success = fake_attempt(['success'])
-    original = cast(
-        Callable[..., object],
-        RunStore.accept_fact if boundary == 'accept_fact' else coordinator.Coordinator.accept,
-    )
+    original_fact = RunStore.accept_fact
+    original_accept = coordinator.Coordinator.accept
 
-    def fail_once(*args: object, **kwargs: object) -> object:
+    def maybe_fail() -> None:
         """Inject one main-thread failure after both workers have begun execution."""
         ready = threading.current_thread() is threading.main_thread() and started.is_set()
         if ready and not failure_time:
             failure_time.append(time.monotonic())
             raise BenchmarkError('artifact_write_failed', 'Fixture persistence failure.', exit_code=1)
-        return original(*args, **kwargs)
 
-    def execute(*args: object, **kwargs: object) -> dict | None:
+    def fail_fact(
+        self: RunStore,
+        task_id: str,
+        kind: str,
+        receipt: ArtifactReference,
+        *,
+        processing_status: Literal['pending', 'running', 'completed', 'retry_pending', 'interrupted'] | None = None,
+    ) -> Report:
+        """Fail one fact acceptance while leaving subsequent drain commits intact."""
+        maybe_fail()
+        return original_fact(self, task_id, kind, receipt, processing_status=processing_status)
+
+    def fail_accept(self: coordinator.Coordinator, identifier: str, returned: Outcome | None) -> str:
+        """Fail one coordinator acceptance before the owned sibling is drained."""
+        maybe_fail()
+        return original_accept(self, identifier, returned)
+
+    def execute(
+        config: RunConfig,
+        row: BasketRecord,
+        run_dir: Path,
+        identity: NativeIdentity,
+        runtime: Runtime,
+        bwrap: Path,
+        command: Command,
+        metadata: ReportAttempt,
+        stop: Stop,
+        *,
+        registration: TaskRegistration,
+    ) -> Outcome | None:
         """Keep the second worker inside an owned native process until cancellation."""
-        row = args[1]
-        assert isinstance(row, dict)
-        if row['id'] != second['id']:
+        if row.id != second.id:
             assert started.wait(3)
-            return success(*args, **kwargs)
-        stop = args[8]
-        assert isinstance(stop, Stop)
+            return success(
+                config, row, run_dir, identity, runtime, bwrap, command, metadata, stop, registration=registration
+            )
         results.append(
             run_process(
                 ['/bin/sh', '-c', 'printf "ready\\n"; exec sleep 5'],
@@ -794,9 +929,12 @@ def test_scheduler_failure_cancels_sibling_process_before_pool_unwinds(
         )
         return None
 
-    monkeypatch.setattr(RunStore if boundary == 'accept_fact' else coordinator.Coordinator, boundary, fail_once)
+    if boundary == 'accept_fact':
+        monkeypatch.setattr(RunStore, boundary, fail_fact)
+    else:
+        monkeypatch.setattr(coordinator.Coordinator, boundary, fail_accept)
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=execute)
-    assert code == 1 and read_json(directory / 'report.json')['run']['status'] == 'failed'
+    assert code == 1 and Report.model_validate(read_json(directory / 'report.json')).run.status == 'failed'
     assert failure_time and time.monotonic() - failure_time[0] < 3
     assert len(results) == 1 and results[0].status == 'cancelled'
     assert results[0].exit_code is not None
@@ -820,12 +958,13 @@ def test_yaml_labels_and_frozen_native_inference_survive_resume_without_replay(
     config = load_config(path)
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['success']))
     assert code == 0
-    before = read_json(directory / 'report.json')
-    assert before['run']['tags'] == data['tags']
-    configured = before['inference']['configured']
-    assert configured['model']['value'] == 'openai/gpt-6.1-sol'
-    assert configured['effort']['value'] == 'medium'
-    assert configured['effort']['source']['ref'] == 'config_identity.json'
+    before = Report.model_validate(read_json(directory / 'report.json'))
+    assert before.run.tags == data['tags']
+    configured = before.inference.configured
+    assert configured.model.value == 'openai/gpt-6.1-sol'
+    assert configured.effort.value == 'medium'
+    assert configured.effort.source is not None
+    assert configured.effort.source.ref == 'config_identity.json'
     data['tags'] = ['new label']
     data['agent']['name'] = 'New display'
     path.write_text(yaml.safe_dump(data))
@@ -837,11 +976,11 @@ def test_yaml_labels_and_frozen_native_inference_survive_resume_without_replay(
     changed = load_config(path)
     assert changed.identity() == config.identity()
     assert run(changed, basket, resume=directory, attempt_function=no_replay)[0] == 0
-    after = read_json(directory / 'report.json')
-    assert after['run']['tags'] == before['run']['tags']
-    assert after['agent']['name'] == before['agent']['name']
-    assert after['inference'] == before['inference']
-    assert after['tasks'][0]['final_attempt'] == before['tasks'][0]['final_attempt']
+    after = Report.model_validate(read_json(directory / 'report.json'))
+    assert after.run.tags == before.run.tags
+    assert after.agent.name == before.agent.name
+    assert after.inference == before.inference
+    assert after.tasks[0].final_attempt == before.tasks[0].final_attempt
 
 
 def test_coordinator_freezes_registry_and_reserves_before_executor(
@@ -854,12 +993,13 @@ def test_coordinator_freezes_registry_and_reserves_before_executor(
     assert code == 0
     assert directory.name.startswith('20') and '-fixture-' in directory.name
     assert not (directory / 'checkpoint.json').exists()
-    report = read_json(directory / 'report.json')
-    state = read_json(directory / '_meta/state.json')
-    row = report['tasks'][0]
-    assert row['directory'].startswith('tasks/001-')
-    assert row['artifacts']['outcome'].startswith(row['directory'] + '/attempts/001/')
-    assert state['tasks'][0]['outcome'] == reference(directory, row['artifacts']['outcome'])
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    state = State.model_validate(read_json(directory / '_meta/state.json'))
+    row = report.tasks[0]
+    assert row.directory.startswith('tasks/001-')
+    assert row.artifacts.outcome is not None
+    assert row.artifacts.outcome.startswith(row.directory + '/attempts/001/')
+    assert state.tasks[0].outcome == reference(directory, row.artifacts.outcome)
 
 
 def test_host_scoring_recovery_reuses_seal_without_native_runtime_or_credentials(
@@ -871,8 +1011,9 @@ def test_host_scoring_recovery_reuses_seal_without_native_runtime_or_credentials
     config, basket = config_and_basket(tmp_path, retries=2, categories=['agent_error'])
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['score_error']))
     assert code == 1
-    original = read_json(directory / 'report.json')['tasks'][0]
-    outcome_path = directory / original['artifacts']['outcome']
+    original = Report.model_validate(read_json(directory / 'report.json')).tasks[0]
+    assert original.artifacts.outcome is not None
+    outcome_path = directory / original.artifacts.outcome
     outcome = outcome_path.read_bytes()
     metadata = yaml.safe_load((tmp_path / 'config.yaml').read_text())
     metadata['agent']['credentials'] = {'TEST_API_KEY': 'UNSET_FIXTURE_ACCESS'}
@@ -889,12 +1030,12 @@ def test_host_scoring_recovery_reuses_seal_without_native_runtime_or_credentials
         monkeypatch.setattr(coordinator, name, forbidden)
     code, _ = run(changed, basket, resume=directory, attempt_function=forbidden)
     assert code == 0
-    final = read_json(directory / 'report.json')['tasks'][0]
-    assert final['final_attempt'] == original['final_attempt']
-    assert final['scoring']['status'] == 'available'
+    final = Report.model_validate(read_json(directory / 'report.json')).tasks[0]
+    assert final.final_attempt == original.final_attempt
+    assert final.scoring.status == 'available'
     assert outcome_path.read_bytes() == outcome
-    state = read_json(directory / '_meta/state.json')['tasks'][0]
-    assert state['scoring'] is not None and state['next_sequence'] == 2
+    state = State.model_validate(read_json(directory / '_meta/state.json')).tasks[0]
+    assert state.scoring is not None and state.next_sequence == 2
     assert len(list((directory / 'tasks').glob('*/attempts/*/start.json'))) == 1
 
 
@@ -906,7 +1047,7 @@ def test_relocated_completed_run_rebuilds_missing_report_without_native_replay(
     provision_fixture(monkeypatch)
     config, basket = config_and_basket(tmp_path)
     _, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['success']))
-    before = read_json(directory / 'report.json')
+    before = Report.model_validate(read_json(directory / 'report.json'))
     moved = directory.with_name('relocated-run')
     directory.rename(moved)
     (moved / 'report.json').unlink()
@@ -917,9 +1058,9 @@ def test_relocated_completed_run_rebuilds_missing_report_without_native_replay(
 
     monkeypatch.setattr(coordinator, 'provision_opencode', forbidden)
     assert run(config, basket, resume=moved, attempt_function=forbidden)[0] == 0
-    after = read_json(moved / 'report.json')
-    assert after['run']['id'] == before['run']['id']
-    assert after['tasks'] == before['tasks']
+    after = Report.model_validate(read_json(moved / 'report.json'))
+    assert after.run.id == before.run.id
+    assert after.tasks == before.tasks
     assert (moved / 'run.json').exists() and not (moved / 'checkpoint.json').exists()
     assert not (moved / 'report.html').exists() and not list(moved.glob('*.md'))
 
@@ -931,11 +1072,11 @@ def test_terminal_native_error_is_saved_without_unconfigured_replay(
     provision_fixture(monkeypatch)
     config, basket = config_and_basket(tmp_path, retries=2)
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['agent_error']))
-    report = read_json(directory / 'report.json')
-    assert code == 1 and report['run']['status'] == 'completed_with_errors'
-    assert report['tasks'][0]['execution']['status'] == 'error'
-    assert report['tasks'][0]['scoring']['status'] == 'available'
-    assert report['tasks'][0]['infrastructure_error'] is None
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    assert code == 1 and report.run.status == 'completed_with_errors'
+    assert report.tasks[0].execution.status == 'error'
+    assert report.tasks[0].scoring.status == 'available'
+    assert report.tasks[0].infrastructure_error is None
     assert len(list((directory / 'tasks').glob('*/attempts/*/start.json'))) == 1
 
 
@@ -969,7 +1110,7 @@ def test_worker_phase_updates_are_coalesced_and_committed_by_coordinator(
     original = RunStore.observe
     complete = fake_attempt(['success'])
 
-    def observe(store: RunStore, task_id: str, phase: str, stamp: str) -> dict:
+    def observe(store: RunStore, task_id: str, phase: str, stamp: str) -> Report:
         """Accept the coarse phase only on the coordinator's writer thread."""
         assert threading.current_thread() is threading.main_thread()
         observed.append(phase)
@@ -977,20 +1118,33 @@ def test_worker_phase_updates_are_coalesced_and_committed_by_coordinator(
         release.set()
         return result
 
-    def attempt(*args: object, **kwargs: object) -> dict:
+    def attempt(
+        config: RunConfig,
+        row: BasketRecord,
+        run_dir: Path,
+        identity: NativeIdentity,
+        runtime: Runtime,
+        bwrap: Path,
+        command: Command,
+        metadata: ReportAttempt,
+        stop: Stop,
+        *,
+        registration: TaskRegistration,
+    ) -> Outcome | None:
         """Emit repeated presentation phases while waiting for a durable observation."""
-        command = cast(Command, args[6])
-        task_id = cast(dict, args[1])['id']
+        task_id = row.id
         for _ in range(100):
             command.task_phase(task_id, 'running')
         assert release.wait(2), 'coordinator must flush coarse observations while the worker runs'
-        return complete(*args, **kwargs)
+        return complete(
+            config, row, run_dir, identity, runtime, bwrap, command, metadata, stop, registration=registration
+        )
 
     monkeypatch.setattr(RunStore, 'observe', observe)
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=attempt)
     assert code == 0 and observed == ['running']
-    selected = read_json(directory / '_meta/state.json')['tasks'][0]
-    assert selected['processing_status'] == 'completed' and selected['outcome'] is not None
+    selected = State.model_validate(read_json(directory / '_meta/state.json')).tasks[0]
+    assert selected.processing_status == 'completed' and selected.outcome is not None
 
 
 @pytest.mark.parametrize('partial_evidence', [False, True])

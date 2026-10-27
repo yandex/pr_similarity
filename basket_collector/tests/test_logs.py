@@ -4,11 +4,12 @@ import logging
 from pathlib import Path
 
 import pytest
-from basket_collector.logs import InvocationLogs
-from basket_collector.pipeline import Pipeline, main
 from test_filter import collected
 from test_history_rejections import history_rejection
 from test_pipeline import BASE, _config, _producer
+
+from basket_collector.pipeline import Pipeline, main
+from basket_collector.runtime.logs import InvocationLogs
 
 
 def test_error_level_keeps_debug_storage_and_mandatory_warnings(

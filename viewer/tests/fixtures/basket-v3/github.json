@@ -1,0 +1,211 @@
+{
+  "meta": {
+    "schema_family": "pr_similarity_os.basket",
+    "schema_version": 3,
+    "stage": "export",
+    "status": "completed",
+    "input": {
+      "stage": "generate",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "settings": {
+      "include_golden_diff": false
+    },
+    "settings_hash": "477e6c50acbcb430e98ba69bb9aba7481a9a4657334309f1e8fd64e085f02d3e",
+    "producer": {
+      "version": "0.1.0",
+      "python_version": "3.12.3",
+      "git_version": "git version 2.43.0"
+    },
+    "lineage": [
+      {
+        "stage": "collect",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "settings": {},
+        "settings_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "producer": {
+          "version": "0.1.0",
+          "python_version": "3.12.3",
+          "git_version": "git version 2.43.0"
+        }
+      },
+      {
+        "stage": "filter",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "settings": {},
+        "settings_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "producer": {
+          "version": "0.1.0",
+          "python_version": "3.12.3",
+          "git_version": "git version 2.43.0"
+        }
+      },
+      {
+        "stage": "generate",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "settings": {},
+        "settings_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "producer": {
+          "version": "0.1.0",
+          "python_version": "3.12.3",
+          "git_version": "git version 2.43.0"
+        }
+      }
+    ],
+    "repository": {
+      "provider": "github",
+      "server_url": "https://github.com",
+      "project_id": "123",
+      "path": "owner/repo",
+      "web_url": "https://github.com/owner/repo",
+      "default_branch": "main"
+    },
+    "started_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-01T00:00:00Z",
+    "completed_at": "2026-01-01T00:00:00Z",
+    "counts": {
+      "input": 1,
+      "succeeded": 1,
+      "rejected": 0,
+      "failed": 0,
+      "pending": 0
+    },
+    "error": null,
+    "name": "fixture",
+    "description": "Synthetic consumer fixture",
+    "maintainers": [
+      "test"
+    ],
+    "partial": false,
+    "omissions": [],
+    "selection": {
+      "schema_version": 3,
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "selected_ids": [
+        "change:3130fa6dacfd279c7741cf27960c8e69b406d699499bdafcb4b96588664b07ea"
+      ],
+      "generation_keys": {
+        "change:3130fa6dacfd279c7741cf27960c8e69b406d699499bdafcb4b96588664b07ea": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "fingerprint": "5a417f42518b7cee6139602a2001aaa7d08561851bcd17d61e0580843e11a3eb"
+    },
+    "coverage": {
+      "discovery": {
+        "matched": 1,
+        "selected": 1,
+        "capped": false
+      },
+      "collect": {
+        "input": 1,
+        "succeeded": 1,
+        "rejected": 0,
+        "failed": 0,
+        "pending": 0
+      },
+      "filter": {
+        "input": 1,
+        "succeeded": 1,
+        "rejected": 0,
+        "failed": 0,
+        "pending": 0
+      },
+      "selected": 1,
+      "generate": {
+        "input": 1,
+        "succeeded": 1,
+        "rejected": 0,
+        "failed": 0,
+        "pending": 0
+      }
+    }
+  },
+  "tasks": [
+    {
+      "id": "change:3130fa6dacfd279c7741cf27960c8e69b406d699499bdafcb4b96588664b07ea",
+      "revisions": {
+        "policy": "change_merge_base_v1",
+        "before": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "before_tree": "dddddddddddddddddddddddddddddddddddddddd",
+        "after_tree": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "changes": {
+        "files": [
+          {
+            "path": "new/empty.py",
+            "status": "added",
+            "additions": 0,
+            "deletions": 0,
+            "before_blob": null,
+            "after_blob": "cccccccccccccccccccccccccccccccccccccccc",
+            "before_mode": null,
+            "after_mode": "100644"
+          }
+        ],
+        "stats": {
+          "files_count": 1,
+          "additions": 0,
+          "deletions": 0,
+          "changed_lines": 0,
+          "patch_chars": 0
+        }
+      },
+      "task": {
+        "task": "Create marker",
+        "subtasks": []
+      },
+      "agent_task": "Task: Create marker",
+      "workspace": "new",
+      "provenance": {
+        "issue_refs": [],
+        "generation": {
+          "issue_ids": [],
+          "attempts": 0,
+          "response_id": null,
+          "response_model": null,
+          "usage": null,
+          "request_sha256": null,
+          "input_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "retrieval": {
+          "checked_at": "2026-10-02T00:00:00Z",
+          "source_sha256": "7db459c22260f95d5e0ae7a2cb60a0f6027bf372bf343dae5795a85ef349dc0c",
+          "before": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "before_tree": "dddddddddddddddddddddddddddddddddddddddd",
+          "after_tree": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "source_revisions": {
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expected_base_sha": null,
+          "merge_commit_sha": null,
+          "squash_commit_sha": null,
+          "head_repository": null,
+          "commits_count": 1,
+          "target_branch": "main",
+          "diff_version_id": null
+        }
+      },
+      "change_request": {
+        "repository": "owner/repo",
+        "number": 1,
+        "url": "https://github.com/owner/repo/pull/1",
+        "title": "Create marker",
+        "author": "test",
+        "merged_at": "2026-01-01T00:00:00Z",
+        "kind": "pull_request"
+      },
+      "source": {
+        "vcs": "git",
+        "fetch_url": "https://github.com/owner/repo.git",
+        "fetch_refs": [
+          "refs/pull/1/head",
+          "refs/heads/main"
+        ]
+      },
+      "diff_policy": "git_source_changes_v1"
+    }
+  ]
+}

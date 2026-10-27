@@ -3,7 +3,10 @@
 from typing import cast
 
 import pytest
-from basket_collector.contracts import (
+from fixture_helpers import descriptor, retrieval
+from test_contracts import _selection_receipt
+
+from basket_collector.models.artifacts import (
     BasketMeta,
     Counts,
     Coverage,
@@ -17,10 +20,8 @@ from basket_collector.contracts import (
     TaskRecord,
     TasksDocument,
 )
+from basket_collector.persistence.storage import sha256, stage_sha256
 from basket_collector.stages.export import export_tasks, project_record
-from basket_collector.storage import sha256, stage_sha256
-from fixture_helpers import descriptor, retrieval
-from test_contracts import _selection_receipt
 
 
 def _task_record() -> TaskRecord:
@@ -122,8 +123,6 @@ def test_export_rejects_metadata_pointing_to_another_tasks_document() -> None:
     """Reject export metadata referring to another tasks document."""
     producer = Producer(
         version='0.1.0',
-        implementation_sha256='a' * 64,
-        dependencies_sha256='b' * 64,
         python_version='3.12.3',
         git_version='git 2',
     )
@@ -143,7 +142,7 @@ def test_export_rejects_metadata_pointing_to_another_tasks_document() -> None:
         for stage, digest in (('collect', 'c' * 64), ('filter', 'd' * 64))
     ]
     common = {
-        'schema_version': 2,
+        'schema_version': 3,
         'status': 'completed',
         'settings': {},
         'settings_hash': empty_hash,

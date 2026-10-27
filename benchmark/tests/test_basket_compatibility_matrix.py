@@ -1,19 +1,18 @@
-"""Cross-version conformance combinations preserve frozen tasks and optional evidence."""
+"""Published basket variants preserve exact frozen evidence across population combinations."""
 
 import json
 from pathlib import Path
 
 import pytest
-from benchmark.basket import load_basket
-from benchmark.storage import canonical_bytes as encode
-from benchmark.storage import sha256 as hash_json
+
+from benchmark.persistence.storage import canonical_bytes as encode
+from benchmark.persistence.storage import sha256 as hash_json
+from benchmark.validation.basket import load_basket
 
 
 def document(provider: str, version: int, partial: bool, golden: bool, reused: bool) -> dict:
-    """Build explicit populations with three failures and one selected rejection in v2."""
-    path = (
-        Path(__file__).parent / 'fixtures' / ('basket-contract' if version == 1 else 'basket-v2') / f'{provider}.json'
-    )
+    """Build current populations with three failures and one selected rejection."""
+    path = Path(__file__).parent / f'fixtures/basket-v{version}' / f'{provider}.json'
     data = json.loads(path.read_text())
     meta = data['meta']
     if partial:
@@ -62,7 +61,7 @@ def document(provider: str, version: int, partial: bool, golden: bool, reused: b
 
 
 @pytest.mark.parametrize('provider', ['github', 'gitlab'])
-@pytest.mark.parametrize(('version', 'reused'), [(1, False), (2, False), (2, True)])
+@pytest.mark.parametrize(('version', 'reused'), [(1, False), (2, False), (2, True), (3, False), (3, True)])
 @pytest.mark.parametrize('partial', [False, True])
 @pytest.mark.parametrize('golden', [False, True])
 def test_complete_compatibility_matrix(
@@ -75,7 +74,7 @@ def test_complete_compatibility_matrix(
     path.write_bytes(content)
     basket = load_basket(path)
     assert basket.content == content
-    assert basket.rows == data['tasks']
+    assert [row.to_wire() for row in basket.rows] == data['tasks']
     assert basket.failed_count == ((1 if version == 1 else 3) if partial else 0)
-    assert basket.rejected_count == (1 if partial and version == 2 else 0)
+    assert basket.rejected_count == (1 if partial and version in (2, 3) else 0)
     assert encode(data) == content

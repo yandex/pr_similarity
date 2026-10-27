@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-similarity-os-basket-collector"
-version = "0.2.0"
+version = "0.3.0"
 description = "Collect frozen benchmark baskets from GitHub and GitLab changes."
 readme = "README.md"
 license = "Apache-2.0"
@@ -23,7 +23,7 @@ dependencies = [
 dev = ["jsonschema>=4.25,<5", "pytest>=8,<9", "setuptools>=75,<100", "wheel>=0.44,<1"]
 
 [tool.setuptools]
-packages = ["basket_collector","basket_collector.stages"]
+packages = ["basket_collector", "basket_collector.models", "basket_collector.providers", "basket_collector.vcs", "basket_collector.persistence", "basket_collector.runtime", "basket_collector.stages"]
 package-dir = {"basket_collector" = "src"}
 
 [tool.setuptools.package-data]

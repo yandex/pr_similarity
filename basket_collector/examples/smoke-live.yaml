@@ -1,0 +1,33 @@
+schema_version: 2
+# Select a source project; credentials stay in the operator environment.
+env_file: ../.env
+dataset:
+  name: public-smoke
+  description: Bounded live collection check
+  maintainers:
+  - your-github-login
+output_dir: ../output/smoke-live
+cache_dir: ../cache/smoke-live
+collect:
+  default_branch_only: true
+  selection: change_ids
+  change_ids:
+  - 3147
+  max_changes: 3
+filter:
+  workers: 1
+  selection:
+    shuffle: false
+    limit: 3
+generation:
+  source: issue
+  workers: 1
+export:
+  include_golden_diff: false
+source:
+  provider: github
+  project: pallets/werkzeug
+  token_env: GITHUB_TOKEN
+  request_timeout_seconds: 30
+  max_retries: 1
+  requests_per_second: 1

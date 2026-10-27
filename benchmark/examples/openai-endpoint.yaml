@@ -1,7 +1,7 @@
+schema_version: 1
 # Replace baseURL with your OpenAI Responses-compatible endpoint.
 # This native SDK avoids legacy max_tokens requests for reasoning models.
 # Set OPENAI_API_KEY in benchmark/.env or your environment; select the model.
-schema_version: 1
 workers: 1
 agent:
   name: openai-endpoint

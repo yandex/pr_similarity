@@ -4,8 +4,9 @@ from collections.abc import Callable
 
 import pytest
 from helpers import inference
+
 from viewer.errors import ViewerError
-from viewer.inference import public_inference
+from viewer.presentation.inference import public_inference
 
 
 def test_projection_keeps_facts_sources_and_drops_arbitrary_private_fields() -> None:

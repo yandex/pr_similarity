@@ -23,12 +23,25 @@ unexport $(_COMMAND_LINE_VARIABLES) PYTHON VENV_PYTHON CONFIG PACKAGE_INDEX_URL 
 .PHONY: help setup browser-setup test serve start stop status logs admin-profile-create admin-role-set admin-profile-password-set admin-user-create admin-user-enable admin-user-disable admin-password-set admin-basket-order admin-run-delete admin-refresh
 
 setup:
-	@if [ ! -x "$${PRSIM_VIEWER_PYTHON}" ]; then "$${PRSIM_VIEWER_SETUP_PYTHON}" -m venv .venv || "$${PRSIM_VIEWER_SETUP_PYTHON}" -m venv --without-pip .venv; fi
-	@"$${PRSIM_VIEWER_PYTHON}" -c 'import sys; assert sys.version_info >= (3, 12), "Python >=3.12 required"'
-	@if ! "$${PRSIM_VIEWER_PYTHON}" -m pip --version >/dev/null 2>&1; then PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_SETUP_PYTHON}" -m pip --python .venv install pip; fi
-	@PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install --require-hashes -r requirements-build.lock
-	@PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install -r requirements.lock
-	@"$${PRSIM_VIEWER_PYTHON}" -m pip install --no-build-isolation --no-deps -e .
+	@set -e; \
+	if [ -e .venv ] || [ -L .venv ] || [ -x "$${PRSIM_VIEWER_PYTHON}" ]; then \
+	  while :; do \
+	    printf '%s' 'Virtual environment already exists. Reinstall dependencies? [Y/n] '; \
+	    if ! IFS= read -r setup_answer; then printf '\n%s\n' 'Setup cancelled: no answer received.' >&2; exit 1; fi; \
+	    case "$${setup_answer}" in \
+	      ''|[Yy]|[Yy][Ee][Ss]) break ;; \
+	      [Nn]|[Nn][Oo]) printf '%s\n' 'Setup skipped.'; exit 0 ;; \
+	      *) printf '%s\n' 'Please answer yes or no.' ;; \
+	    esac; \
+	  done; \
+	fi; \
+	if [ ! -x "$${PRSIM_VIEWER_PYTHON}" ]; then "$${PRSIM_VIEWER_SETUP_PYTHON}" -m venv .venv || "$${PRSIM_VIEWER_SETUP_PYTHON}" -m venv --without-pip .venv; fi; \
+	"$${PRSIM_VIEWER_PYTHON}" -c 'import sys; assert sys.version_info >= (3, 12), "Python >=3.12 required"'; \
+	if ! "$${PRSIM_VIEWER_PYTHON}" -m pip --version >/dev/null 2>&1; then PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_SETUP_PYTHON}" -m pip --python .venv install pip; fi; \
+	PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install --upgrade pip; \
+	PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install --require-hashes -r requirements-build.lock; \
+	PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install -r requirements.lock; \
+	"$${PRSIM_VIEWER_PYTHON}" -m pip install --no-build-isolation --no-deps -e .
 
 browser-setup:
 	@"$${PRSIM_VIEWER_PYTHON}" -m playwright install chromium
@@ -79,9 +92,9 @@ help:
 	  '' \
 	  'Quick local start:' \
 	  '  make setup PYTHON=python3.12' \
-	  '  cp config.mock.example.json config.local.json' \
+	  '  cp examples/mock.json config.local.json' \
 	  '  make start' \
 	  '  make admin-profile-create LOGIN=admin' \
 	  '' \
-	  'For a new deployment use config.example.json, private S3 storage and HTTPS.' \
+	  'For a new deployment use examples/s3.json, private S3 storage and HTTPS.' \
 	  'Passwords use hidden prompts. See README.md for setup and advanced settings.'

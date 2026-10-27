@@ -1,18 +1,47 @@
-"""Consumer validation of frozen v1 basket bytes, without importing the collector."""
+"""Consumer validation of frozen v3 basket bytes, without importing the collector."""
 
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
-from benchmark.basket import load_basket
+
 from benchmark.errors import BenchmarkError
-from benchmark.storage import canonical_bytes
+from benchmark.persistence.storage import canonical_bytes
+from benchmark.validation.basket import load_basket
 
 
-def payload(provider: str = 'github') -> dict:
+class FixtureChanges(TypedDict):
+    """Mutable file and counter sections in a synthetic basket."""
+
+    files: list[dict[str, object]]
+    stats: dict[str, int]
+
+
+class FixtureTask(TypedDict):
+    """Known object sections while tests mutate wire values before validation."""
+
+    id: str
+    workspace: str
+    agent_task: str
+    change_request: dict[str, object]
+    source: dict[str, object]
+    revisions: dict[str, str]
+    provenance: dict[str, dict[str, object]]
+    changes: FixtureChanges
+
+
+class FixtureBasket(TypedDict):
+    """Stable outer shape shared by valid and deliberately damaged fixtures."""
+
+    meta: dict[str, object]
+    tasks: list[FixtureTask]
+
+
+def payload(provider: str = 'github', *, version: int = 3) -> FixtureBasket:
     """Read an explicit independently owned frozen basket conformance fixture."""
-    path = Path(__file__).resolve().parent / 'fixtures/basket-contract' / (provider + '.json')
+    path = Path(__file__).resolve().parent / f'fixtures/basket-v{version}' / (provider + '.json')
     return json.loads(path.read_text(encoding='utf-8'))
 
 
@@ -24,8 +53,8 @@ def test_frozen_basket_without_golden_diff(tmp_path: Path) -> None:
     basket = load_basket(path)
     assert basket.content == content
     assert len(basket.rows) == 1
-    assert basket.rows[0]['workspace'] == 'new'
-    assert 'golden_diff' not in basket.rows[0]
+    assert basket.rows[0].workspace == 'new'
+    assert 'golden_diff' not in basket.rows[0].model_fields_set
 
 
 @pytest.mark.parametrize(
@@ -48,7 +77,7 @@ def test_frozen_basket_without_golden_diff(tmp_path: Path) -> None:
         lambda d: d['meta']['lineage'].reverse(),
     ],
 )
-def test_inconsistent_basket_rejected_before_agent(tmp_path: Path, mutate: Callable[[dict], object]) -> None:
+def test_inconsistent_basket_rejected_before_agent(tmp_path: Path, mutate: Callable[[FixtureBasket], object]) -> None:
     """Verify inconsistent basket rejected before agent."""
     data = payload()
     mutate(data)

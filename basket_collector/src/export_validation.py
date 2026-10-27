@@ -1,7 +1,7 @@
 """Validate exported accounting against the exact immutable predecessor chain."""
 
-from basket_collector.artifact_io import StorageError, stage_sha256
-from basket_collector.contracts import BasketDocument, CollectDocument, Coverage, FilterDocument, TasksDocument
+from basket_collector.models.artifacts import BasketDocument, CollectDocument, Coverage, FilterDocument, TasksDocument
+from basket_collector.persistence.artifact_io import StorageError, stage_sha256
 from basket_collector.selection import omissions
 
 

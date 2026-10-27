@@ -1,6 +1,6 @@
+schema_version: 2
 # No LLM calls: copy the issue linked by a real merged fix.
 # https://github.com/pallets/werkzeug/pull/3147 closes issue #3146.
-schema_version: 2
 env_file: ../.env
 dataset:
   name: werkzeug-issue

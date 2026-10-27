@@ -57,7 +57,6 @@ def test_help_works_before_setup_without_expanding_user_values(tmp_path: Path) -
             'rescore',
             'reprice',
             'visualize',
-            'compare',
             'publish',
             'test',
             'smoke',
@@ -87,6 +86,10 @@ def test_make_required_arguments_and_boolean_validation() -> None:
     assert 'REPRICE accepts only 0 or 1' in result.stderr
     result = invoke('run', 'RESUME=a', 'OUTPUT=b')
     assert 'RESUME and explicit OUTPUT cannot be combined' in result.stderr
+    result = invoke('visualize', 'OPEN_BROWSER=yes')
+    assert 'OPEN_BROWSER accepts only 0 or 1' in result.stderr
+    result = invoke('visualize', 'NO_BROWSER=1')
+    assert 'Unsupported Make parameter' in result.stderr
     result = invoke('run', 'PROGRESS=invalid')
     assert 'PROGRESS must be auto, plain or off' in result.stderr
 
@@ -99,16 +102,15 @@ def test_literal_credentials_are_rejected_without_printing_values() -> None:
     assert 'Unsupported Make parameter' in result.stderr
     result = invoke('publish', 'DRY_RUN=yes', 'RUN=missing', 'URL=https://viewer.example')
     assert 'accept only 0 or 1' in result.stderr
-    result = invoke('compare', 'RUNS_JSON=[1,2]', 'NO_BROWSER=1')
-    assert 'nonempty path strings' in result.stderr
 
 
-def test_unknown_selectors_and_malformed_json_are_not_silently_ignored() -> None:
-    """Verify unknown selectors and malformed json are not silently ignored."""
+def test_unknown_selectors_are_not_silently_ignored() -> None:
+    """Reject unsupported selectors and the removed comparison command."""
     result = invoke('run', 'sampling=1')
     assert 'Unsupported Make parameter' in result.stderr
-    result = invoke('compare', 'RUNS_JSON=bad-json', 'NO_BROWSER=1')
-    assert 'RUNS_JSON must be a valid JSON array' in result.stderr
+    result = invoke('compare')
+    assert result.returncode != 0
+    assert 'No rule to make target' in result.stderr
 
 
 def test_make_preserves_dollars_and_does_not_expand_make_functions(tmp_path: Path) -> None:
@@ -120,12 +122,12 @@ def test_make_preserves_dollars_and_does_not_expand_make_functions(tmp_path: Pat
         '.PHONY: inspect-values\ninspect-values:\n'
         '\t@.venv/bin/python -c \'import json,os; '
         'open(os.environ["PRSIM_BM_RUN"],"w").write(json.dumps({k:os.environ[k] for k in '
-        '["PRSIM_BM_CONFIG","PRSIM_BM_DATASET","PRSIM_BM_RUNS_JSON"]}))\'\n'
+        '["PRSIM_BM_CONFIG","PRSIM_BM_DATASET","PRSIM_BM_PRICING"]}))\'\n'
     )
     values = {
         'CONFIG': str(tmp_path / 'config$NAME.yaml'),
         'DATASET': str(tmp_path / 'basket$ID.json'),
-        'RUNS_JSON': '["a$PATH","b$(shell touch ' + str(marker) + ')"]',
+        'PRICING': '["a$PATH","b$(shell touch ' + str(marker) + ')"]',
     }
     result = invoke(
         '-f',

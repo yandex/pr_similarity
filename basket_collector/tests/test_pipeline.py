@@ -11,6 +11,8 @@ from typing import Any
 
 import httpx
 import pytest
+from fixture_helpers import issue_identity, retrieval
+
 from basket_collector.config import (
     CollectorConfig,
     FilterConfig,
@@ -18,7 +20,7 @@ from basket_collector.config import (
     GitHubConfig,
     TemplateSnapshot,
 )
-from basket_collector.contracts import (
+from basket_collector.models.artifacts import (
     BasketDocument,
     ChangedFile,
     Changes,
@@ -38,21 +40,20 @@ from basket_collector.contracts import (
     TaskRecord,
     TasksDocument,
 )
-from basket_collector.git import GitRepository
-from basket_collector.github import GitHubClient, GitHubError
-from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.llm import LLMAuthenticationError, LLMCallError, LLMClient
-from basket_collector.pipeline import Pipeline, PipelineInterrupted, Shutdown, main
-from basket_collector.progress import Progress
-from basket_collector.stages.filter import RemoteVCS, SourceChangedError
-from basket_collector.stages.generate import generate_record as real_generate_record
-from basket_collector.storage import (
+from basket_collector.persistence.storage import (
     StorageError,
     read_checkpoint,
     read_document,
     stage_sha256,
 )
-from fixture_helpers import issue_identity, retrieval
+from basket_collector.pipeline import Pipeline, PipelineInterrupted, Shutdown, main
+from basket_collector.providers.github import GitHubClient, GitHubError
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.providers.llm import LLMAuthenticationError, LLMCallError, LLMClient
+from basket_collector.runtime.progress import Progress
+from basket_collector.stages.filter import RemoteVCS, SourceChangedError
+from basket_collector.stages.generate import generate_record as real_generate_record
+from basket_collector.vcs.git import GitRepository
 
 SHA = 'a' * 40
 BASE = 'b' * 40
@@ -65,8 +66,6 @@ def _producer() -> Producer:
     """Build a stable producer identity for offline pipeline tests."""
     return Producer(
         version='test',
-        implementation_sha256=HASH,
-        dependencies_sha256=HASH,
         python_version='3.12.3',
         git_version='git test',
     )
@@ -599,7 +598,7 @@ def test_filter_initializes_shared_github_client_on_coordinator_thread(
         creations.append(1)
         return TrackingGitHub()
 
-    monkeypatch.setattr('basket_collector.github_source.GitHubClient', make_github)
+    monkeypatch.setattr('basket_collector.providers.github_source.GitHubClient', make_github)
     assert Pipeline(config, producer=_producer(), git_repository=FakeGitRepository()).run('filter') == 0
     assert len(creations) == 1
 

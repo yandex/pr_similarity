@@ -1,7 +1,7 @@
 {
   "meta": {
     "schema_family": "pr_similarity_os.basket",
-    "schema_version": 1,
+    "schema_version": 3,
     "stage": "export",
     "status": "completed",
     "input": {
@@ -14,8 +14,6 @@
     "settings_hash": "477e6c50acbcb430e98ba69bb9aba7481a9a4657334309f1e8fd64e085f02d3e",
     "producer": {
       "version": "0.1.0",
-      "implementation_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "dependencies_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "python_version": "3.12.3",
       "git_version": "git version 2.43.0"
     },
@@ -27,8 +25,6 @@
         "settings_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "producer": {
           "version": "0.1.0",
-          "implementation_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "dependencies_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "python_version": "3.12.3",
           "git_version": "git version 2.43.0"
         }
@@ -40,8 +36,6 @@
         "settings_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "producer": {
           "version": "0.1.0",
-          "implementation_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "dependencies_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "python_version": "3.12.3",
           "git_version": "git version 2.43.0"
         }
@@ -53,8 +47,6 @@
         "settings_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "producer": {
           "version": "0.1.0",
-          "implementation_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "dependencies_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "python_version": "3.12.3",
           "git_version": "git version 2.43.0"
         }
@@ -85,7 +77,48 @@
       "test"
     ],
     "partial": false,
-    "omitted_failed_ids": []
+    "coverage": {
+      "discovery": {
+        "matched": 1,
+        "selected": 1,
+        "capped": false
+      },
+      "collect": {
+        "input": 1,
+        "succeeded": 1,
+        "rejected": 0,
+        "failed": 0,
+        "pending": 0
+      },
+      "filter": {
+        "input": 1,
+        "succeeded": 1,
+        "rejected": 0,
+        "failed": 0,
+        "pending": 0
+      },
+      "selected": 1,
+      "generate": {
+        "input": 1,
+        "succeeded": 1,
+        "rejected": 0,
+        "failed": 0,
+        "pending": 0
+      }
+    },
+    "selection": {
+      "schema_version": 3,
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "selected_ids": [
+        "change:3130fa6dacfd279c7741cf27960c8e69b406d699499bdafcb4b96588664b07ea"
+      ],
+      "generation_keys": {
+        "change:3130fa6dacfd279c7741cf27960c8e69b406d699499bdafcb4b96588664b07ea": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "fingerprint": "dcf574fbde5480902132389fd381b1f1d33ab6ddf071347a8e2362033c34c5ad"
+    },
+    "omissions": []
   },
   "tasks": [
     {
@@ -132,7 +165,9 @@
           "response_id": null,
           "response_model": null,
           "usage": null,
-          "request_sha256": null
+          "request_sha256": null,
+          "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "reused_from": null
         },
         "retrieval": {
           "checked_at": "2026-10-02T00:00:00Z",

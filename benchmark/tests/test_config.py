@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+
 from benchmark.config import load_config
 from benchmark.errors import BenchmarkError
 
@@ -14,10 +15,10 @@ def test_quickstart_examples_are_valid_without_credentials(name: str) -> None:
     """Ship configs accepted by the owning parser without login, network or embedded secrets."""
     path = Path(__file__).resolve().parents[1] / 'examples' / (name + '.yaml')
     config = load_config(path)
-    assert config.data['workers'] == 1
-    assert config.data['agent']['runtime'] == 'opencode:v1.18.33'
+    assert config.data.workers == 1
+    assert config.data.agent.runtime == 'opencode:v1.18.33'
     expected = 'chatgpt_oauth' if name == 'chatgpt-oauth' else 'api_key'
-    assert config.data['agent']['auth']['mode'] == expected
+    assert config.data.agent.auth.mode == expected
 
 
 def test_tdd_skill_contents_participate_in_resume_identity(tmp_path: Path) -> None:
@@ -53,12 +54,12 @@ def test_defaults_and_technical_overrides(tmp_path: Path) -> None:
     path = write_config(tmp_path)
     one = load_config(path)
     two = load_config(path, workers=3)
-    assert one.data['workers'] == 1
-    assert two.data['workers'] == 3
-    assert one.data['agent']['auth']['mode'] == 'api_key'
+    assert one.data.workers == 1
+    assert two.data.workers == 3
+    assert one.data.agent.auth.mode == 'api_key'
     assert one.identity() == two.identity()
-    assert one.data['provisioning']['cache_dir'].startswith('/')
-    assert one.identity()['instructions']['protocol'] == 'benchmark_task_v1'
+    assert one.data.provisioning.cache_dir.startswith('/')
+    assert one.identity().instructions.protocol == 'benchmark_task_v1'
 
 
 @pytest.mark.parametrize(
@@ -259,8 +260,8 @@ def test_setup_tags_preserve_order_case_duplicates_and_exclude_identity(tmp_path
     plain = load_config(write_config(tmp_path))
     tags = ['model:custom', 'Baseline', 'Baseline', ' effort:high ']
     labelled = load_config(write_config(tmp_path, tags=tags))
-    assert labelled.data['tags'] == tags
-    assert plain.data['tags'] == []
+    assert labelled.data.tags == tags
+    assert plain.data.tags == []
     assert plain.identity() == labelled.identity()
 
 

@@ -6,8 +6,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from test_pipeline import BASE, FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
+
 from basket_collector.config import FilterConfig
-from basket_collector.contracts import (
+from basket_collector.filters import compact_rejection
+from basket_collector.models.artifacts import (
     BasketDocument,
     CollectRecord,
     FilterDocument,
@@ -16,15 +19,13 @@ from basket_collector.contracts import (
     RejectionReason,
     Repository,
 )
-from basket_collector.filters import compact_rejection
-from basket_collector.git import GitFatalError, GitInfrastructureError, GitRepository
-from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.logs import InvocationLogs
+from basket_collector.persistence.storage import StageDocument, StageStore, StorageError, read_checkpoint, read_document
 from basket_collector.pipeline import Pipeline, PipelineInterrupted
-from basket_collector.remote import RemoteVCS
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.providers.remote import RemoteVCS
+from basket_collector.runtime.logs import InvocationLogs
 from basket_collector.stages.filter import FilterInterrupted
-from basket_collector.storage import StageDocument, StageStore, StorageError, read_checkpoint, read_document
-from test_pipeline import BASE, FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
+from basket_collector.vcs.git import GitFatalError, GitInfrastructureError, GitRepository
 
 
 def history_rejection(record: CollectRecord) -> RejectedRecord:
@@ -160,7 +161,7 @@ def test_saved_history_rejection_survives_interrupt_and_producer_guard(
     assert saved.meta.status == 'interrupted' and state['phase'] == 'local'
     assert saved.meta.counts.rejected == 1 and saved.meta.counts.pending == 2
     assert calls == [1]
-    changed = _producer().model_copy(update={'implementation_sha256': 'e' * 64})
+    changed = _producer().model_copy(update={'version': 'different-product-version'})
     with pytest.raises(StorageError, match='producer changed'):
         Pipeline(config, producer=changed, remote=remote, git_repository=FakeGitRepository()).run('filter')
     capsys.readouterr()

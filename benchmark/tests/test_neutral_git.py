@@ -4,18 +4,20 @@ import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from threading import Event
 
 import pytest
-from benchmark import git as module
-from benchmark.basket import load_basket
-from benchmark.errors import BenchmarkError
-from benchmark.git import GitCache, git_environment
-from benchmark.scoring import score_pr
-from benchmark.storage import sha256, write_json
-from benchmark.triplets import load_triplets, save_triplets
-from benchmark.workspace import capture_changes, prepare_workspace
 from test_basket import payload
+
+from benchmark.errors import BenchmarkError
+from benchmark.metrics.scoring import score_pr
+from benchmark.models.basket import BasketRecord
+from benchmark.persistence.storage import sha256, write_json
+from benchmark.persistence.triplets import load_triplets, save_triplets
+from benchmark.validation.basket import load_basket
+from benchmark.vcs import git as module
+from benchmark.vcs.git import GitCache, git_environment
+from benchmark.vcs.workspace import capture_changes, prepare_workspace
 
 
 def git(directory: Path, *arguments: str) -> str:
@@ -23,7 +25,7 @@ def git(directory: Path, *arguments: str) -> str:
     return subprocess.check_output(['git', '-C', str(directory), *arguments], env=git_environment()).decode().strip()
 
 
-def frozen_source(tmp_path: Path, provider: str) -> tuple[Path, dict]:
+def frozen_source(tmp_path: Path, provider: str) -> tuple[Path, BasketRecord]:
     """Freeze an actual before/head pair and a newer tip that must never replace it."""
     repository = tmp_path / 'upstream'
     repository.mkdir()
@@ -84,10 +86,20 @@ def route_objects(
     monkeypatch: pytest.MonkeyPatch, source: Path, fetch_url: str, *, require_hints: bool = True
 ) -> list[tuple[str, int]]:
     """Keep the production timeout/budget/credential path while replacing transport only."""
-    native = cast(Callable[..., bytes], module.run_git)
+    native = module.run_git
     calls: list[tuple[str, int]] = []
 
-    def local(arguments: list[str], **kwargs: object) -> bytes:
+    def local(
+        arguments: list[str],
+        *,
+        cwd: Path | None = None,
+        timeout: int = 120,
+        stop: Event | None = None,
+        accepted: tuple[int, ...] = (0,),
+        input_bytes: bytes | None = None,
+        host_fetch: bool = False,
+        monitor: Callable[[], None] | None = None,
+    ) -> bytes:
         """Deliver real packs locally and simulate a server that does not serve raw SHA wants."""
         if 'fetch' in arguments:
             assert fetch_url in arguments
@@ -97,7 +109,16 @@ def route_objects(
             if require_hints and re.fullmatch('[0-9a-f]{40}', reference):
                 raise BenchmarkError('git_reference_unavailable', 'Fixture requires declared ref hints.', exit_code=1)
             arguments = [str(source) if item == fetch_url else item for item in arguments]
-        return native(arguments, **kwargs)
+        return native(
+            arguments,
+            cwd=cwd,
+            timeout=timeout,
+            stop=stop,
+            accepted=accepted,
+            input_bytes=input_bytes,
+            host_fetch=host_fetch,
+            monitor=monitor,
+        )
 
     monkeypatch.setattr(module, 'run_git', local)
     return calls
@@ -109,13 +130,13 @@ def test_exact_historical_source_workspace_diff_and_triplets(
 ) -> None:
     """Deepen declared hints while keeping a newer ref tip outside the agent snapshot."""
     source, row = frozen_source(tmp_path, provider)
-    calls = route_objects(monkeypatch, source, row['source']['fetch_url'])
-    cache = GitCache(tmp_path / 'cache', row['source']['fetch_url'], max_depth=8)
-    cache.ensure([row['revisions']['before'], row['revisions']['after']], fetch_refs=row['source']['fetch_refs'])
+    calls = route_objects(monkeypatch, source, row.source.fetch_url)
+    cache = GitCache(tmp_path / 'cache', row.source.fetch_url, max_depth=8)
+    cache.ensure([row.revisions.before, row.revisions.after], fetch_refs=row.source.fetch_refs)
     cache.verify_reference(row)
     assert any(depth > 1 for _reference, depth in calls)
-    assert calls[0][0] == row['revisions']['before']
-    workspace = prepare_workspace(cache, row['revisions']['before'], tmp_path / 'workspace', row['workspace'])
+    assert calls[0][0] == row.revisions.before
+    workspace = prepare_workspace(cache, row.revisions.before, tmp_path / 'workspace', row.workspace)
     assert (workspace.cwd / 'value.py').read_text() == 'value = 1\n'
     assert not (workspace.cwd / 'empty.py').exists()
     assert git(workspace.root, 'rev-list', '--count', 'HEAD') == '1'
@@ -125,34 +146,33 @@ def test_exact_historical_source_workspace_diff_and_triplets(
     captured = capture_changes(workspace, [])
     assert set(captured.states) == {'src/value.py', 'src/empty.py'}
     directory = tmp_path / 'triplets'
-    save_triplets(
-        directory, cache, row['revisions']['before'], row['revisions']['after'], captured, row['id'], 'fixture-attempt'
-    )
+    save_triplets(directory, cache, row.revisions.before, row.revisions.after, captured, row.id, 'fixture-attempt')
     triplets = load_triplets(directory)
-    assert triplets['src/value.py']['human'].text == 'value = 2\n'
-    assert not triplets['src/empty.py']['base'].exists and triplets['src/empty.py']['human'].exists
+    assert triplets['src/value.py'].human.text == 'value = 2\n'
+    assert not triplets['src/empty.py'].base.exists and triplets['src/empty.py'].human.exists
     scored = score_pr(triplets)
-    assert scored['counts']['matched_files'] == 2
-    assert scored['counts']['missed_files'] == scored['counts']['extra_files'] == 0
+    assert scored.counts is not None
+    assert scored.counts.matched_files == 2
+    assert scored.counts.missed_files == scored.counts.extra_files == 0
 
 
 def test_unavailable_object_never_becomes_current_tip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Ref delivery failure remains infrastructure failure instead of changing the reference."""
     source, row = frozen_source(tmp_path, 'gitlab')
-    route_objects(monkeypatch, source, row['source']['fetch_url'])
-    cache = GitCache(tmp_path / 'cache', row['source']['fetch_url'], max_depth=4)
+    route_objects(monkeypatch, source, row.source.fetch_url)
+    cache = GitCache(tmp_path / 'cache', row.source.fetch_url, max_depth=4)
     with pytest.raises(BenchmarkError) as caught:
-        cache.ensure(['f' * 40], fetch_refs=row['source']['fetch_refs'])
+        cache.ensure(['f' * 40], fetch_refs=row.source.fetch_refs)
     assert caught.value.code == 'source_revision_unavailable'
 
 
 def test_real_object_growth_has_a_finite_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The production monitor rejects an actual pack before workspace preparation."""
     source, row = frozen_source(tmp_path, 'github')
-    route_objects(monkeypatch, source, row['source']['fetch_url'], require_hints=False)
-    cache = GitCache(tmp_path / 'cache', row['source']['fetch_url'], max_transfer_bytes=1)
+    route_objects(monkeypatch, source, row.source.fetch_url, require_hints=False)
+    cache = GitCache(tmp_path / 'cache', row.source.fetch_url, max_transfer_bytes=1)
     with pytest.raises(BenchmarkError) as caught:
-        cache.ensure([row['revisions']['before']], fetch_refs=row['source']['fetch_refs'])
+        cache.ensure([row.revisions.before], fetch_refs=row.source.fetch_refs)
     assert caught.value.code == 'git_fetch_budget_exceeded'
 
 

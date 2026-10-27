@@ -1,6 +1,6 @@
+schema_version: 1
 # Set OPENAI_API_KEY in benchmark/.env or your environment.
 # Select a model available to your API account before running.
-schema_version: 1
 workers: 1
 agent:
   name: openai-api-key

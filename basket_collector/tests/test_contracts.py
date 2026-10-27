@@ -7,7 +7,10 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
-from basket_collector.contracts import (
+from fixture_helpers import descriptor, issue_identity, retrieval
+from pydantic import BaseModel, ValidationError
+
+from basket_collector.models.artifacts import (
     BasketDocument,
     BasketMeta,
     CollectDocument,
@@ -17,8 +20,6 @@ from basket_collector.contracts import (
     TasksDocument,
     format_agent_task,
 )
-from fixture_helpers import descriptor, issue_identity, retrieval
-from pydantic import BaseModel, ValidationError
 
 H40 = 'a' * 40
 H64 = 'b' * 64
@@ -34,7 +35,7 @@ def _settings_hash(settings: Mapping[str, object]) -> str:
 def _selection(identity: str) -> dict[str, Any]:
     """Bind a one-record fixture to an explicit v2 selection snapshot."""
     data = {
-        'schema_version': 2,
+        'schema_version': 3,
         'input_sha256': 'a' * 64,
         'selected_ids': [identity],
         'generation_keys': {identity: 'd' * 64},
@@ -61,7 +62,7 @@ def _collect() -> dict[str, Any]:
     return {
         'meta': {
             'schema_family': 'pr_similarity_os.collector',
-            'schema_version': 2,
+            'schema_version': 3,
             'stage': 'collect',
             'status': 'completed',
             'input': None,
@@ -69,8 +70,6 @@ def _collect() -> dict[str, Any]:
             'settings_hash': _settings_hash({}),
             'producer': {
                 'version': '0.1',
-                'implementation_sha256': H64,
-                'dependencies_sha256': H64,
                 'python_version': '3.12.3',
                 'git_version': '2.0',
             },
@@ -282,7 +281,7 @@ def _basket() -> dict[str, Any]:
 def test_collect_round_trip_and_schema() -> None:
     """Round-trip a collection document and forbid unknown record fields."""
     document = CollectDocument.model_validate(_collect())
-    assert document.meta.schema_version == 2
+    assert document.meta.schema_version == 3
     assert CollectDocument.model_validate(document.model_dump(mode='json')) == document
     schema = CollectDocument.model_json_schema()
     assert schema['$defs']['CollectRecord']['additionalProperties'] is False
@@ -309,13 +308,13 @@ def test_schema_version_rejects_non_integer_one(
 
 
 @pytest.mark.parametrize('fixture, model', [(_collect, CollectMeta), (_basket, BasketMeta)])
-def test_schema_version_exposes_integer_two(fixture: Callable[[], dict[str, Any]], model: type[BaseModel]) -> None:
-    """Require version two as an integer value and JSON Schema constant."""
+def test_schema_version_exposes_integer_three(fixture: Callable[[], dict[str, Any]], model: type[BaseModel]) -> None:
+    """Require version three as an integer value and JSON Schema constant."""
     meta = model.model_validate(fixture()['meta']).model_dump(mode='json')
     assert type(meta['schema_version']) is int
-    assert meta['schema_version'] == 2
+    assert meta['schema_version'] == 3
     schema = model.model_json_schema()['properties']['schema_version']
-    assert schema['const'] == 2
+    assert schema['const'] == 3
     assert schema['type'] == 'integer'
 
 
@@ -566,7 +565,7 @@ def test_basket_workspace_round_trip(workspace: str) -> None:
     payload = _basket()
     payload['tasks'][0]['workspace'] = workspace
     document = BasketDocument.model_validate(payload)
-    assert document.meta.schema_version == 2
+    assert document.meta.schema_version == 3
     assert document.model_dump(mode='json')['tasks'][0]['workspace'] == workspace
     assert BasketDocument.model_validate_json(document.model_dump_json()) == document
     schema = BasketDocument.model_json_schema()

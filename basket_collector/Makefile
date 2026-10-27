@@ -1,5 +1,5 @@
 PYTHON ?= python
-CONFIG ?= config.yaml
+CONFIG ?= examples/full.yaml
 OVERWRITE ?= 0
 RETRY_FAILED ?= 0
 ALLOW_PARTIAL ?= 0
@@ -16,13 +16,26 @@ env:
 	@if [ -e .env ] || [ -L .env ]; then printf '%s\n' '.env already exists'; else install -m 600 .env.example .env; printf '%s\n' 'Created .env; fill in the needed tokens locally'; fi
 
 setup:
-	@if [ ! -x "$(VENV_PYTHON)" ]; then \
+	@set -e; \
+	if [ -e .venv ] || [ -L .venv ] || [ -x "$(VENV_PYTHON)" ]; then \
+		while :; do \
+			printf '%s' 'Virtual environment already exists. Reinstall dependencies? [Y/n] '; \
+			if ! IFS= read -r answer; then printf '\n%s\n' 'Setup confirmation requires input.' >&2; exit 1; fi; \
+			case "$$answer" in \
+				''|y|Y|yes|Yes|YES) break ;; \
+				n|N|no|No|NO) printf '%s\n' 'Setup skipped.'; exit 0 ;; \
+				*) printf '%s\n' 'Please answer Y or n.' ;; \
+			esac; \
+		done; \
+	fi; \
+	if [ ! -x "$(VENV_PYTHON)" ]; then \
 		"$(PYTHON)" -m venv .venv || "$(PYTHON)" -m venv --without-pip .venv; \
-	fi
-	@"$(VENV_PYTHON)" -c 'import sys; assert sys.version_info[:2] == (3, 12), "Python 3.12 required"'
-	@if ! "$(VENV_PYTHON)" -m pip --version >/dev/null 2>&1; then "$(PYTHON)" -m pip --python .venv install --quiet --no-input pip; fi
-	@"$(VENV_PYTHON)" -m pip install --require-hashes -r requirements.lock
-	@"$(VENV_PYTHON)" -m pip install --no-build-isolation --no-deps --config-settings editable_mode=strict -e .
+	fi; \
+	"$(VENV_PYTHON)" -c 'import sys; assert sys.version_info[:2] == (3, 12), "Python 3.12 required"'; \
+	if ! "$(VENV_PYTHON)" -m pip --version >/dev/null 2>&1; then "$(PYTHON)" -m pip --python .venv install --quiet --no-input pip; fi; \
+	"$(VENV_PYTHON)" -m pip install --upgrade pip; \
+	"$(VENV_PYTHON)" -m pip install --require-hashes -r requirements.lock; \
+	"$(VENV_PYTHON)" -m pip install --no-build-isolation --no-deps --config-settings editable_mode=strict -e .
 
 collect filter generate export basket:
 	@test -x "$(VENV_PYTHON)" || { printf '%s\n' 'Run make setup first'; exit 2; }
@@ -36,7 +49,7 @@ smoke:
 	@test -x "$(VENV_PYTHON)" || { printf '%s\n' 'Run make setup first'; exit 2; }
 	@"$(VENV_PYTHON)" -m basket_collector smoke
 
-smoke-live: CONFIG = config.smoke-live.yaml
+smoke-live: CONFIG = examples/smoke-live.yaml
 smoke-live:
 	@test -x "$(VENV_PYTHON)" || { printf '%s\n' 'Run make setup first'; exit 2; }
 	@"$(VENV_PYTHON)" -m basket_collector smoke-live --config "$(CONFIG)" --overwrite "$(OVERWRITE)" --retry-failed "$(RETRY_FAILED)" --allow-partial "$(ALLOW_PARTIAL)" --reselect "$(RESELECT)" --log-level "$${BASKET_CONSOLE_LOG_LEVEL}" --progress "$${BASKET_PROGRESS_MODE}"
@@ -55,12 +68,12 @@ help:
 	  '  make export       Write basket.json from generated tasks' \
 	  '  make test         Run the offline test suite' \
 	  '  make smoke        Run offline end-to-end checks' \
-	  '  make smoke-live   Run a bounded live check (config.smoke-live.yaml by default)' \
+	  '  make smoke-live   Run a bounded live check (examples/smoke-live.yaml by default)' \
 	  '  make help         Show this help; no setup or credentials needed' \
 	  '' \
 	  'Variables:' \
 	  '  PYTHON=python3.12  Interpreter for make setup (default: python)' \
-	  '  CONFIG=<path>     YAML config (default: config.yaml; paths relative to YAML)' \
+	  '  CONFIG=<path>     YAML config (default: examples/full.yaml; paths relative to YAML)' \
 	  '  OVERWRITE=1       Recalculate command stages; may repeat paid generation' \
 	  '  RETRY_FAILED=1    Retry failed tasks while keeping successful ones' \
 	  '  ALLOW_PARTIAL=1   Accept documented omissions after record processing' \

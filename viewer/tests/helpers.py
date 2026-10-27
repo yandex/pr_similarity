@@ -8,11 +8,18 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from viewer.contracts import validate_report
-from viewer.cost_summary import build_cost_summary
-from viewer.operations import OperationStore
-from viewer.triplet_paths import triplet_path
-from viewer.util import digest, json_bytes, parse_json
+from python_fixtures import python_attempt, python_document, python_reference
+from starlette.applications import Starlette
+from starlette.testclient import TestClient
+
+from viewer.models import Run, State
+from viewer.models.evidence import ArtifactReceipt
+from viewer.presentation.cost_summary import build_cost_summary
+from viewer.service import ViewerService
+from viewer.util import digest, json_bytes, parse_json, require_object
+from viewer.validation.contracts import validate_report
+from viewer.validation.operations import OperationStore
+from viewer.validation.triplet_paths import triplet_path
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 FileCallback = Callable[[dict, dict, dict[str, bytes]], None]
@@ -111,7 +118,15 @@ def documents() -> tuple[dict, dict, bytes]:
     report = json.loads((FIXTURES / 'completed.json').read_bytes())
     basket = json.loads((FIXTURES / 'basket.json').read_bytes())
     report.setdefault('inference', inference(None, None))
-    report['agent_input'] = {'config': {'path': 'agent/opencode.json', 'size_bytes': 2, 'sha256': digest(b'{}')}, 'resources': []}
+    report['agent']['python_runtime'] = python_reference()
+    report['agent_input'] = {
+        'config': {
+            'path': 'agent/opencode.json',
+            'size_bytes': 2,
+            'sha256': digest(b'{}'),
+        },
+        'resources': [],
+    }
     report['costs'] = costs()
     report['state'] = {'path': '_meta/state.json', 'sha256': '0' * 64}
     row, source = report['tasks'][0], basket['tasks'][0]
@@ -221,11 +236,17 @@ def _artifact_files(report: dict, basket_bytes: bytes) -> dict[str, bytes]:
                 'actual_version': report['agent']['resolved_runtime']['version'],
                 **{
                     key: report['agent']['resolved_runtime'][key]
-                    for key in ('asset_name', 'platform', 'archive_sha256', 'binary_sha256')
+                    for key in (
+                        'asset_name',
+                        'platform',
+                        'archive_sha256',
+                        'binary_sha256',
+                    )
                 },
             }
         ),
         '_meta/sandbox.json': b'{}',
+        '_meta/python.json': json_bytes(python_document()),
     }
     report['config']['identity_sha256'] = digest(json_bytes({}))
     for task in report['tasks']:
@@ -251,7 +272,7 @@ def _registry(report: dict, basket: dict) -> dict:
     """Freeze basket ownership and local labels from configured synthetic inputs."""
     return {
         'schema_family': 'pr_similarity_os.run',
-        'schema_version': 1,
+        'schema_version': 2,
         'id': report['run']['id'],
         'agent_input': copy.deepcopy(report['agent_input']),
         'baseline': {
@@ -282,26 +303,37 @@ def _native_facts(report: dict, task: dict, files: dict[str, bytes]) -> dict:
     attempt = task['final_attempt']
     prefix = f'{task['directory']}/attempts/{attempt['sequence']:03d}/'
     owner = {
-        'schema_version': 1,
+        'schema_version': 2,
         'run_id': report['run']['id'],
         'basket_sha256': report['basket']['sha256'],
         'config_identity_sha256': report['config']['identity_sha256'],
     }
-    start = {**owner, 'schema_family': 'pr_similarity_os.start', 'task_id': task['id'], 'attempt': attempt}
+    start = {
+        **owner,
+        'schema_family': 'pr_similarity_os.start',
+        'task_id': task['id'],
+        'attempt': attempt,
+    }
     files[prefix + 'start.json'] = json_bytes(start)
+    files[prefix + 'python.json'] = json_bytes(python_attempt(report['agent']['python_runtime']))
+    python_receipts = [
+        report['agent']['python_runtime'],
+        _reference(prefix + 'python.json', files),
+    ]
     seal = {
         **owner,
         'agent_input': copy.deepcopy(report['agent_input']),
         'schema_family': 'pr_similarity_os.seal',
         'task': copy.deepcopy(task),
         'metric': copy.deepcopy(report['metric']),
-        'artifact_receipts': [],
+        'python_runtime': report['agent']['python_runtime'],
+        'artifact_receipts': python_receipts,
     }
     files[prefix + 'seal.json'] = json_bytes(seal)
     seal_ref = _reference(prefix + 'seal.json', files)
     scoring = {
         'schema_family': 'pr_similarity_os.scoring',
-        'schema_version': 1,
+        'schema_version': 2,
         'run_id': report['run']['id'],
         'task_id': task['id'],
         'attempt_id': attempt['id'],
@@ -322,7 +354,8 @@ def _native_facts(report: dict, task: dict, files: dict[str, bytes]) -> dict:
         'metric': copy.deepcopy(report['metric']),
         'scoring_result': scoring_ref,
         'scoring_error': None,
-        'artifact_receipts': [scoring_ref],
+        'python_runtime': report['agent']['python_runtime'],
+        'artifact_receipts': [scoring_ref, *python_receipts],
     }
     files[prefix + 'outcome.json'] = json_bytes(outcome)
     task['artifacts']['outcome'] = prefix + 'outcome.json'
@@ -357,7 +390,7 @@ def _freeze_state(report: dict, basket: dict, files: dict[str, bytes]) -> None:
             'phase': task['processing_status'].replace('_', ' '),
             'updated_at': report['run']['updated_at'],
         }
-    identity = parse_json(files['config_identity.json'])
+    identity = require_object(parse_json(files['config_identity.json']))
     identity.setdefault('native_config', {})
     identity.setdefault('resources', [])
     identity.setdefault('setup', None)
@@ -368,19 +401,24 @@ def _freeze_state(report: dict, basket: dict, files: dict[str, bytes]) -> None:
     files['agent/task_instructions.txt'] = b''
     report['agent_input'] = {
         'config': _reference('agent/opencode.json', files),
-        'resources': [_reference(path, files) for path in sorted(files) if path.startswith('agent/resources/') or path in {'agent/task_instructions.txt', 'agent/setup.sh'}],
+        'resources': [
+            _reference(path, files)
+            for path in sorted(files)
+            if path.startswith('agent/resources/') or path in {'agent/task_instructions.txt', 'agent/setup.sh'}
+        ],
     }
     files['run.json'] = json_bytes(_registry(report, basket))
     selections = [_native_facts(report, task, files) for task in report['tasks']]
     state = {
         'schema_family': 'pr_similarity_os.state',
-        'schema_version': 1,
+        'schema_version': 2,
         'run_id': report['run']['id'],
         'registry_sha256': digest(files['run.json']),
         'revision': report['run']['revision'],
         'updated_at': report['run']['updated_at'],
         'run': {key: report['run'][key] for key in ('status', 'finished_at', 'error', 'current_invocation_id')},
         'resolved_runtime': copy.deepcopy(report['agent']['resolved_runtime']),
+        'python_runtime': copy.deepcopy(report['agent']['python_runtime']),
         'metric': copy.deepcopy(report['metric']),
         'selected_operations': {'rescore': None, 'reprice': None},
         'pending_publish': None,
@@ -388,19 +426,27 @@ def _freeze_state(report: dict, basket: dict, files: dict[str, bytes]) -> None:
         'tasks': selections,
     }
     files['_meta/state.json'] = json_bytes(state)
-    report['state'] = {'path': '_meta/state.json', 'sha256': digest(files['_meta/state.json'])}
-    registry = parse_json(files['run.json'])
-    assert isinstance(registry, dict)
-    inventory = {name: _reference(name, files) for name in files}
-    adapter = OperationStore(registry, state, inventory, files.__getitem__, validate_report)
-    report['costs'] = build_cost_summary(adapter)
+    report['state'] = {
+        'path': '_meta/state.json',
+        'sha256': digest(files['_meta/state.json']),
+    }
+    registry = Run.model_validate(parse_json(files['run.json']))
+    inventory = {name: ArtifactReceipt.model_validate(_reference(name, files)) for name in files}
+    adapter = OperationStore(
+        registry,
+        State.model_validate(state),
+        inventory,
+        files.__getitem__,
+        validate_report,
+    )
+    report['costs'] = build_cost_summary(adapter).to_wire()
 
 
 def _manifest(report: dict, files: dict[str, bytes]) -> dict:
     """Inventory exact synthetic archive bytes after any intentional corruption callback."""
     return {
         'schema_family': 'pr_similarity_os.archive',
-        'schema_version': 1,
+        'schema_version': 2,
         'run_id': report['run']['id'],
         'created_at': report['run']['created_at'],
         'report_revision': report['run']['revision'],
@@ -411,7 +457,11 @@ def _manifest(report: dict, files: dict[str, bytes]) -> dict:
     }
 
 
-def _write_archive(path: Path, files: dict[str, bytes], extra: tuple[tarfile.TarInfo, io.BytesIO] | None) -> None:
+def _write_archive(
+    path: Path,
+    files: dict[str, bytes],
+    extra: tuple[tarfile.TarInfo, io.BytesIO] | None,
+) -> None:
     """Write real tar members, including explicitly requested malicious test members."""
     with tarfile.open(path, 'w:gz') as archive:
         for name, data in files.items():
@@ -464,3 +514,12 @@ def archive_fixture(
     files['manifest.json'] = json_bytes(manifest)
     _write_archive(path, files, extra)
     return report, manifest
+
+
+def service_for(client: TestClient) -> ViewerService:
+    """Return the concrete service wired into a running Starlette test client."""
+    app = client.app
+    assert isinstance(app, Starlette)
+    service = app.state.service
+    assert isinstance(service, ViewerService)
+    return service

@@ -12,10 +12,9 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, TypeVar
 
-from basket_collector.attempts import AttemptJournal, RecordResult
-from basket_collector.checkpoint_inputs import validate_checkpoint_input
 from basket_collector.config import (
     CollectorConfig,
     TemplateSnapshot,
@@ -24,7 +23,8 @@ from basket_collector.config import (
     load_environment,
     load_template_snapshot,
 )
-from basket_collector.contracts import (
+from basket_collector.export_validation import validate_export_accounting
+from basket_collector.models.artifacts import (
     BasketDocument,
     BasketMeta,
     CollectDocument,
@@ -50,29 +50,37 @@ from basket_collector.contracts import (
     TaskRecord,
     TasksDocument,
 )
-from basket_collector.export_validation import validate_export_accounting
-from basket_collector.git import (
-    GitDiagnosticContext,
-    GitFatalError,
-    GitInfrastructureError,
-    GitRepository,
-    GitStopRequested,
+from basket_collector.models.sources import SourceDescriptor, change_id, source_hash
+from basket_collector.persistence.checkpoint_inputs import validate_checkpoint_input
+from basket_collector.persistence.storage import (
+    StageDocument,
+    StageStore,
+    StorageError,
+    current_producer,
+    expected_input,
+    read_document,
+    receipt,
+    sha256,
+    single_writer,
+    stage_sha256,
+    utc_now,
 )
-from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.gitlab_source import GitLabRemoteVCS
-from basket_collector.llm import (
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.providers.gitlab_source import GitLabRemoteVCS
+from basket_collector.providers.llm import (
     GenerationInterrupted,
     LLMAuthenticationError,
     LLMCallError,
     LLMClient,
     LLMConfigurationError,
 )
-from basket_collector.logs import InvocationLogs, friendly_error
-from basket_collector.progress import MODES, Progress
-from basket_collector.record_runtime import RecordRuntime
-from basket_collector.remote import ChangeRejected, RemoteError, RemoteInterrupted, RemoteVCS
+from basket_collector.providers.remote import ChangeRejected, RemoteError, RemoteInterrupted, RemoteVCS
+from basket_collector.runtime.attempts import AttemptJournal, RecordResult
+from basket_collector.runtime.logs import InvocationLogs, friendly_error
+from basket_collector.runtime.progress import MODES, Progress
+from basket_collector.runtime.record_runtime import RecordRuntime
+from basket_collector.runtime.transport_scope import generation_requests
 from basket_collector.selection import build_selection, omissions, selected_records, selection_receipt, semantic_record
-from basket_collector.sources import SourceDescriptor, change_id, source_hash
 from basket_collector.stages.collect import (
     DiscoveryResult,
     collect_change,
@@ -86,32 +94,29 @@ from basket_collector.stages.filter import (
     process_one,
 )
 from basket_collector.stages.generate import generate_record
-from basket_collector.storage import (
-    StageDocument,
-    StageStore,
-    StorageError,
-    current_producer,
-    expected_input,
-    read_document,
-    receipt,
-    sha256,
-    single_writer,
-    stage_sha256,
-    utc_now,
+from basket_collector.vcs.base import VCS
+from basket_collector.vcs.git import (
+    GitDiagnosticContext,
+    GitFatalError,
+    GitInfrastructureError,
+    GitRepository,
+    GitStopRequested,
 )
-from basket_collector.transport_scope import generation_requests
-from basket_collector.vcs import VCS
 
 T = TypeVar('T')
 R = TypeVar('R')
 DocumentT = TypeVar('DocumentT', bound=StageDocument)
 STAGES = ('collect', 'filter', 'generate', 'export')
-DOCUMENTS: dict[str, type[CollectDocument] | type[FilterDocument] | type[TasksDocument] | type[BasketDocument]] = {
-    'collect': CollectDocument,
-    'filter': FilterDocument,
-    'generate': TasksDocument,
-    'export': BasketDocument,
-}
+DOCUMENTS: MappingProxyType[
+    str, type[CollectDocument] | type[FilterDocument] | type[TasksDocument] | type[BasketDocument]
+] = MappingProxyType(
+    {
+        'collect': CollectDocument,
+        'filter': FilterDocument,
+        'generate': TasksDocument,
+        'export': BasketDocument,
+    }
+)
 
 
 class PipelineInterrupted(RuntimeError):
@@ -278,7 +283,6 @@ class Pipeline:
         self,
         config: CollectorConfig,
         *,
-        project_dir: Path | None = None,
         producer: Producer | None = None,
         remote: RemoteVCS | None = None,
         git_repository: VCS | None = None,
@@ -291,7 +295,6 @@ class Pipeline:
         """Set up clients and provenance without opening network connections."""
         self.config = config
         self.output_dir = Path(config.output_dir)
-        self.project_dir = project_dir
         self.progress = progress or Progress(
             progress_mode,
             level=logs.level if logs is not None else 'INFO',
@@ -300,7 +303,7 @@ class Pipeline:
         )
         if logs is not None:
             logs.progress = self.progress
-        self.producer = producer or current_producer(project_dir)
+        self.producer = producer or current_producer()
         self.remote = remote
         self.git_repository = git_repository
         self.logs = logs
@@ -491,7 +494,7 @@ class Pipeline:
         now = utc_now()
         settings = effective_settings(self.config, stage, template_snapshot=template_snapshot)
         return {
-            'schema_version': 2,
+            'schema_version': 3,
             'stage': stage,
             'status': status,
             'input': InputReceipt(stage=lineage[-1].stage, sha256=lineage[-1].sha256) if lineage else None,

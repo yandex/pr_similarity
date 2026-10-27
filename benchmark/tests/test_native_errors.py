@@ -1,18 +1,22 @@
 """Provider failures remain native facts independent of capture and host scoring."""
 
 from pathlib import Path
+from typing import Literal
 
 import pytest
-from benchmark import attempt as executor
-from benchmark.artifact_refs import read_reference
-from benchmark.errors import BenchmarkError
-from benchmark.layout import attempt_path
-from benchmark.lifecycle import Stop, retry_reasons
-from benchmark.provisioning import Runtime
-from benchmark.result import pending_task
-from benchmark.storage import read_json
-from test_attempt_executor import controlled_native, reservation
+from test_attempt_executor import controlled_native, fixture_runtime, reservation
 from test_basket import payload
+
+from benchmark.errors import BenchmarkError
+from benchmark.models.basket import BasketRecord
+from benchmark.models.evidence import Seal
+from benchmark.models.report import ReportInfra
+from benchmark.persistence.artifact_refs import read_reference
+from benchmark.persistence.layout import attempt_path
+from benchmark.persistence.storage import read_json
+from benchmark.presentation.result import pending_task
+from benchmark.runtime import attempt as executor
+from benchmark.runtime.lifecycle import Stop, retry_reasons
 
 
 @pytest.mark.parametrize(
@@ -48,10 +52,10 @@ def test_provider_errors_survive_native_seal_and_host_failure(
     try:
         outcome = executor.run_attempt(
             config,
-            registration['basket_row'],
+            registration.basket_row,
             tmp_path,
             identity,
-            Runtime(Path('/usr/bin/true'), {}),
+            fixture_runtime(),
             Path('/usr/bin/bwrap'),
             command,
             attempt,
@@ -60,40 +64,37 @@ def test_provider_errors_survive_native_seal_and_host_failure(
         )
     finally:
         command.close()
-    native = read_reference(tmp_path, outcome['seal'])['task']
-    assert native['execution']['status'] == 'error' and native['execution']['exit_code'] == 0
+    native = read_reference(tmp_path, outcome.seal, Seal).task
+    assert native.execution.status == 'error' and native.execution.exit_code == 0
     assert read_json(directory / 'agent-error.json')['code'] == expected
-    infrastructure = native['infrastructure_error']
-    assert (None if infrastructure is None else infrastructure['code']) == (
+    infrastructure = native.infrastructure_error
+    assert (None if infrastructure is None else infrastructure.code) == (
         None if expected == 'agent_error' else expected
     )
-    assert native['changes']['status'] == 'nonempty'
-    assert outcome['task']['infrastructure_error'] == infrastructure
-    assert outcome['task']['processing_status'] in ('completed', 'interrupted')
-    assert 'retry_reasons' not in outcome
+    assert native.changes.status == 'nonempty'
+    assert outcome.task.infrastructure_error == infrastructure
+    assert outcome.task.processing_status in ('completed', 'interrupted')
+    assert 'retry_reasons' not in outcome.model_fields_set
     assert stop.is_set() == (expected == 'auth_required')
-    assert (None if outcome['fatal'] is None else outcome['fatal']['code']) == (
+    assert (None if outcome.fatal is None else outcome.fatal.code) == (
         expected if expected == 'auth_required' else None
     )
 
 
 @pytest.mark.parametrize('diff', ['empty', 'nonempty'])
-def test_agent_error_retry_remains_opt_in_for_coordinator(diff: str) -> None:
+def test_agent_error_retry_remains_opt_in_for_coordinator(diff: Literal['empty', 'nonempty']) -> None:
     """Native policy ignores diff content for terminal agent errors."""
-    row = pending_task(payload()['tasks'][0])
-    row.update(processing_status='completed')
-    row['execution']['status'] = 'error'
-    row['changes']['status'] = diff
+    row = pending_task(BasketRecord.model_validate(payload()['tasks'][0]))
+    row.processing_status = 'completed'
+    row.execution.status = 'error'
+    row.changes.status = diff
     assert retry_reasons(row, []) == []
     assert retry_reasons(row, ['agent_error']) == ['agent_error']
-    row['infrastructure_error'] = {
-        'stage': 'agent',
-        'code': 'provider_unavailable',
-        'message': 'Provider unavailable.',
-        'paths': [],
-    }
+    row.infrastructure_error = ReportInfra(
+        stage='agent', code='provider_unavailable', message='Provider unavailable.', paths=[]
+    )
     assert retry_reasons(row, ['agent_error']) == ['infrastructure_error']
-    row['processing_status'] = 'interrupted'
+    row.processing_status = 'interrupted'
     assert retry_reasons(row, ['agent_error']) == []
 
 
@@ -101,4 +102,4 @@ def test_agent_error_category_is_valid_configuration(tmp_path: Path) -> None:
     """Configuration retains the original shared budget and explicit outcome categories."""
     config, _registration, _identity, _attempt, command = reservation(tmp_path)
     command.close()
-    assert config.identity()['retries'] == {'max_retries': 3, 'categories': ['agent_error', 'no_changes']}
+    assert config.identity().retries.to_wire() == {'max_retries': 3, 'categories': ['agent_error', 'no_changes']}

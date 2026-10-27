@@ -12,12 +12,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from benchmark import coordinator
-from benchmark import progress as progress_module
-from benchmark.errors import BenchmarkError
-from benchmark.progress import Progress
-from benchmark.runner import run
 from test_runner import config_and_basket, fake_attempt, provision_fixture
+
+from benchmark.errors import BenchmarkError
+from benchmark.presentation import progress as progress_module
+from benchmark.presentation.progress import Progress
+from benchmark.runtime import coordinator
+from benchmark.runtime.runner import run
 
 
 def test_plain_heartbeat_uses_frozen_total_and_saved_completed_count() -> None:
@@ -227,17 +228,81 @@ def test_real_pty_viewport_resize_hidden_count_and_frozen_history() -> None:
         resized = read_terminal(master)
         assert 'T001 a1 running' in resized
         assert '4 active tasks hidden' in resized
-        clock[0] = 0.6
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 5, 80, 0, 0))
+        clock[0] = 65.6
+        progress.task_result('1', mf=0.12356, lcf=0.0)
         progress.task_finish('1', execution='timeout', scoring='scored')
         progress.poll()
         final = read_terminal(master)
-        clock[0] = 0.9
+        clock[0] = 70.0
         progress.task_finish('1', execution='timeout', scoring='scored')
         progress.poll()
         repeated = read_terminal(master)
         assert final.count('timeout') == 1 and 'timeout' not in repeated
+        assert '01:05' in final and 'Mf=0.124 LCf=0.000' in final
         progress.close()
     finally:
         stream.close()
         os.close(master)
         os.close(slave)
+
+
+def test_attempt_elapsed_is_independent_frozen_and_reset_on_retry() -> None:
+    """Each attempt owns a clock; retries cannot inflate its final duration."""
+    clock = [100.0]
+    output = io.StringIO()
+    progress = Progress('plain', total=2, stream=output, clock=lambda: clock[0])
+    progress.task_start('first', ordinal=1)
+    clock[0] = 110.0
+    progress.task_start('second', ordinal=2)
+    clock[0] = 175.0
+    assert '01:15' in progress._task_line(progress.tasks['first'])
+    assert '01:05' in progress._task_line(progress.tasks['second'])
+    progress.task_result('first', mf=0.12356, lcf=0.0)
+    progress.task_phase('first', 'retry pending')
+    clock[0] = 200.0
+    line = progress._task_line(progress.tasks['first'])
+    assert '01:15' in line and 'Mf=0.124 LCf=0.000' in line
+    progress.task_start('first', ordinal=1, attempt_sequence=1)
+    assert '01:40' in progress._task_line(progress.tasks['first'])
+    progress.task_start('first', ordinal=1, attempt_sequence=2)
+    line = progress._task_line(progress.tasks['first'])
+    assert '00:00' in line and 'Mf=' not in line
+    clock[0] = 203.0
+    progress.task_result('first', mf=1.0, lcf=0.9996)
+    clock[0] = 250.0
+    progress.task_finish('first', execution='completed', scoring='scored')
+    progress.poll()
+    final = [line for line in output.getvalue().splitlines() if 'completed · scored' in line][0]
+    assert '00:03' in final and 'Mf=1.000 LCf=1.000' in final
+    compact = progress._fit_task_message(final, 80)
+    assert '00:03' in compact and 'Mf=1.000 LCf=1.000' in compact
+
+
+def test_unavailable_scores_are_not_rendered_as_zero() -> None:
+    """An unscored attempt freezes elapsed time without fabricated quality."""
+    clock = [0.0]
+    output = io.StringIO()
+    progress = Progress('plain', total=1, stream=output, clock=lambda: clock[0])
+    progress.task_start('task', ordinal=1)
+    clock[0] = 12.0
+    progress.task_result('task', mf=None, lcf=None)
+    progress.task_finish('task', execution='error', scoring='unavailable')
+    clock[0] = 100.0
+    progress.poll()
+    final = [line for line in output.getvalue().splitlines() if 'error · unavailable' in line][0]
+    assert '00:12' in final and 'Mf=' not in final and 'LCf=' not in final
+
+
+def test_saved_scores_reach_final_progress_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The coordinator forwards committed scores to the visible task outcome."""
+    provision_fixture(monkeypatch)
+    config, basket = config_and_basket(tmp_path)
+    code, _ = run(
+        config, basket, output=tmp_path / 'runs', progress='plain', attempt_function=fake_attempt(['success'])
+    )
+    assert code == 0
+    final = [line for line in capsys.readouterr().err.splitlines() if 'completed · scored' in line]
+    assert any('Mf=1.000 LCf=1.000' in line for line in final)

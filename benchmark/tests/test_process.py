@@ -5,8 +5,8 @@ import sys
 import threading
 from pathlib import Path
 
-from benchmark.process import run_process
-from benchmark.runner import Stop
+from benchmark.execution.process import run_process
+from benchmark.runtime.runner import Stop
 
 
 def test_machine_stdout_is_not_duplicated_in_diagnostic_log(tmp_path: Path) -> None:
@@ -15,8 +15,15 @@ def test_machine_stdout_is_not_duplicated_in_diagnostic_log(tmp_path: Path) -> N
     lines = []
     result = run_process(
         [sys.executable, '-c', 'import sys; print("{\\"ok\\":true}"); print("warning SECRET", file=sys.stderr)'],
-        env={}, cwd=tmp_path, timeout=5, grace=0.1, cancel=threading.Event(),
-        log=output, secrets=['SECRET'], on_stdout=lines.append, log_stdout=False,
+        env={},
+        cwd=tmp_path,
+        timeout=5,
+        grace=0.1,
+        cancel=threading.Event(),
+        log=output,
+        secrets=['SECRET'],
+        on_stdout=lines.append,
+        log_stdout=False,
     )
     assert result.status == 'completed'
     assert lines == ['{"ok":true}']
@@ -175,7 +182,7 @@ def test_signal_handler_never_acquires_event_condition_lock(tmp_path: Path) -> N
             sys.executable,
             '-c',
             (
-                'import signal; from benchmark.runner import Stop; s=Stop(); '
+                'import signal; from benchmark.runtime.runner import Stop; s=Stop(); '
                 's._cond.acquire(); s.signal(signal.SIGINT,None); s._cond.release(); '
                 'assert s.is_set(); assert s.observed_interrupts()==1'
             ),

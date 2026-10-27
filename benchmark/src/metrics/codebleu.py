@@ -5,14 +5,23 @@ import logging
 import math
 import threading
 from functools import cache, lru_cache
-from importlib import metadata
+from importlib import import_module, metadata
 from importlib.resources import files
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 
 from benchmark.errors import BenchmarkError
 
+
+def _dependency_module(name: str, symbol: str) -> ModuleType:
+    """Preserve import-error classification while loading optional dependency APIs."""
+    module = import_module(name)
+    if not hasattr(module, symbol):
+        raise ImportError(f'Cannot import {symbol} from {name}')
+    return module
+
+
 try:
-    from codebleu import calc_codebleu
+    calc_codebleu = _dependency_module('codebleu', 'calc_codebleu').calc_codebleu
 except ImportError:
     calc_codebleu = None
 
@@ -116,13 +125,15 @@ def require_dependencies() -> None:
 
         if not callable(calc_codebleu):
             raise TypeError('CodeBLEU API cannot be loaded')
-        from codebleu.utils import get_tree_sitter_language
-        from tree_sitter import Parser
+        get_tree_sitter_language = _dependency_module(
+            'codebleu.utils', 'get_tree_sitter_language'
+        ).get_tree_sitter_language
+        parser_type = _dependency_module('tree_sitter', 'Parser').Parser
 
         for lang in sorted(set(EXT_TO_LANG.values())):
             if not files('codebleu').joinpath('keywords', lang + '.txt').read_text(encoding='utf-8').strip():
                 raise ValueError('Grammar keywords are missing')
-            parser = Parser(get_tree_sitter_language(lang))
+            parser = parser_type(get_tree_sitter_language(lang))
             if parser.parse(b'').root_node is None:
                 raise ValueError('Grammar has no root node')
     except (ImportError, ValueError, TypeError, OSError, RuntimeError, AttributeError, AssertionError) as exc:
@@ -139,10 +150,12 @@ def compute_codebleu_components(reference: str, candidate: str, lang: str) -> di
     try:
         assert callable(calc_codebleu)
         with _call_lock():
-            from codebleu.utils import get_tree_sitter_language
-            from tree_sitter import Parser
+            get_tree_sitter_language = _dependency_module(
+                'codebleu.utils', 'get_tree_sitter_language'
+            ).get_tree_sitter_language
+            parser_type = _dependency_module('tree_sitter', 'Parser').Parser
 
-            parser = Parser(get_tree_sitter_language(lang))
+            parser = parser_type(get_tree_sitter_language(lang))
             if any(parser.parse(text.encode('utf-8')).root_node.has_error for text in (reference, candidate)):
                 logging.getLogger(__name__).debug('CodeBLEU content could not be parsed for %s', lang)
                 return None
@@ -153,6 +166,8 @@ def compute_codebleu_components(reference: str, candidate: str, lang: str) -> di
                 weights=(0.25, 0.25, 0.25, 0.25),
                 tokenizer=None,
             )
+        if not isinstance(result, dict):
+            raise TypeError('CodeBLEU must return a component mapping.')
         components = {key: float(result[key]) for key in CODEBLEU_COMPONENTS}
         if any(not math.isfinite(value) or not 0 <= value <= 1 for value in components.values()):
             raise ValueError('invalid CodeBLEU component')

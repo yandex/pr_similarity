@@ -6,9 +6,11 @@ import os
 import shutil
 import tempfile
 import tomllib
+from importlib import import_module
 from pathlib import Path
 
-from check_release import MANIFEST, check_release, file_record, regular_file, source_inventory
+# Resolve the sibling module for both direct-script and package entrypoints.
+_checker = import_module('.check_release', __package__) if __package__ else import_module('check_release')
 
 
 def prepare_release(source: Path, destination: Path) -> dict:
@@ -19,22 +21,25 @@ def prepare_release(source: Path, destination: Path) -> dict:
         raise ValueError('Destination already exists; select a new directory.')
     if destination.resolve().is_relative_to(source):
         raise ValueError('Destination must be outside the source repository.')
-    selected = source_inventory(source)
+    selected = _checker.source_inventory(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix='.' + destination.name + '-export-', dir=destination.parent))
     reserved = False
     try:
         for relative in selected:
-            original = regular_file(source, relative)
+            original = _checker.regular_file(source, relative)
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(original, target)
-            target.chmod(0o755 if file_record(source, relative)['executable'] else 0o644)
+            target.chmod(0o755 if _checker.file_record(source, relative)['executable'] else 0o644)
         version = tomllib.loads((staging / 'benchmark/pyproject.toml').read_text())['project']['version']
-        manifest = {'manifest_version': 1, 'release_version': version,
-                    'files': [file_record(staging, path) for path in selected]}
-        (staging / MANIFEST).write_text(json.dumps(manifest, indent=2) + '\n')
-        result = check_release(staging)
+        manifest = {
+            'manifest_version': 1,
+            'release_version': version,
+            'files': [_checker.file_record(staging, path) for path in selected],
+        }
+        (staging / _checker.MANIFEST).write_text(json.dumps(manifest, indent=2) + '\n')
+        result = _checker.check_release(staging)
         # Reserve the named destination before promotion; even an empty existing directory is never reused.
         destination.mkdir()
         reserved = True
@@ -53,6 +58,11 @@ def prepare_release(source: Path, destination: Path) -> dict:
 
 
 def main() -> int:
+    """Export and verify a new source tree, then print its summary and return zero.
+
+    Existing or in-source destinations, invalid source inventories and filesystem
+    failures terminate the CLI with status 1. Invalid arguments use status 2.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--destination', type=Path, required=True)

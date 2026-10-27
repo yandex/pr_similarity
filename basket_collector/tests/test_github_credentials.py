@@ -6,14 +6,15 @@ from pathlib import Path
 
 import httpx
 import pytest
-from basket_collector.config import CollectorConfig
-from basket_collector.contracts import FilterDocument, Producer
-from basket_collector.git import GitRepository
-from basket_collector.github import GitHubClient, GitHubError
-from basket_collector.github_source import GitHubRemoteVCS
-from basket_collector.pipeline import Pipeline
-from basket_collector.storage import read_checkpoint, read_document
 from fixture_helpers import local_git, native_config
+
+from basket_collector.config import CollectorConfig
+from basket_collector.models.artifacts import FilterDocument, Producer
+from basket_collector.persistence.storage import read_checkpoint, read_document
+from basket_collector.pipeline import Pipeline
+from basket_collector.providers.github import GitHubClient, GitHubError
+from basket_collector.providers.github_source import GitHubRemoteVCS
+from basket_collector.vcs.git import GitRepository
 
 
 def _git(path: Path, *args: str) -> str:
@@ -61,8 +62,6 @@ class LocalGitHub:
         )
         self.producer = Producer(
             version='test',
-            implementation_sha256='a' * 64,
-            dependencies_sha256='b' * 64,
             python_version='3.12.3',
             git_version='git test',
         )
@@ -192,7 +191,7 @@ def test_filter_recovery_preserves_completed_prs(tmp_path: Path, monkeypatch: py
     """Keep successful filter records while repairing credentials or a server-requested long delay."""
     monkeypatch.setenv('GITHUB_TOKEN', 'fixture-key')
     sleeps: list[float] = []
-    monkeypatch.setattr('basket_collector.github.time.sleep', sleeps.append)
+    monkeypatch.setattr('basket_collector.providers.github.time.sleep', sleeps.append)
     fixture = LocalGitHub(tmp_path, monkeypatch)
     fixture.failure = failure
     assert fixture.run('collect') == 0

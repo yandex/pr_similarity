@@ -9,10 +9,11 @@ from threading import Event, Lock
 from typing import Callable, cast
 
 import pytest
+
 from basket_collector.config import FilterConfig
-from basket_collector.contracts import SourceRevisions
 from basket_collector.filters import check_local
-from basket_collector.git import (
+from basket_collector.models.artifacts import SourceRevisions
+from basket_collector.vcs.git import (
     GitAuthenticationError,
     GitInfrastructureError,
     GitReferenceUnavailable,

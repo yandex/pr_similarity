@@ -10,16 +10,17 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+
 from basket_collector.config import GitHubConfig
-from basket_collector.github import GitHubClient, GitHubError, GitHubInterrupted
-from basket_collector.sources import issue_id
+from basket_collector.models.sources import issue_id
+from basket_collector.providers.github import GitHubClient, GitHubError, GitHubInterrupted
 
 
 @pytest.fixture(autouse=True)
 def isolate_provider_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep virtual provider pacing from freezing the HTTP runtime's asyncio clock."""
     monkeypatch.setattr(
-        'basket_collector.github.time',
+        'basket_collector.providers.github.time',
         SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=time.sleep),
     )
 
@@ -53,8 +54,8 @@ def test_unavailable_retry_after_is_a_minimum(monkeypatch: pytest.MonkeyPatch, h
     elapsed = [0.0]
     sleeps: list[float] = []
     attempts: list[float] = []
-    monkeypatch.setattr('basket_collector.github.time.time', lambda: epoch)
-    monkeypatch.setattr('basket_collector.github.time.monotonic', lambda: elapsed[0])
+    monkeypatch.setattr('basket_collector.providers.github.time.time', lambda: epoch)
+    monkeypatch.setattr('basket_collector.providers.github.time.monotonic', lambda: elapsed[0])
     header = '30' if header_kind == 'seconds' else email.utils.formatdate(epoch + 30, usegmt=True)
 
     def sleep(seconds: float) -> None:
@@ -69,7 +70,7 @@ def test_unavailable_retry_after_is_a_minimum(monkeypatch: pytest.MonkeyPatch, h
             return httpx.Response(503, headers={'Retry-After': header})
         return httpx.Response(200, json={'number': 1})
 
-    monkeypatch.setattr('basket_collector.github.time.sleep', sleep)
+    monkeypatch.setattr('basket_collector.providers.github.time.sleep', sleep)
     with GitHubClient(
         GitHubConfig(max_retries=1, max_retry_delay_seconds=budget, requests_per_second=1000000),
         transport=httpx.MockTransport(handler),
@@ -91,7 +92,7 @@ def test_unavailable_without_retry_after_keeps_bounded_fallback(monkeypatch: pyt
     """Keep local exponential backoff bounded when the server supplies no delay."""
     sleeps: list[float] = []
     attempts = 0
-    monkeypatch.setattr('basket_collector.github.time.sleep', sleeps.append)
+    monkeypatch.setattr('basket_collector.providers.github.time.sleep', sleeps.append)
     monkeypatch.setattr(GitHubClient, '_wait_for_turn', lambda self: None)
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -162,7 +163,7 @@ def test_rest_paginates_all_closed_prs_and_commits() -> None:
 def test_retries_429_then_succeeds_and_does_not_retry_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify rate limits are retried while credential failures stop immediately."""
     sleeps: list[float] = []
-    monkeypatch.setattr('basket_collector.github.time.sleep', sleeps.append)
+    monkeypatch.setattr('basket_collector.providers.github.time.sleep', sleeps.append)
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -456,7 +457,7 @@ def test_exhausted_network_error_is_retryable() -> None:
 def test_remote_protocol_error_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify a disconnected server response uses the configured retry budget."""
     sleeps: list[float] = []
-    monkeypatch.setattr('basket_collector.github.time.sleep', sleeps.append)
+    monkeypatch.setattr('basket_collector.providers.github.time.sleep', sleeps.append)
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -478,7 +479,7 @@ def test_remote_protocol_error_retries_then_succeeds(monkeypatch: pytest.MonkeyP
 @pytest.mark.parametrize('max_retries', [0, 2])
 def test_exhausted_remote_protocol_error_is_retryable(max_retries: int, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify exhausted server disconnect retries become bounded resumable failures."""
-    monkeypatch.setattr('basket_collector.github.time.sleep', lambda seconds: None)
+    monkeypatch.setattr('basket_collector.providers.github.time.sleep', lambda seconds: None)
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -527,7 +528,7 @@ def test_remote_protocol_error_does_not_retry_after_shutdown() -> None:
 def test_graphql_rate_limited_error_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify a GraphQL rate-limit error is retried and then succeeds."""
     sleeps: list[float] = []
-    monkeypatch.setattr('basket_collector.github.time.sleep', sleeps.append)
+    monkeypatch.setattr('basket_collector.providers.github.time.sleep', sleeps.append)
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -580,7 +581,7 @@ def test_graphql_rate_limit_exhaustion_is_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify GraphQL rate-limit variants remain retryable after exhaustion."""
-    monkeypatch.setattr('basket_collector.github.time.sleep', lambda seconds: None)
+    monkeypatch.setattr('basket_collector.providers.github.time.sleep', lambda seconds: None)
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -657,7 +658,7 @@ def test_graphql_secondary_403_without_headers_retries_without_changing_rest_aut
 ) -> None:
     """Verify a secondary GraphQL 403 retries without weakening REST authentication errors."""
     sleeps: list[float] = []
-    monkeypatch.setattr('basket_collector.github.time.sleep', sleeps.append)
+    monkeypatch.setattr('basket_collector.providers.github.time.sleep', sleeps.append)
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -880,8 +881,10 @@ def test_server_cooldown_applies_to_next_github_record(monkeypatch: pytest.Monke
     """The final attempt still postpones subsequent records on the same API client."""
     clock = [100.0]
     sent: list[float] = []
-    monkeypatch.setattr('basket_collector.github.time.monotonic', lambda: clock[0])
-    monkeypatch.setattr('basket_collector.github.time.sleep', lambda delay: clock.__setitem__(0, clock[0] + delay))
+    monkeypatch.setattr('basket_collector.providers.github.time.monotonic', lambda: clock[0])
+    monkeypatch.setattr(
+        'basket_collector.providers.github.time.sleep', lambda delay: clock.__setitem__(0, clock[0] + delay)
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         """Return one server cooldown followed by a successful next record."""
