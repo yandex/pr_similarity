@@ -104,7 +104,11 @@ make run CONFIG=examples/full.yaml DATASET=../basket_collector/output/examples/g
 
 Set `workers` in YAML for normal concurrency, or pass `WORKERS=5` to override it.
 Workers have separate task snapshots, setup processes and OpenCode HOME, but
-share host resources and provider quotas.
+share host resources and provider quotas. Tasks using the same repository wait
+for its Git-cache lock until it is available or you cancel with Ctrl+C. Waiting
+does not consume retries; `git.timeout_seconds` limits individual Git commands,
+not time in the queue. A live owner that stops making progress can hold up
+waiters until cancellation.
 
 The console prints the run directory and paths to `report.json` and the DEBUG
 log. Open that directory in your IDE and start at `report.json`; task ordinals

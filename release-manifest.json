@@ -1,6 +1,6 @@
 {
   "manifest_version": 1,
-  "release_version": "0.3.0",
+  "release_version": "0.3.1",
   "files": [
     {
       "path": ".agents/skills/prsim-analyze-run/SKILL.md",
@@ -40,8 +40,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "size_bytes": 5552,
-      "sha256": "7ae16e2f4b9fa4e843c467e2a2eda0c63943733fce9939c02ad12d1d951ae9a3",
+      "size_bytes": 6018,
+      "sha256": "a98e90e24d12a3673de7c319e0b0731fc4c0c3f2b9d51ff878d212f825fb96d7",
       "executable": false
     },
     {
@@ -71,7 +71,7 @@
     {
       "path": "README.md",
       "size_bytes": 10035,
-      "sha256": "945f099853357b5930f05b51ccfc8462e4cefd31a7e492b7dc7e5321021162e3",
+      "sha256": "9cec4db7590e3b0e8126b578242e6d1f687a7699381ca1c6a9f9f05b6fd29079",
       "executable": false
     },
     {
@@ -221,7 +221,7 @@
     {
       "path": "basket_collector/pyproject.toml",
       "size_bytes": 1388,
-      "sha256": "607a15c602c317e8a445a1a7aa12e324453cbf8c11b052ec7e36d8c9623317be",
+      "sha256": "ed4c13a0913e9e0c8a708490bf185d8299f436630e882f68601640a909dae790",
       "executable": false
     },
     {
@@ -233,7 +233,7 @@
     {
       "path": "basket_collector/src/__init__.py",
       "size_bytes": 102,
-      "sha256": "25d0406c3ce0efe7acb004ceb7658963293292d2cefd767808fcf129c72fe5ca",
+      "sha256": "2cf11f932f5207b3dd89643549a46a841f49e1f677e829aa25ae6a99894c118a",
       "executable": false
     },
     {
@@ -898,8 +898,8 @@
     },
     {
       "path": "benchmark/README.md",
-      "size_bytes": 9488,
-      "sha256": "fb71fe40fae4bb5b4c0353a559ba380c867b34cd22c265a1f880e22488d65be0",
+      "size_bytes": 9788,
+      "sha256": "c6e503659bde59196badbdd6ace813fcdac24a6f4b7e96e21f24a3425cf23623",
       "executable": false
     },
     {
@@ -910,8 +910,8 @@
     },
     {
       "path": "benchmark/docs/configuration.md",
-      "size_bytes": 8271,
-      "sha256": "c6b4ea6bbe240657c7bd6f910ddd7e5c8de818e85931cf7ea8e2523fd99275db",
+      "size_bytes": 8716,
+      "sha256": "c012e730948fb53a4c1f3f839335d24324c5105e85a5771d101f845c13ef86f2",
       "executable": false
     },
     {
@@ -1054,8 +1054,8 @@
     },
     {
       "path": "benchmark/examples/full.yaml",
-      "size_bytes": 2873,
-      "sha256": "9e61bb57288cc24934fb1e9156fd3297098c0417dcc53ef8f19b1ccb2f2d3815",
+      "size_bytes": 2957,
+      "sha256": "00fe75223d01e8269bfdf053fe8d7510f8768019c072c0f141cfd433ccd15d3a",
       "executable": false
     },
     {
@@ -1115,7 +1115,7 @@
     {
       "path": "benchmark/pyproject.toml",
       "size_bytes": 1819,
-      "sha256": "d403919be1a190f4bf5086a7badf88972c6884e291372b91dff8cdce94a95306",
+      "sha256": "531f212b3d8d5351c17c88ad422dd60e4c21559d0f1889b3276b26ef1353511e",
       "executable": false
     },
     {
@@ -1133,7 +1133,7 @@
     {
       "path": "benchmark/src/__init__.py",
       "size_bytes": 88,
-      "sha256": "325700899d676c38c355b60fe556ed44066b6b21c5fba050f7797982dc287bc6",
+      "sha256": "0b50b31f85939b60d1c4247246c80caf41f0a878fce941e6e88c0ff007b93654",
       "executable": false
     },
     {
@@ -1444,8 +1444,8 @@
     },
     {
       "path": "benchmark/src/persistence/storage.py",
-      "size_bytes": 6438,
-      "sha256": "6261a554ce1f0240c2018d4773ffbd6a0e1f602888df34b770afdaf330a1334c",
+      "size_bytes": 6838,
+      "sha256": "0dfadb9c4c109990c0fa55c52b7c343cfaad263b854298efe1fed0b165c5d82c",
       "executable": false
     },
     {
@@ -1726,8 +1726,8 @@
     },
     {
       "path": "benchmark/src/vcs/git.py",
-      "size_bytes": 16853,
-      "sha256": "d9b2f77596c4c5d78682a2290bf24b71c4724360ee90252d68df9134f3990b07",
+      "size_bytes": 16850,
+      "sha256": "d484649be776e0f8c880b8f756549078b4ed73bd4e0f8f0e8359a6c141bd06b5",
       "executable": false
     },
     {
@@ -1864,8 +1864,8 @@
     },
     {
       "path": "benchmark/tests/test_artifact_workflow.py",
-      "size_bytes": 25476,
-      "sha256": "f540e9fab48b53ff0a9b00fbdc0edcdd21abed55ae9a3fbbb4667ea4ac8a9b3c",
+      "size_bytes": 25566,
+      "sha256": "4794d8eaf3b0d6032562e8931ca12c7dd138aa30d947caeb688e8871250979e8",
       "executable": false
     },
     {
@@ -2014,8 +2014,8 @@
     },
     {
       "path": "benchmark/tests/test_neutral_git.py",
-      "size_bytes": 8617,
-      "sha256": "f3395d992e0a5768c2ee9e1c616deb2ab448a47e0d65e3cd8fc2ca3c44adb797",
+      "size_bytes": 10514,
+      "sha256": "102630bc29a9a0c58bd755b8e09252c705f6d5dbd048c7ff5195106c6cf76b1a",
       "executable": false
     },
     {
@@ -2033,7 +2033,7 @@
     {
       "path": "benchmark/tests/test_package.py",
       "size_bytes": 3503,
-      "sha256": "f07f9b4a16c2a2d7475616bfad62655b5a0109c6fc032ac9cdbaeb75e7654da9",
+      "sha256": "7db55a80b2631f64419998938a10965e1edbbe22b665839d2ceb91350e490ac4",
       "executable": false
     },
     {
@@ -2044,8 +2044,8 @@
     },
     {
       "path": "benchmark/tests/test_process.py",
-      "size_bytes": 7571,
-      "sha256": "f24e5f5057b42ddabd382a216be5bc84c6729b99f6faa05f71a5f0273a2aa059",
+      "size_bytes": 7661,
+      "sha256": "e8d0133265232da08f8a0bb24bfb27faaa7ca21a5b5fc2e49ad48a4f0a6cef36",
       "executable": false
     },
     {
@@ -2134,8 +2134,8 @@
     },
     {
       "path": "benchmark/tests/test_storage.py",
-      "size_bytes": 4568,
-      "sha256": "3575101fc1339a32faef7701f5b65e6b4c7d7503164eb1b3d8492d1c78b4f044",
+      "size_bytes": 9658,
+      "sha256": "09d24b60e6b7cdde06af3b77d83f2be5042904978d878a6db24e055740732bdb",
       "executable": false
     },
     {
@@ -2291,7 +2291,7 @@
     {
       "path": "viewer/pyproject.toml",
       "size_bytes": 1052,
-      "sha256": "66f9facc70de051cdfd3e3ce5e7ec8181b414e4a0e3b5cfadd41d43e7619c0e7",
+      "sha256": "37d4b18847c8ae33084af0d48f50e308f3f567588cbbbec6adb223785d423a7f",
       "executable": false
     },
     {
@@ -2309,7 +2309,7 @@
     {
       "path": "viewer/src/__init__.py",
       "size_bytes": 90,
-      "sha256": "3e9e111b207190e8b369e1c3fbea55d5e2c01287be3c429a90d50bd0bbf01bc1",
+      "sha256": "ae3cd63dacb4bccfb2446efc3b932cb428abedc6857e49e60fd1cdafba1f2b3d",
       "executable": false
     },
     {
@@ -2920,8 +2920,8 @@
     },
     {
       "path": "viewer/tests/test_package.py",
-      "size_bytes": 2688,
-      "sha256": "f008174da1fa32c62bd29df9166408956dfb4e6ad291c414d2a147de0b4d7acc",
+      "size_bytes": 2781,
+      "sha256": "6f47c883bea32f88c4594df033384f68690d37771c1ec0fc4bdec7390b6a1542",
       "executable": false
     },
     {

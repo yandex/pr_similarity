@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1
+
+- Wait for a shared Git cache until it becomes available or the run is cancelled.
+  Queue contention no longer fails attempts with `cache_locked` or consumes their
+  retry budget. Individual Git commands retain their configured timeouts.
+- Preserve v0.3.0 artifact schemas and run compatibility, including resume,
+  rescoring and repricing with the existing identity checks.
+- Refresh all three package versions and the generated source release manifest.
+
 ## 0.3.0
 
 - Agent attempts use isolated Python 3.12 environments derived from the benchmark

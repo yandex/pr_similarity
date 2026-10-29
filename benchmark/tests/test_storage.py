@@ -1,6 +1,9 @@
 """Durability, malformed input and single-writer behaviour."""
 
 import json
+import multiprocessing
+import threading
+from multiprocessing.connection import Connection
 from pathlib import Path
 
 import pytest
@@ -16,6 +19,146 @@ from benchmark.persistence.storage import (
     write_json,
 )
 from benchmark.validation.contracts import validate_document
+
+
+def _hold_lock(path: str, channel: Connection) -> None:
+    """Hold a real lock in a spawned process until released by the parent."""
+    with storage.file_lock(Path(path)):
+        channel.send('ready')
+        assert channel.poll(10)
+        channel.recv()
+
+
+@pytest.mark.parametrize('terminate', [False, True])
+def test_wait_forever_process_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminate: bool) -> None:
+    """Wait across processes and preserve the inode even if the owner dies."""
+    context = multiprocessing.get_context('spawn')
+    parent, child = context.Pipe()
+    path = tmp_path / 'cache.lock'
+    owner = context.Process(target=_hold_lock, args=(str(path), child))
+    owner.start()
+    cancel = threading.Event()
+    entered = threading.Event()
+    blocked = threading.Event()
+    errors = []
+    native = storage.fcntl.flock
+
+    def flock(fd: int, operation: int) -> None:
+        """Signal contention while preserving the native lock operation."""
+        try:
+            native(fd, operation)
+        except BlockingIOError:
+            blocked.set()
+            raise
+
+    monkeypatch.setattr(storage.fcntl, 'flock', flock)
+
+    def waiter() -> None:
+        """Acquire the lock in a thread and report failures to the parent test."""
+        try:
+            with storage.file_lock(path, wait_forever=True, cancel=cancel):
+                entered.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=waiter)
+    try:
+        assert parent.poll(10)
+        assert parent.recv() == 'ready'
+        inode = path.stat().st_ino
+        worker.start()
+        assert blocked.wait(5)
+        assert not entered.is_set()
+        with storage.file_lock(tmp_path / 'other.lock'):
+            pass
+        if terminate:
+            owner.terminate()
+        else:
+            parent.send('release')
+        owner.join(10)
+        worker.join(10)
+        assert not worker.is_alive()
+        assert not errors
+        assert entered.is_set()
+        assert path.stat().st_ino == inode
+    finally:
+        cancel.set()
+        if worker.ident is not None:
+            worker.join(10)
+        if owner.is_alive():
+            owner.kill()
+        owner.join(10)
+        parent.close()
+        child.close()
+
+
+@pytest.mark.parametrize('when', ['before', 'waiting', 'acquired'])
+def test_wait_forever_cancel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, when: str) -> None:
+    """Cancel at each acquisition boundary without entering the protected body."""
+    path = tmp_path / 'cache.lock'
+    cancel = threading.Event()
+    native = storage.fcntl.flock
+    calls = []
+
+    def flock(fd: int, operation: int) -> None:
+        """Inject cancellation at the selected lock acquisition boundary."""
+        calls.append(fd)
+        if when == 'waiting':
+            cancel.set()
+            raise BlockingIOError()
+        native(fd, operation)
+        if when == 'acquired':
+            cancel.set()
+
+    if when == 'before':
+        cancel.set()
+    with monkeypatch.context() as patch:
+        patch.setattr(storage.fcntl, 'flock', flock)
+        with pytest.raises(BenchmarkError) as caught:
+            with storage.file_lock(path, wait_forever=True, cancel=cancel):
+                pytest.fail('cancelled waiter entered body')
+        assert caught.value.code == 'operation_cancelled'
+        assert caught.value.exit_code == 130
+    for fd in calls:
+        with pytest.raises(OSError):
+            storage.os.fstat(fd)
+    with storage.file_lock(path):
+        pass
+
+
+def test_wait_forever_rejects_deadline_before_open(tmp_path: Path) -> None:
+    """Reject ambiguous policies without creating a lock file."""
+    path = tmp_path / 'invalid.lock'
+    with pytest.raises(ValueError):
+        with storage.file_lock(path, timeout=1, wait_forever=True):
+            pytest.fail('invalid policy entered body')
+    assert not path.exists()
+
+
+def test_bounded_lock_still_times_out(tmp_path: Path) -> None:
+    """Installation locks retain their finite timeout and error classification."""
+    path = tmp_path / 'bounded.lock'
+    with storage.file_lock(path):
+        with pytest.raises(BenchmarkError) as caught:
+            with storage.file_lock(path, timeout=0):
+                pytest.fail('busy lock acquired')
+        assert caught.value.code == 'cache_locked'
+
+
+def test_wait_forever_body_error_and_symlink(tmp_path: Path) -> None:
+    """Preserve body exceptions and refuse symlink locks in the new mode."""
+    path = tmp_path / 'cache.lock'
+    with pytest.raises(OSError, match='body failure'):
+        with storage.file_lock(path, wait_forever=True):
+            raise OSError('body failure')
+    with storage.file_lock(path):
+        pass
+    link = tmp_path / 'link.lock'
+    link.symlink_to(path)
+    with pytest.raises(BenchmarkError) as caught:
+        with storage.file_lock(link, wait_forever=True):
+            pytest.fail('symlink accepted')
+    assert caught.value.code == 'lock_failed'
 
 
 @pytest.mark.parametrize('text', ['{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '[]', 'null'])

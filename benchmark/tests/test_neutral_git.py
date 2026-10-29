@@ -2,9 +2,12 @@
 
 import re
 import subprocess
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 from test_basket import payload
@@ -12,12 +15,54 @@ from test_basket import payload
 from benchmark.errors import BenchmarkError
 from benchmark.metrics.scoring import score_pr
 from benchmark.models.basket import BasketRecord
+from benchmark.persistence import storage
 from benchmark.persistence.storage import sha256, write_json
 from benchmark.persistence.triplets import load_triplets, save_triplets
 from benchmark.validation.basket import load_basket
 from benchmark.vcs import git as module
 from benchmark.vcs.git import GitCache, git_environment
 from benchmark.vcs.workspace import capture_changes, prepare_workspace
+
+
+def test_concurrent_ensure_waits_beyond_git_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A delayed repository queue succeeds once, without spending a Git-command deadline."""
+    source, row = frozen_source(tmp_path, 'github')
+    route_objects(monkeypatch, source, row.source.fetch_url, require_hints=False)
+    stop, blocked, release = Event(), Event(), Event()
+    caches = [GitCache(tmp_path / 'cache', row.source.fetch_url, timeout=10, stop=stop) for _ in range(3)]
+    native = storage.fcntl.flock
+    clock = [0.0]
+
+    def flock(fd: int, operation: int) -> None:
+        """Advance the clock past the Git timeout while holding contending callers."""
+        try:
+            native(fd, operation)
+        except BlockingIOError:
+            clock[0] = 1000.0
+            blocked.set()
+            assert release.wait(5)
+            raise
+
+    monkeypatch.setattr(storage, 'time', SimpleNamespace(monotonic=lambda: clock[0], sleep=time.sleep))
+    monkeypatch.setattr(storage.fcntl, 'flock', flock)
+
+    def ensure(cache: GitCache) -> None:
+        """Fetch and verify the frozen revisions through the shared repository cache."""
+        cache.ensure([row.revisions.before, row.revisions.after], fetch_refs=row.source.fetch_refs)
+        cache.verify_reference(row)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        try:
+            with caches[0].lock():
+                futures = [pool.submit(ensure, cache) for cache in caches[1:]]
+                assert blocked.wait(5)
+                assert all(not future.done() for future in futures)
+            release.set()
+            for future in futures:
+                future.result(timeout=10)
+        finally:
+            stop.set()
+            release.set()
 
 
 def git(directory: Path, *arguments: str) -> str:

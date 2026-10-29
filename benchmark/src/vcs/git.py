@@ -244,7 +244,7 @@ class GitCache:
     def lock(self) -> Iterator[None]:
         """Serialize writers of this repository cache."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with file_lock(self.path.with_suffix('.lock'), timeout=self.timeout, cancel=self.stop):
+        with file_lock(self.path.with_suffix('.lock'), wait_forever=True, cancel=self.stop):
             yield
 
     def has_commit(self, sha: str) -> bool:
