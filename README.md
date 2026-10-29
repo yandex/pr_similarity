@@ -171,6 +171,6 @@ The exported directory is a complete standalone source distribution, ready to
 use as the Git repository contents without further source changes. Its generated
 `release-manifest.json` records the product version, file hashes, sizes and
 executable flags. Keep the manifest with the distribution to verify its contents.
-Release notes are in [CHANGELOG.md](CHANGELOG.md#030).
+Release notes are in [CHANGELOG.md](CHANGELOG.md#031).
 
 </details>

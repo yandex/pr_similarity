@@ -61,7 +61,7 @@ provisioning:
   download_timeout_seconds: 120
 
 git:
-  timeout_seconds: 120
+  timeout_seconds: 120          # Per Git command; cache-lock waiting ends on acquisition or cancellation.
   initial_depth: 1
   max_depth: 4096
   max_transfer_bytes: 536870912 # Bytes per source retrieval; increase explicitly if needed.

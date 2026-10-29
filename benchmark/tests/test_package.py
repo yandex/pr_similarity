@@ -64,7 +64,7 @@ for basket_version in (1, 2, 3):
     document_validator('basket', basket_version)
 assert load_config(Path(sys.argv[2])).identity().instructions.protocol == 'benchmark_task_v1'
 import benchmark
-assert version('pr-similarity-os-benchmark') == '0.3.0'
+assert version('pr-similarity-os-benchmark') == '0.3.1'
 assert not files('benchmark').joinpath('run_store.py').is_file()
 assert files('benchmark').joinpath('persistence/run_store.py').is_file()
 assert files('benchmark').joinpath('models/report.py').is_file()

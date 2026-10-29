@@ -76,14 +76,15 @@ def test_timeout_preserves_written_partial_file(tmp_path: Path) -> None:
         ],
         env={},
         cwd=tmp_path,
-        timeout=0.2,
+        # Allow interpreter startup and the write before interrupting the ten-second sleep.
+        timeout=2,
         grace=0.1,
         cancel=threading.Event(),
         log=tmp_path / 'agent.log',
     )
     assert result.status == 'timeout'
     assert (tmp_path / 'changed.py').read_text() == 'partial'
-    assert result.duration_seconds < 2
+    assert result.duration_seconds < 5
 
 
 def test_cancel_is_not_timeout(tmp_path: Path) -> None:

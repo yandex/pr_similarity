@@ -120,8 +120,16 @@ def write_json(path: Path, value: object, *, preserve_order: bool = False) -> No
 
 
 @contextmanager
-def file_lock(path: Path, *, timeout: float | None = None, cancel: threading.Event | None = None) -> Iterator[None]:
+def file_lock(
+    path: Path,
+    *,
+    timeout: float | None = None,
+    cancel: threading.Event | None = None,
+    wait_forever: bool = False,
+) -> Iterator[None]:
     """Keep a stable inode; run writers fail fast, caches may wait with cancellation."""
+    if wait_forever and timeout is not None:
+        raise ValueError('An indefinite lock wait cannot also have a timeout.')
     fd: int | None = None
     try:
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -134,13 +142,15 @@ def file_lock(path: Path, *, timeout: float | None = None, cancel: threading.Eve
                 raise BenchmarkError('operation_cancelled', 'Cache preparation was cancelled.', exit_code=130)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if cancel is not None and cancel.is_set():
+                    raise BenchmarkError('operation_cancelled', 'Cache preparation was cancelled.', exit_code=130)
                 break
             except BlockingIOError as exc:
-                if deadline is None:
+                if deadline is None and not wait_forever:
                     raise BenchmarkError(
                         'run_locked', 'Another process is using this directory; wait for it to finish.'
                     ) from exc
-                remaining = deadline - time.monotonic()
+                remaining = 0.1 if deadline is None else deadline - time.monotonic()
                 if remaining <= 0:
                     raise BenchmarkError(
                         'cache_locked', 'Another process is still preparing this cache.', exit_code=1

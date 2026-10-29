@@ -42,7 +42,8 @@ def test_wheel_installed_without_source(tmp_path: Path) -> None:
     code = (
         'import sys;sys.path.insert(0,sys.argv[1]);from viewer.validation.contracts i'
         'mport validator;from viewer.presentation.metrics import aggregate;import viewe'
-        'r;assert "installed" in viewer.__file__;assert validator("report"'
+        'r;from pathlib import Path;assert Path(viewer.__file__).resolve() == '
+        '(Path(sys.argv[1])/"viewer"/"__init__.py").resolve();assert validator("report"'
         ');assert aggregate([])["score"] is None;from importlib.resources '
         'import files;assert all(len(files("viewer").joinpath("static",nam'
         'e).read_bytes())>100 for name in ("index.html","app.js","style.cs'
@@ -56,7 +57,7 @@ def test_wheel_installed_without_source(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert result.stdout.strip() == '0.3.0'
+    assert result.stdout.strip() == '0.3.1'
 
 
 def test_frozen_contract_fixtures_match_recorded_hashes() -> None:

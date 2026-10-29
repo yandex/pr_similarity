@@ -453,8 +453,9 @@ def _crash(root: Path, boundary: str) -> tuple[Path, CrashNotice]:
         )
         notice = None
         try:
-            # Includes Python bootstrap and several real sandbox mount namespaces.
-            deadline = time.monotonic() + 30
+            # Includes cold Python discovery, venv bootstrap and real sandbox mounts.
+            # This watchdog bounds reaching the boundary, not the recovery assertions.
+            deadline = time.monotonic() + 90
             while time.monotonic() < deadline and not paused.is_file() and process.poll() is None:
                 time.sleep(0.02)
             assert paused.is_file(), (root / 'driver.log').read_text(encoding='utf-8')

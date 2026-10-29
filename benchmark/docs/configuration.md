@@ -20,10 +20,17 @@ discovered by OpenCode, stored under `agent/effective/`.
 | `agent.config.opencode_json.mcp` | Native local/remote MCP connections |
 | `agent.setup.script`, `timeout_seconds` | Bash setup file and its separate time budget |
 | `agent.timeout_seconds` | Agent time budget after setup |
+| `git.timeout_seconds` | Timeout per Git command; shared-cache waiting lasts until acquisition or cancellation |
 | `agent.credentials` | Sandbox variable name → host secret variable name |
 | `agent.env` | Nonsensitive environment values forwarded to setup and agent |
 | `agent.diff_excludes` | Source paths omitted from captured agent changes |
 | `agent.instructions_file` | Replacement task-prompt prefix; null keeps the benchmark instructions |
+
+Tasks sharing a repository serialize Git-cache preparation. Waiting for that
+lock has no deadline and does not consume retries. Ctrl+C cancels the wait;
+individual Git commands still use `git.timeout_seconds`. Run-directory locks
+continue to reject a second writer immediately. Installation and OAuth lock
+policies are unchanged.
 
 Configure user labels in the same YAML:
 
