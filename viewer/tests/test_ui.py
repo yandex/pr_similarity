@@ -15,7 +15,6 @@ from helpers import FileCallback, archive_fixture, inference
 from playwright.sync_api import Page, Route, expect, sync_playwright
 from starlette.applications import Starlette
 from test_task_sort import prepare_tasks
-
 from viewer.config import Config, Limits
 from viewer.persistence.storage import MemoryStore
 from viewer.util import digest, json_bytes
@@ -467,23 +466,24 @@ def test_pagination_keeps_baskets_and_unknown_inference(
     """Verify pagination keeps baskets and unknown inference."""
     page, origin, app, errors = browser_page
     svc = app.state.service
+    i = 0
+
+    def change(report: dict, source: dict, files: dict[str, bytes]) -> None:
+        """Create another named run in the shared basket for pagination checks."""
+        report['agent']['name'] = 'Bulk ' + str(i)
+        source['meta']['name'] = 'Basket A'
+        source['tasks'][0]['task'] = {
+            'task': '<script>window.__viewerInjected = true</script>',
+            'subtasks': [],
+        }
+        source['tasks'][0]['agent_task'] = 'Task: <script>window.__viewerInjected = true</script>'
+        report['tasks'][0]['agent_task'] = source['tasks'][0]['agent_task']
+        files['basket.json'] = json_bytes(source)
+        report['basket']['sha256'] = digest(files['basket.json'])
+        report['tasks'][0]['scoring'].update(Mf_mlp=0.3, LCf_mlp=0.3)
+        report['tasks'][0]['scoring']['files'][0]['mlp'] = 0.3
+
     for i in range(23):
-
-        def change(report: dict, source: dict, files: dict[str, bytes]) -> None:
-            """Create another named run in the shared basket for pagination checks."""
-            report['agent']['name'] = 'Bulk ' + str(i)
-            source['meta']['name'] = 'Basket A'
-            source['tasks'][0]['task'] = {
-                'task': '<script>window.__viewerInjected = true</script>',
-                'subtasks': [],
-            }
-            source['tasks'][0]['agent_task'] = 'Task: <script>window.__viewerInjected = true</script>'
-            report['tasks'][0]['agent_task'] = source['tasks'][0]['agent_task']
-            files['basket.json'] = json_bytes(source)
-            report['basket']['sha256'] = digest(files['basket.json'])
-            report['tasks'][0]['scoring'].update(Mf_mlp=0.3, LCf_mlp=0.3)
-            report['tasks'][0]['scoring']['files'][0]['mlp'] = 0.3
-
         path = tmp_path / ('bulk-' + str(i) + '.tar.gz')
         report, _ = archive_fixture(path, run_id=str(uuid.uuid4()), configure=change)
         imported = validate_archive(path, tmp_path / ('bulk-data-' + str(i)), Limits())

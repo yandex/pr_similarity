@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from benchmark.persistence.storage import bytes_sha256, canonical_bytes, parse_json
 from benchmark.validation.basket import load_basket
 

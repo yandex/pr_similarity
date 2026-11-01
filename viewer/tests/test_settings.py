@@ -10,7 +10,6 @@ from starlette.testclient import TestClient
 from test_api import admin, create_user, upload
 from test_api import client as _api_client
 from test_service import FaultStore, publish, service
-
 from viewer.errors import StorageError, ViewerError
 from viewer.persistence.database import Database
 from viewer.presentation.queries import Query, basket_runs, catalogue

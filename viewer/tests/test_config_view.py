@@ -8,7 +8,6 @@ from helpers import archive_fixture, service_for
 from starlette.testclient import TestClient
 from test_api import client as _api_client
 from test_api import create_user
-
 from viewer.models.report import ReportInferenceEffectiveAttemptItem
 from viewer.presentation.config_view import native_projection, public_config
 from viewer.presentation.inference import build_inference

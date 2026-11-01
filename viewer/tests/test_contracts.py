@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 from helpers import archive_fixture
-
 from viewer.config import Config, Limits
 from viewer.errors import ViewerError
 from viewer.models import JsonObject, JsonValue

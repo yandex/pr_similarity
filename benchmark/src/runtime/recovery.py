@@ -8,6 +8,7 @@ from typing import Literal
 
 from benchmark.config import RunConfig
 from benchmark.errors import OPERATION_ERRORS, BenchmarkError
+from benchmark.execution.provider_errors import FATAL_PROVIDER_CODES
 from benchmark.metrics.process import score_saved
 from benchmark.metrics.scoring import metric_receipt
 from benchmark.models import Report
@@ -41,7 +42,7 @@ def _native_status(
     row = outcome.task
     error = row.infrastructure_error
     fatal = (outcome.fatal if isinstance(outcome, Outcome) else None) is not None or (
-        error is not None and error.code in ('auth_required', 'credentials_missing')
+        error is not None and error.code in FATAL_PROVIDER_CODES
     )
     return native_policy(
         row,
@@ -83,7 +84,9 @@ def recover_native_facts(store: RunStore, config: RunConfig) -> list[RecoveryNot
                 continue
             receipt = reference(store.directory, path.relative_to(store.directory).as_posix())
             value = read_reference(store.directory, receipt, Outcome if kind == 'outcome' else Seal)
-            status = _native_status(store, config, selected.id, value) if kind == 'outcome' else None
+            error = value.task.infrastructure_error
+            quota = error is not None and error.code == 'provider_quota_exhausted'
+            status = _native_status(store, config, selected.id, value) if kind == 'outcome' or quota else None
             store.accept_fact(selected.id, kind, receipt, processing_status=status)
             notices.append(
                 RecoveryNotice(
@@ -187,6 +190,8 @@ def recover_host_scores(store: RunStore, config: RunConfig, command: Command, st
         current = report.tasks[index]
         if stop.is_set():
             status = 'completed' if selected.processing_status == 'completed' else 'interrupted'
+        elif current.infrastructure_error is not None and current.infrastructure_error.code in FATAL_PROVIDER_CODES:
+            status = 'retry_pending'
         elif item.scoring.status != 'available':
             status = 'completed'
         else:

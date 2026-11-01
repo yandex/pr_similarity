@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from benchmark.errors import BenchmarkError
 from benchmark.execution.bubblewrap import (
     CAPABILITY_ARGV,

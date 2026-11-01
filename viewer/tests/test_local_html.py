@@ -7,7 +7,6 @@ import pytest
 from helpers import documents
 from playwright.sync_api import expect, sync_playwright
 from test_metrics import task
-
 from viewer.models.report import Report, ReportInfra
 from viewer.util import json_bytes
 

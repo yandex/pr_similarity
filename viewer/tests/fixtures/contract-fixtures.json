@@ -77,6 +77,6 @@
   },
   "tests/fixtures/legacy/producer-v1-basket2.tar.gz": {
     "source": "benchmark 0.2.0 offline artifact workflow with basket v2",
-    "sha256": "e9fcbd1fb559e3526200b0c48d911dba785814c3cd79eacd1d32e90f08832670"
+    "sha256": "ad7e2dcfe1ee86d14aa66bb8ccaa0b9a456e8b9a46560c6ed2c797107f86acde"
   }
 }

@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from helpers import archive_fixture
 from test_service import publish, service
-
 from viewer.errors import ViewerError
 from viewer.presentation.queries import basket_metadata
 from viewer.util import digest, json_bytes, parse_json, require_object

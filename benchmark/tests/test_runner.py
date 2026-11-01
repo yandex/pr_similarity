@@ -12,15 +12,6 @@ from typing import Literal, NoReturn
 
 import pytest
 import yaml
-from python_fixtures import (
-    freeze_python,
-    python_probe,
-    python_receipt,
-    write_python_probe,
-)
-from test_basket import payload
-from test_telemetry import native_db
-
 from benchmark.config import RunConfig, load_config
 from benchmark.errors import BenchmarkError
 from benchmark.execution.opencode import EventTracker, Invocation
@@ -77,6 +68,14 @@ from benchmark.runtime.commands import Command
 from benchmark.runtime.runner import Stop, run
 from benchmark.vcs.git import GitCache
 from benchmark.vcs.workspace import CapturedChanges, Workspace
+from python_fixtures import (
+    freeze_python,
+    python_probe,
+    python_receipt,
+    write_python_probe,
+)
+from test_basket import payload
+from test_telemetry import native_db
 
 
 def config_and_basket(
@@ -140,7 +139,7 @@ def _fixture_native_row(
     row.artifacts.triplets_manifest = (relative / 'triplets/index.json').as_posix()
     row.setup.status = 'skipped'
     row.execution = ReportTaskExecution(
-        status='timeout' if kind == 'timeout' else 'error' if kind in ('agent_error', 'auth') else 'completed',
+        status='timeout' if kind == 'timeout' else 'error' if kind in ('agent_error', 'auth', 'quota') else 'completed',
         exit_code=0,
         duration_seconds=1,
     )
@@ -166,10 +165,19 @@ def _fixture_native_row(
         )
         row.scoring = unavailable_scoring('unavailable', row.infrastructure_error)
         row.artifacts.triplets_manifest = None
+    if kind == 'cancelled':
+        row.processing_status = 'interrupted'
+        row.execution.status, row.execution.exit_code = 'cancelled', -15
     if kind == 'interrupt':
         row.processing_status = 'interrupted'
         row.execution.status, row.execution.exit_code = 'cancelled', None
         stop.signal(signal.SIGINT, None)
+    if kind == 'quota':
+        row.processing_status = 'interrupted'
+        row.infrastructure_error = ReportInfra(
+            stage='agent', code='provider_quota_exhausted', message='ChatGPT usage limit reached.', paths=[]
+        )
+        stop.fail(ReportError(code='provider_quota_exhausted', message='ChatGPT usage limit reached.'))
     if kind == 'auth':
         stop.set()
     return row
@@ -352,6 +360,8 @@ def fake_attempt(
             if kind == 'auth'
             else None
         )
+        if kind == 'quota':
+            fatal = ReportError(code='provider_quota_exhausted', message='ChatGPT usage limit reached.')
         outcome = Outcome(
             schema_family='pr_similarity_os.outcome',
             schema_version=2,
@@ -399,7 +409,7 @@ class _CancelledInvocation(Invocation):
         )
         self.cwd = cwd
 
-    def run(self, _prompt: bytes, stop: Stop) -> tuple[ProcessResult, EventTracker]:
+    def run(self, prompt: bytes, cancel: threading.Event) -> tuple[ProcessResult, EventTracker]:
         """Exercise real cancellation without spawning an unavailable runtime."""
         return (
             run_process(
@@ -408,7 +418,7 @@ class _CancelledInvocation(Invocation):
                 cwd=self.cwd,
                 timeout=1,
                 grace=0.1,
-                cancel=stop,
+                cancel=cancel,
                 log=self.logs / 'agent.log',
             ),
             EventTracker(),
@@ -1147,9 +1157,13 @@ def test_worker_phase_updates_are_coalesced_and_committed_by_coordinator(
     assert selected.processing_status == 'completed' and selected.outcome is not None
 
 
+@pytest.mark.parametrize('failure_type', [BenchmarkError, KeyboardInterrupt, SystemExit])
 @pytest.mark.parametrize('partial_evidence', [False, True])
 def test_real_lock_initialization_failure_cleans_only_empty_owned_allocation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, partial_evidence: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    partial_evidence: bool,
+    failure_type: type[BenchmarkError] | type[KeyboardInterrupt] | type[SystemExit],
 ) -> None:
     """Actual lock files do not create ghost runs, while any partial evidence is retained."""
     config, basket = config_and_basket(tmp_path)
@@ -1160,10 +1174,14 @@ def test_real_lock_initialization_failure_cleans_only_empty_owned_allocation(
         assert (directory / '.lock').is_file() and getattr(kwargs['lease'], 'active')
         if partial_evidence:
             (directory / 'operator-note.txt').write_text('Retain partial evidence.\n')
+        if failure_type is KeyboardInterrupt:
+            raise KeyboardInterrupt('Fixture initialization failure.')
+        if failure_type is SystemExit:
+            raise SystemExit('Fixture initialization failure.')
         raise BenchmarkError('creation_failed', 'Fixture initialization failure.')
 
     monkeypatch.setattr(RunStore, 'create', classmethod(fail_create))
-    with pytest.raises(BenchmarkError, match='Fixture initialization failure'):
+    with pytest.raises(failure_type, match='Fixture initialization failure'):
         run(config, basket, output=output)
     retained = list(output.iterdir())
     if partial_evidence:
@@ -1218,3 +1236,144 @@ def test_empty_allocation_cleanup_preserves_replaced_lock_inode(tmp_path: Path) 
         assert (directory / '.lock').lstat().st_ino == replacement.st_ino
     finally:
         os.close(descriptor)
+
+
+@pytest.mark.parametrize('max_retries', [0, 2])
+@pytest.mark.parametrize('progress_mode', ['auto', 'plain', 'off'])
+def test_provider_quota_failure_resumes_without_automatic_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, max_retries: int, progress_mode: str
+) -> None:
+    """Quota remains pending even with no retry budget and cannot poison the next invocation."""
+    provision_fixture(monkeypatch)
+    config, basket = config_and_basket(tmp_path, retries=max_retries)
+    code, directory = run(
+        config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['quota']), progress=progress_mode
+    )
+    first = Report.model_validate(read_json(directory / 'report.json'))
+    assert code == 1 and first.run.status == 'failed'
+    assert first.run.error is not None and first.run.error.code == 'provider_quota_exhausted'
+    assert first.tasks[0].processing_status == 'retry_pending'
+    log = (directory / 'run.log').read_text()
+    assert 'Run stopped: provider_quota_exhausted.' in log
+    assert f'RESUME={directory}' in log
+    assert 'retry_pending=1' in log
+    assert run(config, basket, resume=directory, attempt_function=fake_attempt(['success']))[0] == 0
+    last = Report.model_validate(read_json(directory / 'report.json')).tasks[0]
+    assert last.final_attempt is not None and last.final_attempt.sequence == 2
+    assert last.infrastructure_error is None
+
+
+def test_quota_stop_leaves_unissued_tasks_without_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two active workers drain while the remainder keeps pending state and no reservations."""
+    provision_fixture(monkeypatch)
+    config, basket = config_and_basket(tmp_path)
+    data = BasketV3.model_validate(read_json(basket))
+    for number in range(2, 5):
+        row = data.tasks[0].model_copy(deep=True)
+        row.id = task_identity(data.meta.repository, 'pull_request', number)
+        row.change_request.number = number
+        row.change_request.url = f'https://github.com/owner/repo/pull/{number}'
+        data.tasks.append(row)
+        data.meta.selection.selected_ids.append(row.id)
+        assert isinstance(row.provenance.generation, Generation)
+        data.meta.selection.generation_keys[row.id] = row.provenance.generation.input_sha256
+    data.meta.counts.input = data.meta.counts.succeeded = 4
+    for counts in (data.meta.coverage.collect, data.meta.coverage.filter, data.meta.coverage.generate):
+        counts.input = counts.succeeded = 4
+    data.meta.coverage.discovery.matched = data.meta.coverage.discovery.selected = data.meta.coverage.selected = 4
+    selection = data.meta.selection
+    selection.fingerprint = sha256(
+        {'tasks': [[identifier, selection.generation_keys[identifier]] for identifier in selection.selected_ids]}
+    )
+    write_json(basket, data)
+    barrier = threading.Barrier(2)
+    issued = []
+
+    def attempt(
+        config: RunConfig,
+        basket_row: BasketRecord,
+        run_dir: Path,
+        identity: NativeIdentity,
+        runtime: Runtime,
+        bwrap: Path,
+        command: Command,
+        metadata: ReportAttempt,
+        stop: Stop,
+        *,
+        registration: TaskRegistration,
+    ) -> Outcome:
+        """Synchronize active workers and report only outcomes actually observed by each."""
+        issued.append(registration.ordinal)
+        assert registration.ordinal <= 2
+        barrier.wait(timeout=10)
+        if registration.ordinal == 1:
+            stop.fail(ReportError(code='provider_quota_exhausted', message='ChatGPT usage limit reached.'))
+            kind = 'quota'
+        else:
+            assert stop.wait(timeout=10)
+            kind = 'cancelled'
+        outcome = fake_attempt([kind])(
+            config,
+            basket_row,
+            run_dir,
+            identity,
+            runtime,
+            bwrap,
+            command,
+            metadata,
+            stop,
+            registration=registration,
+        )
+        assert outcome is not None
+        return outcome
+
+    code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=attempt)
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    state = State.model_validate(read_json(directory / '_meta/state.json'))
+    assert code == 1 and sorted(issued) == [1, 2]
+    assert [row.processing_status for row in report.tasks] == ['retry_pending', 'interrupted', 'pending', 'pending']
+    assert [row.execution.status for row in report.tasks] == ['error', 'cancelled', 'not_started', 'not_started']
+    assert all(row.attempt is None and row.seal is None and row.outcome is None for row in state.tasks[2:])
+    assert len(list((directory / 'tasks').glob('*/attempts/*/start.json'))) == 2
+    assert report.summary.error_tasks == 1 and report.summary.pending_tasks == 2
+
+
+def test_quota_reason_survives_failed_seal_and_prints_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Independent evidence I/O failure cannot replace the already observed quota cause."""
+    provision_fixture(monkeypatch)
+    config, basket = config_and_basket(tmp_path)
+
+    def fail_seal(row: TaskDraft, directory: Path, relative: Path, identity: NativeIdentity) -> None:
+        """Model an unwritable native seal after quota has stopped issuance."""
+        raise OSError('Synthetic seal I/O failure.')
+
+    code, directory = run(
+        config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['quota'], before_seal=fail_seal)
+    )
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    assert code == 1 and report.run.status == 'failed'
+    assert report.run.error is not None and report.run.error.code == 'provider_quota_exhausted'
+    log = (directory / 'run.log').read_text()
+    assert 'Some attempt evidence could not be saved' in log
+    assert f'RESUME={directory}' in log
+
+
+def test_user_signal_keeps_quota_reason_in_interrupted_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A user interrupt changes the run exit status without erasing provider evidence."""
+    provision_fixture(monkeypatch)
+    config, basket = config_and_basket(tmp_path)
+    original_fail = Stop.fail
+
+    def interrupt_after_quota(stop: Stop, failure: ReportError) -> bool:
+        """Deliver the signal after quota is known and before the attempt is sealed."""
+        selected = original_fail(stop, failure)
+        stop.signal(signal.SIGINT, None)
+        return selected
+
+    monkeypatch.setattr(Stop, 'fail', interrupt_after_quota)
+    code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=fake_attempt(['quota']))
+    report = Report.model_validate(read_json(directory / 'report.json'))
+    assert code == 130 and report.run.status == 'interrupted'
+    assert report.run.error is not None and report.run.error.code == 'provider_quota_exhausted'
+    assert report.tasks[0].processing_status == 'retry_pending'
+    assert report.tasks[0].execution.status == 'error'

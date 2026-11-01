@@ -13,9 +13,8 @@ from typing import TextIO
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
-from pydantic import ValidationError
-
 from basket_collector.runtime.progress import Progress
+from pydantic import ValidationError
 
 
 def sanitize_git_stderr(stderr: bytes, secret_names: tuple[str, ...] = ()) -> str:

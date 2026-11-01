@@ -3,7 +3,6 @@
 import json
 
 import httpx
-
 from basket_collector.config import CollectConfig, SourceConfig
 from basket_collector.models.sources import change_id
 from basket_collector.providers.github import GitHubClient

@@ -4,13 +4,12 @@ from pathlib import Path
 
 import codebleu.utils
 import pytest
-from test_runner import config_and_basket
-
 from benchmark.errors import BenchmarkError
 from benchmark.metrics import codebleu as metric
 from benchmark.models.report import Report
 from benchmark.persistence.storage import read_json
 from benchmark.runtime import coordinator, runner
+from test_runner import config_and_basket
 
 
 def test_broken_grammar_fails_before_native_provisioning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

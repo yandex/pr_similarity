@@ -12,7 +12,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import httpx
-
 from benchmark.errors import BenchmarkError
 from benchmark.execution.cancellation import cancellable, check_cancelled
 from benchmark.execution.process import run_process

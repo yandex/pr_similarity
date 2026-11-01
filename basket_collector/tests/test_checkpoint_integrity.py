@@ -7,10 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_contracts import _basket, _filter, _tasks
-from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
-from test_storage import _document
-
 from basket_collector.config import CollectorConfig
 from basket_collector.models.artifacts import (
     BasketDocument,
@@ -29,6 +25,9 @@ from basket_collector.persistence.storage import (
 from basket_collector.pipeline import Pipeline
 from basket_collector.providers.github import GitHubError
 from basket_collector.providers.github_source import GitHubRemoteVCS
+from test_contracts import _basket, _filter, _tasks
+from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
+from test_storage import _document
 
 
 class _FailSecondPR(FakeGitHub):

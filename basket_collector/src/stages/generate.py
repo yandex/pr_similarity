@@ -3,9 +3,6 @@
 import json
 import threading
 
-from jinja2 import StrictUndefined, TemplateError, meta, nodes
-from jinja2.sandbox import SandboxedEnvironment
-
 from basket_collector.config import (
     GenerationConfig,
     TemplateSnapshot,
@@ -25,6 +22,8 @@ from basket_collector.providers.llm import (
     LLMClient,
     LLMConfigurationError,
 )
+from jinja2 import StrictUndefined, TemplateError, meta, nodes
+from jinja2.sandbox import SandboxedEnvironment
 
 _BLOCKED_NODES = (
     nodes.Call,

@@ -8,9 +8,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from test_operation_workflows import empty_run, stopped_run
-from test_pricing import policy
-
 from benchmark.errors import BenchmarkError
 from benchmark.models import Report, State, Usage, WireModel
 from benchmark.models.evidence import (
@@ -38,6 +35,8 @@ from benchmark.pricing.policy import load_policy
 from benchmark.pricing.summary import build_cost_summary
 from benchmark.runtime import attempt as executor
 from benchmark.runtime.commands import Command
+from test_operation_workflows import empty_run, stopped_run
+from test_pricing import policy
 
 
 def tariffs(tmp_path: Path) -> Path:

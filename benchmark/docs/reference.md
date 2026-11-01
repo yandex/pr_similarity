@@ -96,9 +96,28 @@ Timeouts can still have a nonempty diff and a quality score. Infrastructure
 failures are separate and always use the configured retry budget. HTTP 5xx follows
 that infrastructure policy. Credentials rejection stops the whole run for explicit
 resume after renewal. Other terminal OpenCode errors are agent failures even when
-its exit code is zero; partial diffs can still be scored. Native OpenCode owns 429
-retries. Enable `agent.retries.categories: [agent_error]` to retry agent failures
+its exit code is zero; partial diffs can still be scored. Native OpenCode owns ordinary 429
+retries. The explicit ChatGPT OAuth quota response below stops the run instead. Enable `agent.retries.categories: [agent_error]` to retry agent failures
 under the same `max_retries` budget; it is disabled by default.
+
+For ChatGPT OAuth with the OpenAI provider, a terminal `APIError` with HTTP 429
+and JSON response body `error.type=usage_limit_reached` stops the run immediately.
+This applies even when OpenCode marks the response retryable. The runner prints
+`provider_quota_exhausted`, a provider-reported reset hint when available, and a
+resume command. It cancels active agents and saves their source and usage evidence;
+no new tasks are issued after the stop is observed. The run ends as `failed` with
+exit code 1 (a user signal retains its normal interrupted status and signal exit code).
+
+Unissued tasks stay `pending`. Attempts that received the quota response retain
+`execution.status=error` and the infrastructure reason `provider_quota_exhausted`,
+with coordinator status `retry_pending`. Cancelled sibling attempts stay `interrupted`;
+completed results remain unchanged. No automatic retry or wait for quota occurs,
+even with a positive retry budget. Resume manually after quota is available using
+the command above and the original basket. Scoring saved partial changes does not
+complete a quota-stopped task: resume still starts a fresh native attempt. Historical
+attempts already saved as ordinary completed `agent_error` are not reclassified.
+API-key runs, generic 429 responses, tool errors and text mentioning quota retain
+their previous policies. Reset hints are advisory; they do not authorize a retry.
 
 PROGRESS defaults to auto: TTY creates a task row when work starts, then updates
 that row through preparing/setup/running/saving/scoring and retries. Ordinal,

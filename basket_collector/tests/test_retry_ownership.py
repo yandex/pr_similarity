@@ -4,7 +4,6 @@ import threading
 
 import httpx
 import pytest
-
 from basket_collector.config import GitHubConfig, RetryPolicy
 from basket_collector.models.artifacts import StageError
 from basket_collector.providers.github import GitHubClient, GitHubError

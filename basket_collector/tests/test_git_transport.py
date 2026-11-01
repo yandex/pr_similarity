@@ -11,7 +11,6 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
-
 from basket_collector.vcs.git import (
     GitAuthenticationError,
     GitRepository,

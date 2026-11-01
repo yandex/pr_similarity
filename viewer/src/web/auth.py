@@ -6,7 +6,6 @@ from collections import OrderedDict
 
 from starlette.requests import Request
 from starlette.responses import Response
-
 from viewer.config import Config
 from viewer.errors import ViewerError
 from viewer.persistence.database import AccountActor, Database

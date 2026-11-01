@@ -6,9 +6,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from test_operation_workflows import empty_run, stopped_run
-from test_pricing import policy
-
 from benchmark.errors import BenchmarkError
 from benchmark.models import Report
 from benchmark.models.evidence import ArtifactReceipt, OperationReceipt, OperationResult
@@ -20,6 +17,8 @@ from benchmark.pricing import operations as module
 from benchmark.pricing.policy import load_policy
 from benchmark.runtime import attempt as executor
 from benchmark.runtime.commands import Command
+from test_operation_workflows import empty_run, stopped_run
+from test_pricing import policy
 
 
 def make_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:

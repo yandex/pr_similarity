@@ -5,8 +5,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-
-from dotenv import load_dotenv
+from typing import NoReturn
 
 from benchmark.config import load_config
 from benchmark.errors import OPERATION_ERRORS, BenchmarkError
@@ -18,12 +17,13 @@ from benchmark.presentation.visualize import visualize
 from benchmark.pricing.operations import reprice
 from benchmark.publication.publish import publish
 from benchmark.runtime.runner import run
+from dotenv import load_dotenv
 
 
 class SafeParser(argparse.ArgumentParser):
     """Validate CLI arguments without echoing credential values."""
 
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         """Reject invalid command arguments without printing their values."""
         self.exit(
             2, 'Invalid arguments; use --help for accepted options. Credentials must not be supplied as literals.\n'

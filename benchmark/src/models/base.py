@@ -1,11 +1,13 @@
 """Lossless object representation for JSON Schema validated artifacts."""
 
+# Pydantic deliberately specializes inherited schema fields at runtime.
+# Preserve these existing schemas; variance exceptions below are limited to their field declarations.
+
 from types import NotImplementedType
 from typing import Annotated, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, SkipValidation
-
 from benchmark.json_types import JsonValue
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, SkipValidation
 
 
 def json_value(value: object) -> JsonValue:
@@ -51,7 +53,9 @@ class WireModel(BaseModel):
 
     model_config = ConfigDict(strict=True, extra='allow', protected_namespaces=())
     schema_pointer: ClassVar[str] = '#'
-    __pydantic_extra__: dict[str, ValidatedJsonValue] = Field(init=False)
+    __pydantic_extra__: dict[str, ValidatedJsonValue] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+        Field(init=False)
+    )
 
     def __eq__(self, other: object) -> bool | NotImplementedType:
         """Compare artifact content across independently declared schema fragments."""

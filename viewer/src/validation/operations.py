@@ -8,7 +8,6 @@ from importlib.resources import files
 
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
-
 from viewer.errors import ViewerError
 from viewer.models import Report, Run, State, Usage, WireModel
 from viewer.models.evidence import (

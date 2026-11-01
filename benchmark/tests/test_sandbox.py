@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from benchmark.errors import BenchmarkError
 from benchmark.execution.sandbox import Sandbox
 

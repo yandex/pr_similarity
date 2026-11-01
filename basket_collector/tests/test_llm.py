@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-
 from basket_collector.config import GenerationConfig
 from basket_collector.providers.llm import (
     GenerationInterrupted,
@@ -473,7 +472,7 @@ def test_cooldown_arriving_during_durable_request_reservation(monkeypatch: pytes
     monkeypatch.setenv('TEST_LLM_KEY', 'fixture')
     reserved, release, waiting = threading.Event(), threading.Event(), threading.Event()
     sent: list[float] = []
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
     reservations: list[bool] = []
 
     class ObservedEvent(threading.Event):
@@ -506,7 +505,7 @@ def test_cooldown_arriving_during_durable_request_reservation(monkeypatch: pytes
                 try:
                     with record_scope(), generation_requests(reserve):
                         client.generate('system', 'blocked worker')
-                except BaseException as error:
+                except Exception as error:
                     errors.append(error)
 
             thread = threading.Thread(target=worker)

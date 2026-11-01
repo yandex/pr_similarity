@@ -27,6 +27,10 @@ documentation and skills portable, with deployment-neutral examples and paths.
   A successful process exit alone does not prove evidence or publication is valid.
 - Existing authorization determines live runs, paid generation, uploads, account
   changes and deployment. A docs/config request alone does not authorize those.
+- For a release, keep all module versions and the tracked `release-manifest.json`
+  in sync. After public files are final, generate an export with
+  `tools/prepare_release.py`, validate it with `tools/check_release.py`, and copy
+  its generated manifest back to the source tree.
 - Validate docs with local links, config loaders and bounded offline examples.
   For runtime changes, run the owning README's tests/smoke as applicable.
 

@@ -8,8 +8,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, TypeGuard, TypeVar
 
-from pydantic import ValidationError
-
 from basket_collector import __version__
 from basket_collector.models.artifacts import (
     BasketDocument,
@@ -34,6 +32,7 @@ from basket_collector.persistence.artifact_io import canonical_bytes as canonica
 from basket_collector.persistence.artifact_io import utc_now as utc_now
 from basket_collector.persistence.checkpoints import validate_checkpoint
 from basket_collector.persistence.publication import STAGE_FILES, PublicationStore
+from pydantic import ValidationError
 
 StageDocument = CollectDocument | FilterDocument | TasksDocument | BasketDocument
 DocumentT = TypeVar('DocumentT', bound=StageDocument)

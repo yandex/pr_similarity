@@ -10,7 +10,6 @@ import pytest
 from helpers import service_for
 from starlette.requests import Request
 from starlette.testclient import TestClient
-
 from viewer import cli
 from viewer.config import Config
 from viewer.errors import ViewerError

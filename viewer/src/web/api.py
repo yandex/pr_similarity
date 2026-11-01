@@ -23,7 +23,6 @@ from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
-
 from viewer.config import Config
 from viewer.errors import ViewerError
 from viewer.persistence.database import Actor, Database
@@ -179,6 +178,7 @@ class _Application:
         """Read or update the browser session according to the HTTP method."""
         if 'authorization' in request.headers:
             raise ViewerError('invalid_grant', 'This route requires browser credentials.', 401)
+        session_token: str | None = None
         if request.method == 'POST':
             value = await self.body(request, {'login', 'password'})
             session_token, result = await self.authenticate_perform(
@@ -191,6 +191,7 @@ class _Application:
         response = JSONResponse(result)
         self.browser.csrf_cookie(response, result['csrf_token'], request)
         if request.method == 'POST':
+            assert session_token is not None
             response.set_cookie(
                 SESSION_COOKIE,
                 session_token,

@@ -8,7 +8,6 @@ from typing import TypedDict
 
 import httpx
 import pytest
-
 from basket_collector.config import CollectConfig, SourceConfig
 from basket_collector.models.artifacts import JsonValue
 from basket_collector.models.sources import Repository, change_id
@@ -391,3 +390,32 @@ def test_gitlab_followup_uses_frozen_project_identity(empty_issue_project: bool)
         remote.get_commits(record)
     assert failure.value.code == 'source_changed'
     assert path_lookups == 2
+
+
+def test_failed_wait_observer_is_disabled_without_disclosing_exception(caplog: pytest.LogCaptureFixture) -> None:
+    """A broken display cannot stop GitLab requests or expose its exception text."""
+    calls = []
+
+    def observer(reason: str) -> None:
+        """Simulate a presentation error with private diagnostic text."""
+        calls.append(reason)
+        raise RuntimeError('fixture-sensitive-observer-message')
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Return a successful API result independently of display state."""
+        return httpx.Response(200, json={'id': 1})
+
+    config = SourceConfig(
+        provider='gitlab', server_url='https://gitlab.example.org', project='group/project', requests_per_second=1000000
+    )
+    client = GitLabClient(config, transport=httpx.MockTransport(handler), token='test')
+    client.wait_callback = observer
+    try:
+        assert client.request('projects/1')[0] == {'id': 1}
+        assert client.request('projects/1')[0] == {'id': 1}
+        assert client.wait_callback is None
+    finally:
+        client.close()
+    assert len(calls) == 1
+    assert 'wait observer failed and was disabled' in caplog.text
+    assert 'fixture-sensitive-observer-message' not in caplog.text

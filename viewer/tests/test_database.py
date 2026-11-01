@@ -6,7 +6,6 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-
 from viewer.errors import ViewerError
 from viewer.persistence.database import Database
 

@@ -6,9 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fixture_helpers import descriptor
-from pydantic import ValidationError
-
 from basket_collector import __version__
 from basket_collector.models.artifacts import (
     ChangeRequest,
@@ -37,6 +34,8 @@ from basket_collector.persistence.storage import (
     single_writer,
     stage_sha256,
 )
+from fixture_helpers import descriptor
+from pydantic import ValidationError
 
 
 def _producer() -> Producer:

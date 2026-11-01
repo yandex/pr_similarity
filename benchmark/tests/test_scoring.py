@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from benchmark.errors import BenchmarkError
 from benchmark.metrics import codebleu, scoring
 from benchmark.metrics.scoring import (

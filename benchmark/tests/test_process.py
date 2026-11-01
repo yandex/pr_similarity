@@ -5,7 +5,7 @@ import sys
 import threading
 from pathlib import Path
 
-from benchmark.execution.process import run_process
+from benchmark.execution.process import Redactor, run_process
 from benchmark.runtime.runner import Stop
 
 
@@ -228,3 +228,38 @@ def test_native_routing_redacts_all_streams_and_keeps_later_callbacks(tmp_path: 
     assert ('stdout', '<redacted>') in delivered
     assert result.warnings == ['output_callback_failed']
     assert (tmp_path / 'runtime.log').read_bytes() == b''
+
+
+def test_terminal_event_is_delivered_before_exit_with_credentials(tmp_path: Path) -> None:
+    """A complete safe line must trigger cancellation even when a known secret is configured."""
+    stop = threading.Event()
+    delivered = []
+
+    def receive(stream: str, line: str) -> None:
+        """Stop the waiting child on its terminal event rather than on timeout."""
+        delivered.append((stream, line))
+        stop.set()
+
+    result = run_process(
+        [sys.executable, '-c', 'import signal; print(\'{"type":"error"}\', flush=True); signal.pause()'],
+        env={},
+        cwd=tmp_path,
+        timeout=2,
+        grace=0.1,
+        cancel=stop,
+        log=tmp_path / 'runtime.log',
+        secrets=['synthetic-oauth-access-token'],
+        on_output=receive,
+    )
+    assert result.status == 'cancelled'
+    assert delivered == [('stdout', '{"type":"error"}')]
+
+
+def test_redactor_preserves_secrets_at_every_chunk_boundary() -> None:
+    """Minimal buffering still masks overlapping secrets split at any byte offset."""
+    content = b'prefix token-value and token-value-long suffix\n'
+    for boundary in range(len(content) + 1):
+        redactor = Redactor(['token-value', 'token-value-long'])
+        result = redactor.feed(content[:boundary]) + redactor.feed(content[boundary:]) + redactor.feed(b'', final=True)
+        assert b'token-value' not in result
+        assert result.startswith(b'prefix ') and result.endswith(b' suffix\n')

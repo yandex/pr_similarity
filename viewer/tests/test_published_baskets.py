@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from viewer.util import json_bytes, parse_json
 from viewer.validation.basket import validate_basket
 

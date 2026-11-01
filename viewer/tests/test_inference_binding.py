@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 from helpers import archive_fixture, documents
 from python_fixtures import python_document
-
 from viewer.config import Limits
 from viewer.errors import ViewerError
 from viewer.models import JsonValue, Report

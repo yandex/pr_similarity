@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 from helpers import archive_fixture
-
 from viewer.config import Limits
 from viewer.errors import ViewerError
 from viewer.validation.archive import validate_archive

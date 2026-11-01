@@ -8,7 +8,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-
 from benchmark.errors import BenchmarkError
 from benchmark.execution.auth import auth_snapshot
 from benchmark.persistence.storage import file_lock, read_json

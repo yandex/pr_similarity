@@ -11,7 +11,6 @@ import threading
 from pathlib import Path
 
 import pytest
-
 from benchmark.persistence.storage import read_json
 from benchmark.runtime import commands
 from benchmark.runtime.commands import Command

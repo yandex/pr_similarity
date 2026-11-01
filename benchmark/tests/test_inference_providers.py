@@ -3,9 +3,8 @@
 from copy import deepcopy
 
 import pytest
-from test_inference import identity
-
 from benchmark.presentation.inference import build_inference, generated_groups
+from test_inference import identity
 
 
 @pytest.mark.parametrize(

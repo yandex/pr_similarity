@@ -1,19 +1,16 @@
 """State-owned stopped-run fixtures exercise production execution without model access."""
 
+import json
 import uuid
 from pathlib import Path
 from typing import NoReturn
 
 import pytest
 import yaml
-from python_fixtures import freeze_python
-from test_attempt_executor import controlled_native
-from test_basket import payload
-
 from benchmark.config import RunConfig, load_config
 from benchmark.errors import BenchmarkError
 from benchmark.execution.provisioning import Runtime
-from benchmark.models.evidence import NativeIdentity
+from benchmark.models.evidence import NativeIdentity, Outcome
 from benchmark.models.report import ReportAgentResolvedRuntime, ReportAttempt
 from benchmark.models.runtime import ProvisioningReceipt
 from benchmark.persistence.artifact_refs import reference
@@ -24,6 +21,9 @@ from benchmark.runtime.commands import Command
 from benchmark.runtime.coordinator import initial_report
 from benchmark.runtime.lifecycle import Stop
 from benchmark.validation.basket import Basket, load_basket
+from python_fixtures import freeze_python
+from test_attempt_executor import controlled_native
+from test_basket import payload
 
 
 def _inputs(tmp_path: Path, attempts: int) -> tuple[RunConfig, Basket, Path]:
@@ -54,16 +54,9 @@ def _fail_score(*_args: object, **_kwargs: object) -> NoReturn:
     raise BenchmarkError('scoring_failed', 'Fixture host scoring failed.')
 
 
-def stopped_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, score_error: bool = False, attempts: int = 1
-) -> tuple[Path, RunConfig, Path]:
-    """Create accepted native seal/outcome and a stopped authoritative state."""
-    config, basket, dataset = _inputs(tmp_path, attempts)
-    directory = tmp_path / 'run'
-    directory.mkdir()
-    invocation_id = str(uuid.uuid4())
-    initial = initial_report(config, basket, '11111111-1111-4111-8111-111111111111', invocation_id)
-    runtime = Runtime(
+def _stopped_runtime() -> Runtime:
+    """Provide the exact pinned receipt used by saved-operation fixtures."""
+    return Runtime(
         Path('/usr/bin/true'),
         ProvisioningReceipt.model_validate(
             {
@@ -76,6 +69,50 @@ def stopped_run(
             }
         ),
     )
+
+
+def _quota_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RunConfig:
+    """Configure synthetic OAuth capture without reading a real profile."""
+    config_path = tmp_path / 'config.yaml'
+    data = yaml.safe_load(config_path.read_text())
+    data['agent']['auth'] = {'mode': 'chatgpt_oauth', 'profile': str(tmp_path / 'profile')}
+    data['agent']['config']['opencode_json']['model'] = 'openai/gpt-6.1-sol'
+    config_path.write_text(yaml.safe_dump(data))
+    config = load_config(config_path)
+    monkeypatch.setattr(executor, '_oauth', lambda *_args, **_kwargs: None)
+    return config
+
+
+def _native_errors(attempts: int, quota: bool) -> list[dict]:
+    """Select controlled provider errors for saved-operation scenarios."""
+    errors = [{'name': 'APIError', 'data': {'statusCode': 503}}] if attempts > 1 else []
+    if quota:
+        errors = [
+            {
+                'name': 'APIError',
+                'data': {'statusCode': 429, 'responseBody': json.dumps({'error': {'type': 'usage_limit_reached'}})},
+            }
+        ]
+    return errors
+
+
+def stopped_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    score_error: bool = False,
+    attempts: int = 1,
+    quota: bool = False,
+) -> tuple[Path, RunConfig, Path]:
+    """Create accepted native seal/outcome and a stopped authoritative state."""
+    config, basket, dataset = _inputs(tmp_path, attempts)
+    if quota:
+        config = _quota_config(tmp_path, monkeypatch)
+    directory = tmp_path / 'run'
+    directory.mkdir()
+    invocation_id = str(uuid.uuid4())
+    initial = initial_report(config, basket, '11111111-1111-4111-8111-111111111111', invocation_id)
+    runtime = _stopped_runtime()
     with run_lock(directory) as lease:
         store = RunStore.create(directory, initial, basket, config, lease=lease)
         write_json(directory / '_meta/runtime.json', runtime.receipt)
@@ -96,8 +133,10 @@ def stopped_run(
             directory, 'run', invocation_id=invocation_id, config=config.data, progress_total=1, level='ERROR'
         )
         registration = store.registry.tasks[0]
-        errors = [{'name': 'APIError', 'data': {'statusCode': 503}}] if attempts > 1 else []
-        controlled_native(monkeypatch, registration, errors=errors)
+        errors = _native_errors(attempts, quota)
+        controlled_native(
+            monkeypatch, registration, errors=errors, model='openai/gpt-6.1-sol' if quota else 'fixture/model'
+        )
         identity = NativeIdentity.model_validate(
             {
                 'run_id': store.registry.id,
@@ -108,6 +147,7 @@ def stopped_run(
                 'metric': initial.metric,
             }
         )
+        outcome: Outcome | None = None
         try:
             for sequence in range(1, attempts + 1):
                 attempt = ReportAttempt.model_validate(
@@ -139,11 +179,16 @@ def stopped_run(
                 store.accept_fact(registration.id, 'seal', outcome.seal)
                 assert outcome.task.artifacts.outcome is not None
                 outcome_ref = reference(directory, outcome.task.artifacts.outcome)
-                status = 'retry_pending' if sequence < attempts else ('interrupted' if score_error else 'completed')
+                status = (
+                    'retry_pending' if quota or sequence < attempts else ('interrupted' if score_error else 'completed')
+                )
                 store.accept_fact(registration.id, 'outcome', outcome_ref, processing_status=status)
                 errors.clear()
             report = store.snapshot()
-            report.run.status = 'interrupted' if score_error else 'completed'
+            report.run.status = 'failed' if quota else 'interrupted' if score_error else 'completed'
+            if quota:
+                assert outcome is not None
+                report.run.error = outcome.fatal
             report.run.finished_at = utc_now()
             store.commit(report)
             command.finish('interrupted' if score_error else 'completed')

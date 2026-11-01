@@ -10,7 +10,6 @@ from pathlib import Path
 import boto3
 import pytest
 from botocore.stub import Stubber
-
 from viewer.cli import administer, lifecycle
 from viewer.config import Config
 from viewer.util import json_bytes

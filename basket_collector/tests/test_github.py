@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-
 from basket_collector.config import GitHubConfig
 from basket_collector.models.sources import issue_id
 from basket_collector.providers.github import GitHubClient, GitHubError, GitHubInterrupted
@@ -709,7 +708,7 @@ def test_rate_limit_cooldown_is_shared_with_concurrent_request(
     cooldown_started = threading.Event()
     second_sent = threading.Event()
     attempts = 0
-    failures: list[BaseException] = []
+    failures: list[Exception] = []
     real_wait = GitHubClient._wait
 
     def observed_wait(self: GitHubClient, seconds: float) -> None:
@@ -759,7 +758,7 @@ def test_rate_limit_cooldown_is_shared_with_concurrent_request(
                     client.get_closing_issues('o/r', 1)
                 else:
                     client.get_pull_request('o/r', 1)
-            except BaseException as exc:
+            except Exception as exc:
                 failures.append(exc)
 
         worker = threading.Thread(target=first, name='rate-limited')
@@ -780,7 +779,7 @@ def test_graphql_cooldown_wait_is_interruptible(monkeypatch: pytest.MonkeyPatch)
     """Verify shutdown interrupts a worker waiting on GraphQL cooldown."""
     stop = threading.Event()
     wait_started = threading.Event()
-    failures: list[BaseException] = []
+    failures: list[Exception] = []
     attempts = 0
     real_wait = GitHubClient._wait
 
@@ -811,7 +810,7 @@ def test_graphql_cooldown_wait_is_interruptible(monkeypatch: pytest.MonkeyPatch)
             """Run the rate-limited request and capture its shutdown result."""
             try:
                 client.get_closing_issues('o/r', 1)
-            except BaseException as exc:
+            except Exception as exc:
                 failures.append(exc)
 
         worker = threading.Thread(target=run)
@@ -829,7 +828,7 @@ def test_prebooked_worker_observes_later_shared_cooldown(monkeypatch: pytest.Mon
     reserved = threading.Event()
     release = threading.Event()
     second_sent = threading.Event()
-    failures: list[BaseException] = []
+    failures: list[Exception] = []
     real_wait = GitHubClient._wait
 
     def observed_wait(self: GitHubClient, seconds: float) -> None:
@@ -859,7 +858,7 @@ def test_prebooked_worker_observes_later_shared_cooldown(monkeypatch: pytest.Mon
             """Send the reserved request in a worker and capture failures."""
             try:
                 client.get_pull_request('o/r', 2)
-            except BaseException as exc:
+            except Exception as exc:
                 failures.append(exc)
 
         worker = threading.Thread(target=prebooked, name='prebooked')
@@ -898,3 +897,28 @@ def test_server_cooldown_applies_to_next_github_record(monkeypatch: pytest.Monke
             client.get_pull_request('o/r', 1)
         assert client.get_pull_request('o/r', 2)['number'] == 2
     assert sent == [100, 160]
+
+
+def test_failed_wait_observer_is_disabled_without_disclosing_exception(caplog: pytest.LogCaptureFixture) -> None:
+    """Optional presentation failure stays visible without affecting subsequent requests."""
+    calls = []
+
+    def observer(reason: str) -> None:
+        """Simulate a presentation error containing private diagnostic text."""
+        calls.append(reason)
+        raise RuntimeError('fixture-sensitive-observer-message')
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Keep both API reads successful despite the observer failure."""
+        return httpx.Response(200, json={'number': 1})
+
+    with GitHubClient(
+        GitHubConfig(requests_per_second=1000000), transport=httpx.MockTransport(handler), token='test'
+    ) as client:
+        client.wait_callback = observer
+        assert client.get_pull_request('o/r', 1)['number'] == 1
+        assert client.get_pull_request('o/r', 1)['number'] == 1
+        assert client.wait_callback is None
+    assert len(calls) == 1
+    assert 'wait observer failed and was disabled' in caplog.text
+    assert 'fixture-sensitive-observer-message' not in caplog.text

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.2
+
+- Stop ChatGPT OAuth runs on an explicit `usage_limit_reached` response, preserve
+  active attempt evidence and leave unfinished tasks available for manual resume.
+  API-key runs and ordinary rate-limit errors retain their existing policy.
+- Deliver complete native event lines promptly while masking credentials across
+  stream chunks. Quota cancellation no longer waits for process exit or timeout.
+- Preserve the original quota cause through stream and evidence-write failures,
+  and keep native retries pending after host-only scoring recovery.
+- Keep v0.3.1 artifact schemas and frozen run identities compatible; existing
+  attempts saved as ordinary agent errors are not automatically reclassified.
+- Normalize Python import ordering and clarify static typing across all three
+  modules while preserving existing serialized schema contracts.
+
 ## 0.3.1
 
 - Wait for a shared Git cache until it becomes available or the run is cancelled.

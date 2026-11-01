@@ -138,3 +138,17 @@ RESUME with the original full basket and compatible agent inputs.
 Sanitized SQLite is accounting rather than a transcript. Effective config and
 copied skills prove availability/configuration, not a skill invocation, MCP call
 or provider behavior. Follow raw events/human logs for those claims.
+
+### Quota-stopped runs
+
+A ChatGPT OAuth quota stop records `run.error.code=provider_quota_exhausted`.
+The triggering attempts retain their actual native error and captured changes;
+state/report mark them `retry_pending`. Unissued tasks stay `pending`, cancelled
+siblings stay `interrupted`, and previously completed results remain selected.
+`agent-error.json`, native `seal.json` and `outcome.json` retain the quota cause.
+Unavailable metrics or usage remain unknown, not zero. Resume with the original
+basket after quota is available; see [resume and quota-stop](reference.md#resume-retries-progress-and-logging).
+
+If a crash prevented an outcome from being saved and host scoring recovery also
+fails, that historical attempt remains incomplete. A fresh attempt can still run;
+publication continues to reject incomplete evidence instead of inventing an outcome.

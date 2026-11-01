@@ -5,8 +5,6 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from test_neutral_models import example
-
 from basket_collector.config import CollectorConfig
 from basket_collector.filters import compact_rejection
 from basket_collector.models.artifacts import (
@@ -23,6 +21,7 @@ from basket_collector.pipeline import Pipeline
 from basket_collector.providers.llm import LLMCallError
 from basket_collector.providers.remote import Candidate, RemoteError
 from basket_collector.vcs.base import VCS
+from test_neutral_models import example
 
 
 def records() -> tuple[BasketDocument, CollectRecord, FilterRecord]:

@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from typing import TextIO
 
 import pytest
-
 from basket_collector.runtime.progress import Progress
 
 

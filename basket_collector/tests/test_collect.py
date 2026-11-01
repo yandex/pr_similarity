@@ -4,7 +4,6 @@ from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
-
 from basket_collector.config import CollectConfig, SourceConfig
 from basket_collector.models.artifacts import CollectRecord, Issue, Repository
 from basket_collector.providers.github import GitHubClient, GitHubError

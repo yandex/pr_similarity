@@ -5,7 +5,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-
 from benchmark.errors import BenchmarkError
 from benchmark.persistence.storage import canonical_bytes, sha256
 from benchmark.runtime.commands import Command

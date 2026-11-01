@@ -5,8 +5,6 @@ import zlib
 from pathlib import Path
 
 import pytest
-from test_git import run, source
-
 from basket_collector.models.sources import SourceDescriptor
 from basket_collector.vcs.git import (
     GitInfrastructureError,
@@ -16,6 +14,7 @@ from basket_collector.vcs.git import (
     GitTimeoutError,
     RejectedChange,
 )
+from test_git import run, source
 
 
 @pytest.fixture

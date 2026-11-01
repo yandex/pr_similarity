@@ -8,7 +8,6 @@ from playwright.sync_api import Page, expect
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 from test_api import create_user
-
 from viewer.config import Limits
 from viewer.models.evidence import TripletIndex
 from viewer.util import digest, json_bytes, parse_json

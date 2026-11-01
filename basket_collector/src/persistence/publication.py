@@ -10,8 +10,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
 
-from pydantic import Field, StrictStr, field_validator, model_validator
-
 from basket_collector.export_validation import validate_export_accounting
 from basket_collector.models.artifacts import (
     BasketDocument,
@@ -33,6 +31,7 @@ from basket_collector.persistence.artifact_io import (
     read_json,
     stage_sha256,
 )
+from pydantic import Field, StrictStr, field_validator, model_validator
 
 STAGE_FILES: MappingProxyType[StageName, str] = MappingProxyType(
     {

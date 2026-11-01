@@ -11,7 +11,6 @@ from pathlib import Path
 from python_fixtures import python_attempt, python_document, python_reference
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
-
 from viewer.models import Run, State
 from viewer.models.evidence import ArtifactReceipt
 from viewer.presentation.cost_summary import build_cost_summary

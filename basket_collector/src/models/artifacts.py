@@ -1,5 +1,8 @@
 """The sole persisted JSON and generated-task contracts for basket collector v3."""
 
+# Pydantic deliberately specializes inherited schema fields at runtime.
+# Preserve these existing schemas; variance exceptions below are limited to their field declarations.
+
 import hashlib
 import json
 import re
@@ -8,6 +11,13 @@ from datetime import datetime
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlsplit
 
+from basket_collector.models.sources import (
+    Repository,
+    RetrievalReceipt,
+    SourceDescriptor,
+    change_id,
+    source_hash,
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -19,14 +29,6 @@ from pydantic import (
     field_validator,
     model_serializer,
     model_validator,
-)
-
-from basket_collector.models.sources import (
-    Repository,
-    RetrievalReceipt,
-    SourceDescriptor,
-    change_id,
-    source_hash,
 )
 
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
@@ -313,20 +315,20 @@ class Discovery(StrictModel):
 class CollectMeta(Meta):
     """Add PR discovery counts to collection stage metadata."""
 
-    stage: Literal['collect'] = 'collect'
+    stage: Literal['collect'] = 'collect'  # pyright: ignore[reportIncompatibleVariableOverride]
     discovery: Discovery
 
 
 class FilterMeta(Meta):
     """Fix metadata to the filter stage."""
 
-    stage: Literal['filter'] = 'filter'
+    stage: Literal['filter'] = 'filter'  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class GenerateMeta(Meta):
     """Fix metadata to the generation stage."""
 
-    stage: Literal['generate'] = 'generate'
+    stage: Literal['generate'] = 'generate'  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class Omission(StrictModel):
@@ -407,8 +409,10 @@ class Coverage(StrictModel):
 class BasketMeta(Meta):
     """Describe the v3 export, selected population and explicit omissions."""
 
-    schema_family: Literal['pr_similarity_os.basket'] = 'pr_similarity_os.basket'
-    stage: Literal['export'] = 'export'
+    schema_family: Literal['pr_similarity_os.basket'] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+        'pr_similarity_os.basket'
+    )
+    stage: Literal['export'] = 'export'  # pyright: ignore[reportIncompatibleVariableOverride]
     name: StrictStr
     description: StrictStr
     maintainers: list[StrictStr]
@@ -693,7 +697,7 @@ def _check_retrieval(source: SourceDescriptor, resolved: object, receipt: Retrie
 class FilterRecord(CollectRecord):
     """Add verified changes and linked issues to a collected PR."""
 
-    revisions: FilterRevisions
+    revisions: FilterRevisions  # pyright: ignore[reportIncompatibleVariableOverride]
     changes: Changes
     issues: list[Issue]
     retrieval: RetrievalReceipt

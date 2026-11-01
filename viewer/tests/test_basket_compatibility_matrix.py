@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from viewer.util import json_bytes as encode
 from viewer.validation.basket import basket_summary, validate_basket
 from viewer.validation.basket import sha256 as hash_json

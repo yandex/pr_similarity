@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 from helpers import archive_fixture, inference
-
 from viewer.config import Config, Limits
 from viewer.errors import StorageError, ViewerError
 from viewer.persistence.database import Database
@@ -241,7 +240,7 @@ def test_publish_deadline_keeps_progress_and_resumes_without_reupload(
             super().__init__()
             self.uploads = []
 
-        def put_file(self, key: str, path: Path, *, deadline: float | None = None) -> None:
+        def put_file(self, key: str, path: str | Path, *, deadline: float | None = None) -> None:
             """Complete the upload and consume four seconds of the publication deadline."""
             super().put_file(key, path)
             self.uploads.append(key)

@@ -6,13 +6,12 @@ from pathlib import Path
 from typing import Any, Callable, cast
 
 import pytest
-from test_pipeline import FakeGitHub, _config
-
 from basket_collector.models.artifacts import CollectDocument, Producer, Repository
 from basket_collector.persistence.storage import read_checkpoint, read_document
 from basket_collector.pipeline import Pipeline, PipelineInterrupted, Shutdown
 from basket_collector.providers.github import GitHubClient, GitHubInterrupted
 from basket_collector.providers.github_source import GitHubRemoteVCS
+from test_pipeline import FakeGitHub, _config
 
 
 class BlockingGitHub(GitHubClient):
@@ -177,3 +176,36 @@ def test_stop_during_first_repository_lookup_saves_resumable_collect(
         Pipeline(config, producer=producer, remote=GitHubRemoteVCS(config.source, client=FakeGitHub())).run('collect')
         == 0
     )
+
+
+@pytest.mark.parametrize('failure_type', [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_worker_failure_drains_started_neighbors_before_propagating(
+    tmp_path: Path, failure_type: type[RuntimeError] | type[KeyboardInterrupt] | type[SystemExit]
+) -> None:
+    """Application and explicit process-control failures retain completed neighbor work."""
+    shutdown = Shutdown()
+    pipeline = Pipeline(
+        _config(tmp_path),
+        shutdown=shutdown,
+        producer=Producer(version='test', python_version='3.12.3', git_version='git test'),
+    )
+    ready = threading.Barrier(2)
+    started = []
+    accepted = []
+    failure = failure_type('fixture worker failure')
+
+    def operation(item: int) -> int:
+        """Fail one worker after its neighbor starts and let the neighbor finish on stop."""
+        started.append(item)
+        ready.wait(timeout=5)
+        if item == 1:
+            raise failure
+        assert shutdown.stop_event.wait(5)
+        return item
+
+    with pytest.raises(failure_type) as caught:
+        pipeline._run_items([1, 2, 3], 2, operation, lambda item, result: accepted.append((item, result)))
+    assert caught.value is failure
+    assert sorted(started) == [1, 2]
+    assert accepted == [(2, 2)]
+    assert shutdown.stop_event.is_set()

@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_pipeline import BASE, FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
-
 from basket_collector.config import FilterConfig
 from basket_collector.filters import compact_rejection
 from basket_collector.models.artifacts import (
@@ -26,6 +24,7 @@ from basket_collector.providers.remote import RemoteVCS
 from basket_collector.runtime.logs import InvocationLogs
 from basket_collector.stages.filter import FilterInterrupted
 from basket_collector.vcs.git import GitFatalError, GitInfrastructureError, GitRepository
+from test_pipeline import BASE, FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
 
 
 def history_rejection(record: CollectRecord) -> RejectedRecord:
@@ -256,7 +255,7 @@ def test_broken_history_warning_stops_active_workers_before_drain(
     neighbor_started = threading.Event()
     warning_failed = threading.Event()
     calls: list[int] = []
-    failures: list[BaseException] = []
+    failures: list[Exception] = []
 
     def filter_one(
         record: CollectRecord,
@@ -287,7 +286,7 @@ def test_broken_history_warning_stops_active_workers_before_drain(
         """Capture the original failure without blocking the test thread."""
         try:
             pipeline.run('filter')
-        except BaseException as error:
+        except Exception as error:
             failures.append(error)
 
     monkeypatch.setattr('basket_collector.pipeline.process_one', filter_one)

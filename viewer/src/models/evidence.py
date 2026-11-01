@@ -7,7 +7,6 @@ ownership and digest validation remains at the archive boundary.
 from typing import Literal, Protocol
 
 from pydantic import Field, ValidationError, field_validator, model_validator
-
 from viewer.errors import ViewerError
 from viewer.util import JsonObject, safe_path
 

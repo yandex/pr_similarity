@@ -6,8 +6,6 @@ from typing import Any, cast
 
 import httpx
 import pytest
-from fixture_helpers import native_config, retrieval
-
 from basket_collector.config import CollectorConfig
 from basket_collector.models.artifacts import (
     ChangedFile,
@@ -25,6 +23,7 @@ from basket_collector.pipeline import Pipeline
 from basket_collector.providers.github import GitHubClient
 from basket_collector.providers.github_source import GitHubRemoteVCS
 from basket_collector.vcs.git import GitRepository
+from fixture_helpers import native_config, retrieval
 
 SHA = 'a' * 40
 BASE = 'b' * 40

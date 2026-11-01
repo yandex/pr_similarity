@@ -7,14 +7,13 @@ from pathlib import Path
 
 import pytest
 import yaml
-from test_agent_input import native_object
-
 from benchmark.config import load_config
 from benchmark.errors import BenchmarkError
 from benchmark.execution.opencode import EventTracker, Invocation
 from benchmark.execution.sandbox import Sandbox
 from benchmark.execution.transcript import Transcript
 from benchmark.persistence.storage import read_json
+from test_agent_input import native_object
 
 
 def test_launch_events_record_root_without_db_lookup() -> None:

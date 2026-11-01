@@ -11,7 +11,6 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
-
 from benchmark.errors import BenchmarkError
 from benchmark.execution.python_runtime import PYTHON_CONTROLS
 from benchmark.json_types import JsonObject, JsonValue

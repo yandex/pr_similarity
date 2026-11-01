@@ -10,7 +10,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-
 from benchmark.errors import BenchmarkError
 from benchmark.execution.provisioning import probe_version, provision_opencode
 from benchmark.persistence.storage import file_lock

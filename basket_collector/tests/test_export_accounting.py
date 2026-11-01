@@ -4,12 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
-from test_collect_rejections import RejectingGitHub, pipeline
-from test_pipeline import _config, _filter_one
-
 from basket_collector.models.artifacts import BasketDocument, CollectDocument
 from basket_collector.persistence.storage import StageStore, StorageError, read_document
 from basket_collector.providers.remote import RemoteError
+from test_collect_rejections import RejectingGitHub, pipeline
+from test_pipeline import _config, _filter_one
 
 
 @pytest.mark.parametrize('direct', [False, True])

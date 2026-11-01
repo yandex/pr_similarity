@@ -5,8 +5,6 @@ from threading import Event
 from typing import cast
 
 import pytest
-from fixture_helpers import descriptor, repository, retrieval
-
 from basket_collector.config import FilterConfig
 from basket_collector.models.artifacts import (
     ChangedFile,
@@ -32,6 +30,7 @@ from basket_collector.stages.filter import (
     process_one,
 )
 from basket_collector.vcs.git import GitRepository
+from fixture_helpers import descriptor, repository, retrieval
 
 BASE = 'a' * 40
 HEAD = 'b' * 40

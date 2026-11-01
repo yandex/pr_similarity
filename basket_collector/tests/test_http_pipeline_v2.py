@@ -4,15 +4,14 @@ from pathlib import Path
 
 import httpx
 import pytest
-from test_llm import _response
-from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer, auth_generation
-
 from basket_collector.models.artifacts import TasksDocument
 from basket_collector.persistence.storage import read_document
 from basket_collector.pipeline import Pipeline
 from basket_collector.providers.github_source import GitHubRemoteVCS
 from basket_collector.providers.llm import LLMClient
 from basket_collector.runtime.attempts import AttemptRunner
+from test_llm import _response
+from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer, auth_generation
 
 
 def test_corrupt_http_body_exhausts_one_generation_record_and_continues(

@@ -1,7 +1,6 @@
 """Glob boundaries and explicit workspace/repository scoping."""
 
 import pytest
-
 from benchmark.vcs.excludes import compile_exclude, resolve_exclude
 
 

@@ -3,9 +3,6 @@
 from typing import cast
 
 import pytest
-from fixture_helpers import descriptor, retrieval
-from test_contracts import _selection_receipt
-
 from basket_collector.models.artifacts import (
     BasketMeta,
     Counts,
@@ -22,6 +19,8 @@ from basket_collector.models.artifacts import (
 )
 from basket_collector.persistence.storage import sha256, stage_sha256
 from basket_collector.stages.export import export_tasks, project_record
+from fixture_helpers import descriptor, retrieval
+from test_contracts import _selection_receipt
 
 
 def _task_record() -> TaskRecord:

@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 from helpers import archive_fixture
 from starlette.testclient import TestClient
-
 from viewer.config import Config
 from viewer.persistence.storage import MemoryStore
 from viewer.util import digest

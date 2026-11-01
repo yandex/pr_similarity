@@ -1,6 +1,7 @@
 """Bounded, read-only GitHub REST and GraphQL access for basket collection."""
 
 import email.utils
+import logging
 import math
 import os
 import threading
@@ -10,7 +11,6 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 import httpx
-
 from basket_collector.config import GitHubConfig
 from basket_collector.models.artifacts import Issue
 from basket_collector.models.sources import Repository, issue_id
@@ -172,11 +172,15 @@ class GitHubClient:
 
     def _notify(self, reason: str) -> None:
         """Offer safe wait state without allowing display errors to affect requests."""
+        callback = self.wait_callback
+        if callback is None:
+            return
         try:
-            if self.wait_callback is not None:
-                self.wait_callback(reason)
+            callback(reason)
         except Exception:
-            pass
+            # Optional display failures must not stop requests or expose exception text.
+            self.wait_callback = None
+            logging.getLogger('basket_collector.diagnostics').warning('GitHub wait observer failed and was disabled.')
 
     def _retry_wait(self, seconds: float) -> None:
         """Describe backoff while keeping the existing delay and stop policy."""

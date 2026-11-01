@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from benchmark.errors import BenchmarkError
 from benchmark.metrics.process import score_saved
 from benchmark.metrics.scoring import score_pr

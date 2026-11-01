@@ -8,7 +8,6 @@ from helpers import archive_fixture, inference
 from playwright.sync_api import Page, expect
 from starlette.applications import Starlette
 from test_task_sort import prepare_tasks
-
 from viewer.util import digest, json_bytes, parse_json, require_object
 from viewer.validation.archive import validate_archive
 
