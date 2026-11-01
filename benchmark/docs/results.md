@@ -152,3 +152,27 @@ basket after quota is available; see [resume and quota-stop](reference.md#resume
 If a crash prevented an outcome from being saved and host scoring recovery also
 fails, that historical attempt remains incomplete. A fresh attempt can still run;
 publication continues to reject incomplete evidence instead of inventing an outcome.
+
+
+## Read incomplete usage in local HTML
+
+Run `make visualize RUN=/path/to/run` to regenerate an autonomous HTML report.
+Cost and token values include known completed requests within incomplete final
+attempts. `(partial)` means the displayed number is a known subtotal, not a
+complete total; hover for complete/partial/unavailable task counts and measured
+request coverage. A measured zero stays zero, while unavailable data is a dash.
+Each category has independent coverage. Unknown request coverage in historical
+evidence is not inferred from the number of tasks.
+
+The default status selection includes `OK`, `no-op` and `timeout`, excluding
+`fail`. Changing it recomputes the selected summaries; Wall Time is unchanged.
+Earlier attempts are excluded from these cards. Their spend remains available
+in the saved report's `costs.all_attempts` scope. Task sorting uses the displayed
+token value and retains its partial label.
+
+A selected saved reprice takes precedence over native cost, including a partial
+or unavailable result. No current prices, new model calls or extrapolation are
+used. Generating the HTML verifies selected artifact references and leaves the
+original report, state, usage and pricing bytes unchanged. Existing HTML files
+must be regenerated to show the additional detail; the new display projection
+is embedded in HTML rather than added to saved benchmark JSON artifacts.

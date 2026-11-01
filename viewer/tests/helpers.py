@@ -249,6 +249,8 @@ def _artifact_files(report: dict, basket_bytes: bytes) -> dict[str, bytes]:
     }
     report['config']['identity_sha256'] = digest(json_bytes({}))
     for task in report['tasks']:
+        # Scalar-only stream fixtures declare no request ledger.
+        task['telemetry'].update(usage_ledger=None, transport='stream', status='partial')
         for row in task['scoring']['files']:
             for role in ('base', 'human', 'ai'):
                 if row[role] is not None:
@@ -326,7 +328,14 @@ def _native_facts(report: dict, task: dict, files: dict[str, bytes]) -> dict:
         'task': copy.deepcopy(task),
         'metric': copy.deepcopy(report['metric']),
         'python_runtime': report['agent']['python_runtime'],
-        'artifact_receipts': python_receipts,
+        'artifact_receipts': [
+            *python_receipts,
+            *(
+                [_reference(task['telemetry']['usage_ledger']['path'], files)]
+                if task['telemetry']['usage_ledger']
+                else []
+            ),
+        ],
     }
     files[prefix + 'seal.json'] = json_bytes(seal)
     seal_ref = _reference(prefix + 'seal.json', files)

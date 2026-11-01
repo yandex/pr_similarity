@@ -13,13 +13,36 @@ retries and exclusions separately, plus configured/effective model facts and ori
 Model shows `provider/model [effort]` from configured native facts. When effort
 is absent or unknown, Model shows only `provider/model`, without brackets.
 Setup contains user tags as-is.
-Partially known cost/usage shows the known subtotal with a compact `(!)` marker.
+Partially known cost/usage shows the known subtotal with a visible `(partial)` label
+and a compact `(!)` explanation.
 Completely unknown measurements remain a dash; measured zero remains zero.
 Hover, focus or tap a marker to see coverage and cost provenance. Score and time
 also mark incomplete coverage. Repriced cost is an API-equivalent estimate;
 native zero with OAuth is not measured API cost, and API-key zero can indicate
 missing model pricing configuration. A timeout may still have a scored diff.
 Durations use seconds, minutes or hours; tooltips retain exact seconds.
+
+Subtotals include completed measured requests inside incomplete tasks, using
+only the state-selected final attempt. For example, 99 measured requests and
+one unfinished request show the known sum and `99/100 requests measured`, while
+the full total remains unknown. Coverage is independent for each token category
+and cost. A known zero subtotal is still marked partial; a dash means no known
+measurement. Request coverage is not the fraction of tokens or money measured.
+Historical evidence without request detail retains its known totals and explicitly
+unknown request coverage. Supported existing publications need no re-upload.
+
+The status selector applies before aggregation; its default includes `OK`,
+`no-op` and `timeout`, excluding `fail`. Task status does not determine usage
+completeness. Wall Time is independent of the selector. Cost/token sorting uses
+the displayed full amount or known subtotal; partial amounts cannot establish
+that an agent is cheaper. The selected saved reprice takes precedence even when
+partial or unavailable; browsing does not reprice tokens or make model calls.
+
+The API's `amount` remains a nullable full total and `known_tasks` counts tasks
+with complete measurements. `known_subtotal` also includes known parts of
+incomplete tasks; `partial_tasks`, `unavailable_tasks`, `known_requests`,
+`total_requests`, `request_coverage_available` and `status` describe coverage.
+These display fields do not change saved benchmark report or archive formats.
 
 On a run page, its logged-in owner can use **Delete Run**; an administrator can
 delete any run. Confirm the displayed name before deletion. The publication moves

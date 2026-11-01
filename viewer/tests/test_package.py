@@ -57,7 +57,7 @@ def test_wheel_installed_without_source(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert result.stdout.strip() == '0.3.2'
+    assert result.stdout.strip() == '0.3.3'
 
 
 def test_frozen_contract_fixtures_match_recorded_hashes() -> None:

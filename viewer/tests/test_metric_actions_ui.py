@@ -149,7 +149,7 @@ def test_partial_metrics_tooltip_duration_and_layout(
     page.goto(origin)
     page.wait_for_selector('tr.run-row')
     row = page.locator('tr.run-row[data-run-id="' + rid + '"]')
-    assert 'Total: 127(!)' in row.inner_text()
+    assert 'Total: 127 (partial)(!)' in row.inner_text()
     note = row.locator('.token-total .metric-note')
     note.focus()
     expect(page.locator('#metric-tooltip')).to_contain_text('1 of 2 selected tasks')

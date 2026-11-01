@@ -8,7 +8,13 @@ from starlette.datastructures import QueryParams
 from viewer.errors import ViewerError
 from viewer.models.report import ReportTask
 from viewer.presentation import run_projection
-from viewer.presentation.metrics import DEFAULT_STATUSES, aggregate, displayed_amount, task_status
+from viewer.presentation.metrics import (
+    DEFAULT_STATUSES,
+    aggregate,
+    displayed_amount,
+    task_status,
+)
+from viewer.presentation.task_measurements import TaskMeasurements
 from viewer.service import CatalogueEntry, ViewerService
 from viewer.util import digest, utc_timestamp
 from viewer.validation.contracts import require
@@ -152,17 +158,20 @@ class Query:
             selected = row[self.sort]
             return selected.casefold() if isinstance(selected, str) else selected
 
-        def compare(a: dict, b: dict) -> int:
+        def compare(left_row: dict, right_row: dict) -> int:
             """Compare sort values with unknown values ordered consistently."""
-            av, bv = value(a), value(b)
-            if av is None or bv is None:
-                primary = (av is None) - (bv is None)
+            left_value, right_value = value(left_row), value(right_row)
+            if left_value is None or right_value is None:
+                primary = (left_value is None) - (right_value is None)
             else:
-                primary = _compare_values(av, bv) * (1 if self.direction == 'asc' else -1)
+                primary = _compare_values(left_value, right_value) * (1 if self.direction == 'asc' else -1)
             if primary:
                 return primary
-            at, bt = (utc_timestamp(a['created_at']), a['run_id']), (utc_timestamp(b['created_at']), b['run_id'])
-            return (at > bt) - (at < bt)
+            left_key, right_key = (utc_timestamp(left_row['created_at']), left_row['run_id']), (
+                utc_timestamp(right_row['created_at']),
+                right_row['run_id'],
+            )
+            return (left_key > right_key) - (left_key < right_key)
 
         return sorted(items, key=cmp_to_key(compare))
 
@@ -189,17 +198,19 @@ class TaskQuery(Query):
                 return row['time']['total_seconds']
             return row['score']
 
-        def compare(a: tuple[int, dict], b: tuple[int, dict]) -> int:
+        def compare(left_item: tuple[int, dict], right_item: tuple[int, dict]) -> int:
             """Compare sort values with unknown values ordered consistently."""
-            av, bv = value(a[1]), value(b[1])
-            if av is None or bv is None:
-                primary = (av is None) - (bv is None)
+            left_value, right_value = value(left_item[1]), value(right_item[1])
+            if left_value is None or right_value is None:
+                primary = (left_value is None) - (right_value is None)
             else:
-                primary = ((av > bv) - (av < bv)) * (1 if self.direction == 'asc' else -1)
+                primary = ((left_value > right_value) - (left_value < right_value)) * (
+                    1 if self.direction == 'asc' else -1
+                )
             if primary:
                 return primary
-            ak, bk = (a[0], a[1]['task_id']), (b[0], b[1]['task_id'])
-            return (ak > bk) - (ak < bk)
+            left_key, right_key = (left_item[0], left_item[1]['task_id']), (right_item[0], right_item[1]['task_id'])
+            return (left_key > right_key) - (left_key < right_key)
 
         return [row for _, row in sorted(enumerate(items), key=cmp_to_key(compare))]
 
@@ -274,10 +285,12 @@ def find_task(service: ViewerService, rid: str, task_id: str) -> tuple[Catalogue
     return row, task
 
 
-def public_task(task: ReportTask, file_aggregation: str) -> dict:
+def public_task(
+    task: ReportTask, file_aggregation: str, measurements: dict[str, TaskMeasurements] | None = None
+) -> dict:
     """Project final task evidence and the requested file aggregation."""
     status = task_status(task)
-    metrics = aggregate([task], [status], 'Mpr', file_aggregation)
+    metrics = aggregate([task], [status], 'Mpr', file_aggregation, measurements)
     return {
         'task_id': task.id,
         'kind': task.kind,

@@ -54,6 +54,7 @@ from viewer.models.state import (
 )
 from viewer.presentation.cost_summary import CostEvidenceError, build_cost_summary
 from viewer.presentation.inference import build_inference, public_inference
+from viewer.presentation.task_measurements import build_task_measurements
 from viewer.util import digest, json_bytes, parse_json, require_object, safe_path
 from viewer.validation.agent_input import validate_agent_input
 from viewer.validation.basket import validate_basket, validate_basket_report
@@ -148,15 +149,15 @@ def _validate_scores(task: ReportTask) -> None:
         0,
     )
     for row in rows:
-        h, a = row.changed_human, row.changed_agent
-        require(h or a)
-        require(row.loc_weight == (max(1, row.human_loc) if h else 0))
+        human_changed, agent_changed = row.changed_human, row.changed_agent
+        require(human_changed or agent_changed)
+        require(row.loc_weight == (max(1, row.human_loc) if human_changed else 0))
         for k, v in [
-            ('human_files', h),
-            ('agent_files', a),
-            ('matched_files', h and a),
-            ('missed_files', h and not a),
-            ('extra_files', a and not h),
+            ('human_files', human_changed),
+            ('agent_files', agent_changed),
+            ('matched_files', human_changed and agent_changed),
+            ('missed_files', human_changed and not agent_changed),
+            ('extra_files', agent_changed and not human_changed),
         ]:
             totals[k] += int(v)
         for k, value in (('human_loc', row.human_loc), ('agent_loc', row.agent_loc), ('loc_weight', row.loc_weight)):
@@ -197,7 +198,12 @@ def validate_identity(
         'config_identity.json',
     ):
         _reference(name, inventory)
-    _validate_registry_state(report, basket, inventory, read_file)
+    store = validate_selected_state(report, basket, inventory, read_file)
+    # Refresh must not discover an evidence rejection after publication is journaled.
+    try:
+        build_task_measurements(store, report)
+    except CostEvidenceError as error:
+        raise ViewerError(error.code, error.message) from error
     identity_raw = require_object(parse_json(read_file('config_identity.json')), 'invalid_inference')
     require(digest(json_bytes(identity_raw)) == report.config.identity_sha256)
     validate_agent_input(report.agent_input, identity_raw, inventory, read_file)
@@ -279,9 +285,9 @@ def _same(left: WireModel | None, right: WireModel | None) -> bool:
     return (left.to_wire() if left is not None else None) == (right.to_wire() if right is not None else None)
 
 
-def _validate_registry_state(
+def validate_selected_state(
     report: Report, basket: Basket, inventory: Mapping[str, Receipt], read_file: Callable[[str], bytes]
-) -> None:
+) -> OperationStore:
     """Bind report rows to the direct v1 registry/state selection, including history."""
     registry_raw = _document_json('run.json', inventory, read_file)
     state_raw = _document_json('_meta/state.json', inventory, read_file)
@@ -371,6 +377,7 @@ def _validate_registry_state(
     for selected, closed in ((state.pending_publish, False), (state.last_publish, True)):
         if selected is not None:
             _validate_publication_selection(selected, closed, report, inventory, read_file)
+    return store
 
 
 def _validate_projection_header(report: Report, registry: Run, state: State) -> None:

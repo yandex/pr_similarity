@@ -2,11 +2,18 @@
 
 from collections import Counter
 from collections.abc import Sequence
+from decimal import Decimal
 from statistics import median
 
 from viewer.errors import ViewerError
 from viewer.models.report import ReportInference, ReportTask, ReportTaskScoring
 from viewer.presentation.inference import generated_groups
+from viewer.presentation.measurements import (
+    Measurement,
+    combine_measurements,
+    measurement_dict,
+)
+from viewer.presentation.task_measurements import TaskMeasurements
 
 STATUSES = ('OK', 'no-op', 'timeout', 'fail')
 DEFAULT_STATUSES = STATUSES[:-1]
@@ -59,7 +66,7 @@ def displayed_amount(value: dict) -> float | None:
     """Sort by the same measured value the UI shows, never by an unknown zero."""
     if value['amount'] is not None:
         return value['amount']
-    return value.get('known_subtotal') if value.get('known_tasks', 0) else None
+    return value.get('known_subtotal') if value.get('known_tasks', 0) or value.get('partial_tasks', 0) else None
 
 
 def score_value(scoring: ReportTaskScoring, aggregation: str) -> float:
@@ -89,6 +96,7 @@ def aggregate(
     statuses: Sequence[str] | None = None,
     pr_aggregation: str = 'LCpr',
     file_aggregation: str = 'LCf',
+    measurements: dict[str, TaskMeasurements] | None = None,
 ) -> dict:
     """Compute selected task metrics without treating unknown values as zero."""
     statuses = list(DEFAULT_STATUSES if statuses is None else statuses)
@@ -110,6 +118,15 @@ def aggregate(
         else (2 * sum(score_weight(t, 'matched_files') for t in scored) / denominator if denominator else 1)
     )
     costs = [task_cost(t) for t in selected]
+    if measurements is None:
+        cost_values = [
+            Measurement(subtotal=Decimal(str(v)) if v is not None else 0, known=v is not None, complete=v is not None)
+            for v, _ in costs
+        ]
+        sources = [source for _, source in costs]
+    else:
+        cost_values = [measurements[t.id].cost for t in selected]
+        sources = [measurements[t.id].cost_source for t in selected]
     durations = [t.execution.duration_seconds for t in selected if t.execution.duration_seconds is not None]
     return {
         'selection': {
@@ -124,13 +141,30 @@ def aggregate(
         'scored_tasks': len(scored),
         'status_counts': {s: sum(task_status(t) == s for t in tasks) for s in STATUSES},
         'cost': {
-            **covered_sum([v for v, _ in costs]),
+            **measurement_dict(combine_measurements(cost_values)),
             'currency': 'USD',
-            'sources': dict(Counter(s for _, s in costs)),
-            'native_zero_tasks': sum(v == 0 and source == 'opencode' for v, source in costs),
+            'sources': dict(Counter(sources)),
+            'native_zero_tasks': sum(
+                v.known and v.subtotal == 0 and source == 'opencode' for v, source in zip(cost_values, sources)
+            ),
         },
         'tokens': {
-            category: covered_sum([getattr(t.telemetry.tokens, category) for t in selected])
+            category: measurement_dict(
+                combine_measurements(
+                    [
+                        (
+                            measurements[t.id].tokens[category]
+                            if measurements is not None
+                            else Measurement(
+                                subtotal=getattr(t.telemetry.tokens, category) or 0,
+                                known=getattr(t.telemetry.tokens, category) is not None,
+                                complete=getattr(t.telemetry.tokens, category) is not None,
+                            )
+                        )
+                        for t in selected
+                    ]
+                )
+            )
             for category in (*TOKEN_CATEGORIES, 'total')
         },
         'time': {
@@ -143,12 +177,14 @@ def aggregate(
     }
 
 
-def aggregate_snapshot(tasks: list[ReportTask]) -> dict[int, dict]:
+def aggregate_snapshot(
+    tasks: list[ReportTask], measurements: dict[str, TaskMeasurements] | None = None
+) -> dict[int, dict]:
     """Retain bounded aggregate views, not every run's full report, in the catalogue."""
     result = {}
     for mask in range(1 << len(STATUSES)):
         statuses = [s for i, s in enumerate(STATUSES) if mask & (1 << i)]
-        common = aggregate(tasks, statuses, 'Mpr', 'Mf')
+        common = aggregate(tasks, statuses, 'Mpr', 'Mf', measurements)
         scored = [t.scoring for t in tasks if task_status(t) in statuses and t.scoring.status == 'available']
         scores = {}
         for pr, field in [('Mpr', None), ('FCpr', 'human_files'), ('LCpr', 'loc_weight')]:

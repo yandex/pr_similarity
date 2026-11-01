@@ -21,8 +21,12 @@ from benchmark.models.report import (
 from benchmark.persistence.storage import atomic_write, run_lock
 from benchmark.presentation.report import read_report
 from benchmark.presentation.visualize_assets import SCRIPT, STYLE
-from benchmark.presentation.visualize_data import embedded_data
-from benchmark.presentation.visualize_dialogs import DIALOG_SCRIPT, DIALOG_STYLE, DIALOGS
+from benchmark.presentation.visualize_data import display_metrics, embedded_data
+from benchmark.presentation.visualize_dialogs import (
+    DIALOG_SCRIPT,
+    DIALOG_STYLE,
+    DIALOGS,
+)
 from benchmark.runtime.commands import Command
 from benchmark.validation.basket import Basket, load_basket
 
@@ -79,7 +83,10 @@ def _cost(value: ReportTelemetryCost | ReportTelemetryApiEquivalent | None) -> s
 def _page(title: str, intro: str, tasks: list[str], report: Report, data: JsonObject | None = None) -> bytes:
     """Build a self-contained run page using the viewer's visual components."""
     payload = json.dumps(report.to_wire(), ensure_ascii=True).replace('<', '\\u003c')
-    details = json.dumps(data or {}, ensure_ascii=True).replace('<', '\\u003c')
+    data = dict(data or {})
+    if 'measurements' not in data:
+        data['measurements'] = display_metrics(report)
+    details = json.dumps(data, ensure_ascii=True).replace('<', '\\u003c')
     document = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -226,9 +233,9 @@ def _task(row: ReportTask, index: int, *, has_diffs: bool = False) -> str:
         + ' · Changes: '
         + _text(row.changes.status)
         + '</p>'
-        '<p class="muted">Tokens: input / output / cache read / cache write: '
+        '<p class="muted task-tokens">Tokens: input / output / cache read / cache write: '
         + _text(_tokens(row.telemetry))
-        + '</p><p class="muted">OpenCode USD: '
+        + '</p><p class="muted task-cost">OpenCode USD: '
         + _cost(row.telemetry.cost)
         + ' · API-equivalent USD: '
         + _cost(row.telemetry.api_equivalent)
