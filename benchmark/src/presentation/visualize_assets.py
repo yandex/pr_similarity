@@ -299,6 +299,7 @@ fieldset{flex-wrap:wrap}
 '''
 
 SCRIPT = '''const report=JSON.parse(document.querySelector('#report-data').textContent);
+const usageDisplay=JSON.parse(document.querySelector('#view-data').textContent).measurements;
 const field=document.querySelector('#search');
 const status=t=>t.infrastructure_error||t.processing_status!=='completed'?'fail':
   t.execution.status==='timeout'?'timeout':t.execution.status==='completed'?
@@ -308,8 +309,13 @@ const measured=values=>{const known=values.filter(v=>v!=null);return {
   subtotal:known.reduce((a,b)=>a+b,0),known:known.length,total:values.length};};
 const scoreClass=v=>v==null?'score-unknown':v>=.75?'score-high':v>=.4?'score-medium':'score-low';
 const format=(v,n=3)=>v==null?'—':Number(v).toFixed(n);
-const covered=(m,n=4)=>m.amount!=null?format(m.amount,n):m.known?
-  format(m.subtotal,n)+' (partial; '+m.known+'/'+m.total+')':'—';
+const displayAmount=m=>m.amount??((m.known_tasks||m.partial_tasks)?m.known_subtotal:null);
+const covered=(m,n=4)=>format(displayAmount(m),n)+(m.status==='partial'?' (partial)':'');
+const coverageTitle=m=>'Final attempts; '+(m.request_coverage_available?
+  m.known_requests+'/'+m.total_requests+' requests measured':
+  m.known_requests+' known requests; full request coverage unknown')+
+  '; '+m.known_tasks+' complete tasks, '+m.partial_tasks+' partial tasks, '+m.unavailable_tasks+' unavailable tasks'+
+  (m.amount==null?'; full total unknown':'');
 const duration=v=>{if(v==null)return '—';const seconds=Math.round(v);
   if(v<60&&Math.round(v*10)/10<60)return format(v,1)+' s';
   const minutes=Math.floor(seconds/60),rest=seconds%60;
@@ -326,10 +332,7 @@ function aggregate(tasks,pr,file){
   return {score:denominator?scored.reduce((a,s)=>a+s[file+'_mlp']*weight(s),0)/denominator:null,
     f1:!scored.length?null:files?2*scored.reduce((a,s)=>a+s.counts.matched_files,0)/files:1,
     median:!durations.length?null:durations.length%2?durations[mid]:(durations[mid-1]+durations[mid])/2,
-    time:measured(tasks.map(t=>t.execution.duration_seconds)),
-    cost:measured(tasks.map(t=>t.telemetry.api_equivalent?
-      (t.telemetry.api_equivalent.status==='complete'?t.telemetry.api_equivalent.amount:null):
-      t.telemetry.cost.amount))};
+    time:measured(tasks.map(t=>t.execution.duration_seconds))};
 }
 function card(name,value,note='',tone=''){
   const card=document.createElement('div');card.className='stat '+tone;card.title=note;
@@ -341,6 +344,8 @@ function refresh(){
   const selected=[...document.querySelectorAll('#selection input:checked')].map(e=>e.value);
   const tasks=report.tasks.filter(t=>selected.includes(status(t)));
   const metric=aggregate(tasks,document.querySelector('#pr').value,document.querySelector('#file').value);
+  const mask=['OK','no-op','timeout','fail'].reduce((mask,s,i)=>mask|(selected.includes(s)?1<<i:0),0);
+  Object.assign(metric,usageDisplay.selections[String(mask)]);
   document.querySelector('#stats').replaceChildren();
   card('Score',format(metric.score),'Weighted score over selected tasks with available scoring.',
     scoreClass(metric.score));
@@ -353,16 +358,18 @@ function refresh(){
   card('Wall Time',duration(wall!=null&&wall>=0?wall:null),
     'Elapsed creation to execution completion; unaffected by selection.');
   const repriced=tasks.filter(t=>t.telemetry.api_equivalent).length;
-  const nativeZero=tasks.some(t=>!t.telemetry.api_equivalent&&t.telemetry.cost.amount===0);
+  const nativeZero=tasks.some(t=>!t.telemetry.api_equivalent&&
+    displayAmount(usageDisplay.tasks[t.id].cost)===0);
   let note='Source: '+(repriced?'reprice ('+repriced+') ':'')+
-    (tasks.length>repriced?'opencode ('+(tasks.length-repriced)+')':'')+'; known tasks '+
-    metric.cost.known+'/'+metric.cost.total;
+    (tasks.length>repriced?'opencode ('+(tasks.length-repriced)+')':'')+'; '+coverageTitle(metric.cost);
   if(nativeZero)note+='; Reported zero is not verified free usage or measured subscription API cost.';
   card('Cost, USD',covered(metric.cost,6),note);card('Selected tasks',tasks.length+'/'+report.tasks.length);
   document.querySelector('#tokens').textContent='Tokens (cache read / input / output / cache write / reasoning): '+
     ['cache_read','input','output','cache_write','reasoning'].map(k=>
-      covered(measured(tasks.map(t=>t.telemetry.tokens[k])),0)).join(' / ')+
-    ' · Total: '+covered(measured(tasks.map(t=>t.telemetry.tokens.total)),0);
+      covered(metric.tokens[k],0)).join(' / ')+
+    ' · Total: '+covered(metric.tokens.total,0);
+  document.querySelector('#tokens').title=Object.entries(metric.tokens)
+    .map(([k,v])=>k+': '+coverageTitle(v)).join('\\n');
   document.querySelector('#statuses').textContent=['OK','no-op','timeout','fail'].map(s=>
     s+': '+report.tasks.filter(t=>status(t)===s).length).join(' · ');
   const file=document.querySelector('#file').value;
@@ -376,15 +383,24 @@ function refresh(){
   const value=row=>{const task=report.tasks[Number(row.dataset.index)];
     return order==='score'?task.scoring[file+'_mlp']:
       order==='time'?task.execution.duration_seconds:
-      order==='total_tokens'?task.telemetry.tokens.total:Number(row.dataset.index);};
+      order==='total_tokens'?displayAmount(usageDisplay.tasks[task.id].tokens.total):Number(row.dataset.index);};
   rows.sort((a,b)=>{const x=value(a),y=value(b);
     return (x==null?(y==null?0:1):y==null?-1:direction*(x-y))||
       Number(a.dataset.index)-Number(b.dataset.index);}).forEach(row=>{
     const task=report.tasks[Number(row.dataset.index)];
     row.hidden=!row.textContent.toLowerCase().includes(field.value.toLowerCase());
     row.querySelector('.task-metrics').textContent='Total Tokens: '+
-      (task.telemetry.tokens.total==null?'—':task.telemetry.tokens.total.toLocaleString())+
+      covered(usageDisplay.tasks[task.id].tokens.total,0)+
       ' · Agent Time: '+duration(task.execution.duration_seconds);
+    const taskMetrics=usageDisplay.tasks[task.id];
+    row.querySelector('.task-metrics').title=coverageTitle(taskMetrics.tokens.total);
+    const tokenLine=row.querySelector('.task-tokens');
+    tokenLine.textContent='Tokens: '+Object.entries(taskMetrics.tokens).map(([k,v])=>k+': '+covered(v,0)).join(' / ');
+    tokenLine.title=Object.entries(taskMetrics.tokens).map(([k,v])=>k+': '+coverageTitle(v)).join('\\n');
+    const costLine=row.querySelector('.task-cost');
+    costLine.textContent=(task.telemetry.api_equivalent?'API-equivalent':'OpenCode')+' USD: '+
+      covered(taskMetrics.cost,8);
+    costLine.title=coverageTitle(taskMetrics.cost);
     const score=row.querySelector('.task-score');const amount=task.scoring[file+'_mlp'];
     score.textContent=format(amount);score.className='task-score numeric '+scoreClass(amount);
     list.append(row);

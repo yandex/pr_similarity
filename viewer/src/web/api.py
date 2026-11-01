@@ -294,7 +294,10 @@ class _Application:
                 request.query_params.get('expected_report_sha256'),
                 request.query_params.get('expected_publication_sha256'),
             )
-            rows = [public_task(t, query.file) for t in self.service.full_report(rid).tasks]
+            rows = [
+                public_task(t, query.file, self.service._require_run(rid)['measurements'])
+                for t in self.service.full_report(rid).tasks
+            ]
             return {
                 **query.page(query.sorted(rows)),
                 'sort': query.sort,
@@ -329,8 +332,12 @@ class _Application:
                 request.query_params.get('expected_report_sha256'),
                 request.query_params.get('expected_publication_sha256'),
             )
-            _, task = find_task(self.service, request.path_params['run_id'], request.path_params['task_id'])
-            return {**public_task(task, query.file), 'condition': task.agent_task, 'files': public_files(task)}
+            row, task = find_task(self.service, request.path_params['run_id'], request.path_params['task_id'])
+            return {
+                **public_task(task, query.file, row['measurements']),
+                'condition': task.agent_task,
+                'files': public_files(task),
+            }
 
         return JSONResponse(await self.perform(read))
 

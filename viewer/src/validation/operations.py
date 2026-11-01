@@ -2,7 +2,7 @@
 
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from importlib.resources import files
 
@@ -21,7 +21,7 @@ from viewer.models.evidence import (
     parse_evidence,
 )
 from viewer.models.evidence import OperationSelection as Selection
-from viewer.util import digest, parse_json, require_object, safe_path
+from viewer.util import digest, json_bytes, parse_json, require_object, safe_path
 
 
 def _require(condition: object) -> None:
@@ -39,6 +39,7 @@ class OperationStore:
     inventory: Mapping[str, Receipt]
     read_file: Callable[[str], bytes]
     validate_report: Callable[[object], Report]
+    _validated_operations: dict[bytes, OperationResult] = field(default_factory=dict, init=False, repr=False)
 
     def document[T: WireModel](self, path: str, model: type[T]) -> T:
         """Decode one typed inventory-owned document with exact byte identity."""
@@ -80,6 +81,9 @@ class OperationStore:
 
     def operation(self, selection: Selection, kind: str) -> OperationResult:
         """Validate a completed result, its input snapshots and accepted commit revision."""
+        cache_key = json_bytes({'selection': selection.to_wire(), 'kind': kind})
+        if cache_key in self._validated_operations:
+            return self._validated_operations[cache_key]
         _require(set(selection.to_wire()) == {'id', 'kind', 'accepted_revision', 'result', 'receipt'})
         identifier = selection.id
         try:
@@ -120,6 +124,7 @@ class OperationStore:
             and report.config.identity_sha256 == self.registry.baseline.config.identity_sha256
         )
         self._items(result, inputs, kind)
+        self._validated_operations[cache_key] = result
         return result
 
     def _items(self, result: OperationResult, inputs: OperationInputState, kind: str) -> None:

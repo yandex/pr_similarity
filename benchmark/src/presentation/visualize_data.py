@@ -1,6 +1,7 @@
 """Embed validated, selected run evidence for report interactions without a server."""
 
 import difflib
+from decimal import Decimal
 from pathlib import Path
 
 from benchmark.errors import BenchmarkError
@@ -14,7 +15,18 @@ from benchmark.persistence.layout import artifact_path
 from benchmark.persistence.run_store import RunStore
 from benchmark.persistence.storage import read_json, sha256
 from benchmark.persistence.triplets import TripletBundle, read_triplets
+from benchmark.presentation.measurements import (
+    TOKEN_CATEGORIES,
+    Measurement,
+    combine_measurements,
+    measurement_dict,
+)
 from benchmark.presentation.native_config import native_projection
+from benchmark.presentation.task_measurements import (
+    TaskMeasurements,
+    build_task_measurements,
+)
+from benchmark.pricing.summary import CostEvidenceError
 from benchmark.vcs.workspace import FileState
 
 
@@ -92,4 +104,69 @@ def embedded_data(run_dir: Path, report: Report) -> JsonObject:
         config.update(supported=True, config=native_projection(raw))
     except ValueError as error:
         config['reason'] = str(error)
-    return {'config': config, 'benchmark': benchmark_settings(identity).to_wire(), 'diffs': _task_diffs(store, report)}
+    try:
+        measurements = build_task_measurements(store, report)
+    except CostEvidenceError as error:
+        raise BenchmarkError(error.code, error.message) from error
+    return {
+        'config': config,
+        'benchmark': benchmark_settings(identity).to_wire(),
+        'diffs': _task_diffs(store, report),
+        'measurements': display_metrics(report, measurements),
+    }
+
+
+def display_metrics(report: Report, measurements: dict[str, TaskMeasurements] | None = None) -> dict:
+    """Normalize each task and all status masks before embedding autonomous HTML."""
+    if measurements is None:
+        measurements = {}
+        for task in report.tasks:
+            price = task.telemetry.api_equivalent
+            amount = (price.amount if price.status == 'complete' else None) if price else task.telemetry.cost.amount
+            measurements[task.id] = TaskMeasurements(
+                tokens={
+                    category: Measurement(
+                        subtotal=getattr(task.telemetry.tokens, category) or 0,
+                        known=getattr(task.telemetry.tokens, category) is not None,
+                        complete=getattr(task.telemetry.tokens, category) is not None,
+                    )
+                    for category in TOKEN_CATEGORIES
+                },
+                cost=Measurement(
+                    subtotal=Decimal(str(amount)) if amount is not None else 0,
+                    known=amount is not None,
+                    complete=amount is not None,
+                ),
+                cost_source='reprice' if price else 'opencode',
+            )
+
+    def projection(values: list[TaskMeasurements]) -> dict:
+        """Sum currency in Python Decimal, never repeatedly in browser floats."""
+        return {
+            'cost': measurement_dict(combine_measurements([value.cost for value in values])),
+            'tokens': {
+                category: measurement_dict(combine_measurements([value.tokens[category] for value in values]))
+                for category in TOKEN_CATEGORIES
+            },
+        }
+
+    def status(task: ReportTask) -> str:
+        """Keep the established final-attempt task selection semantics."""
+        if task.infrastructure_error or task.processing_status != 'completed':
+            return 'fail'
+        if task.execution.status == 'timeout':
+            return 'timeout'
+        if task.execution.status == 'completed':
+            return {'empty': 'no-op', 'nonempty': 'OK'}.get(task.changes.status, 'fail')
+        return 'fail'
+
+    statuses = ('OK', 'no-op', 'timeout', 'fail')
+    return {
+        'tasks': {task.id: projection([measurements[task.id]]) for task in report.tasks},
+        'selections': {
+            str(mask): projection(
+                [measurements[task.id] for task in report.tasks if mask & (1 << statuses.index(status(task)))]
+            )
+            for mask in range(16)
+        },
+    }

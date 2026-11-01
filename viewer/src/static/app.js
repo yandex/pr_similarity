@@ -39,9 +39,14 @@ const time = value => {
   const minutes = Math.floor(seconds / 60), rest = seconds % 60;
   return minutes < 60 ? minutes + 'm ' + rest + 's' : Math.floor(minutes / 60) + 'h ' + minutes % 60 + 'm ' + rest + 's';
 };
-const displayedAmount = value => value.amount ?? (value.known_tasks ? value.known_subtotal : null);
-const costTitle = row => 'Source: ' + (Object.entries(row.cost.sources).map(([source, count]) => source + ' (' + count + ')').join(' + ') || '—') + '\nKnown tasks: ' + row.cost.known_tasks + '/' + row.cost.total_tasks + '\nKnown subtotal: ' + money(row.cost.known_subtotal) + ' USD';
-const tokensTitle = row => [...categories, 'total'].map(c => c.replace('_', ' ') + ': ' + row.tokens[c].known_tasks + '/' + row.tokens[c].total_tasks + ' known; subtotal ' + number(row.tokens[c].known_subtotal, 0)).join('\n');
+const displayedAmount = value => value.amount ?? ((value.known_tasks || value.partial_tasks) ? value.known_subtotal : null);
+const coverageTitle = value => {
+  const tasks = value.known_tasks + ' complete tasks, ' + (value.partial_tasks || 0) + ' partial tasks, ' + (value.unavailable_tasks || 0) + ' unavailable tasks';
+  const requests = value.request_coverage_available ? value.known_requests + '/' + value.total_requests + ' requests measured' : (value.known_requests || 0) + ' known requests; full request coverage unknown';
+  return 'Final attempts; ' + requests + '; ' + tasks + (value.amount == null ? '; full total unknown' : '');
+};
+const costTitle = row => 'Source: ' + (Object.entries(row.cost.sources).map(([source, count]) => source + ' (' + count + ')').join(' + ') || '—') + '\n' + coverageTitle(row.cost) + '\nKnown subtotal: ' + money(row.cost.known_subtotal) + ' USD';
+const tokensTitle = row => [...categories, 'total'].map(c => c.replace('_', ' ') + ': ' + coverageTitle(row.tokens[c]) + '; subtotal ' + number(row.tokens[c].known_subtotal, 0)).join('\n');
 const timeTitle = row => 'Known execution durations: ' + row.time.known_tasks + '/' + row.time.total_tasks + '\nExact median: ' + row.time.median_seconds + ' s; total: ' + row.time.total_seconds + ' s\nSetup and earlier attempts are excluded.';
 const dateText = value => new Date(value).toLocaleString();
 const dateTitle = value => value + '\nShown in ' + Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -68,7 +73,8 @@ document.addEventListener('keydown', event => {if (event.key === 'Escape' && met
 function measurement(value, format = v => number(v, 0), provenance = '', suspicious = false, basis = 'Known subtotal') {
   const result = node('span', format(displayedAmount(value)), 'measurement');
   const incomplete = value.total_tasks > value.known_tasks;
-  const message = [incomplete ? basis + ': ' + value.known_tasks + ' of ' + value.total_tasks + ' selected tasks have known data. Measurement is incomplete.' : '', provenance].filter(Boolean).join('\n');
+  if (value.status === 'partial') result.append(' (partial)');
+  const message = [incomplete ? basis + ': ' + value.known_tasks + ' of ' + value.total_tasks + ' selected tasks have known data. Measurement is incomplete.' : '', value.status ? coverageTitle(value) : '', provenance].filter(Boolean).join('\n');
   if (message) result.append(metricNote(message, incomplete || suspicious));
   return result;
 }

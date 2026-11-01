@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.3
+
+- Show known request-level token and cost subtotals inside incomplete final
+  attempts in the viewer and standalone benchmark HTML, with visible partial
+  labels and independent task/request coverage for each measurement.
+- Preserve selected repricing precedence, exact monetary aggregation, measured
+  zero and historical totals without inventing request coverage or new prices.
+- Validate display evidence before creating a durable publication operation and
+  when refreshing existing publications. Rejected uploads preserve existing runs
+  and restartability; compact display caches avoid rereading usage on each GET.
+- Keep benchmark artifact schemas, saved values, publication archives and
+  retry/resume behavior unchanged. Regenerate existing HTML to show the new
+  details; supported publications need no re-upload.
+
 ## 0.3.2
 
 - Stop ChatGPT OAuth runs on an explicit `usage_limit_reached` response, preserve

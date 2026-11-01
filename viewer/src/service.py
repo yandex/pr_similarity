@@ -14,12 +14,23 @@ from typing import TypedDict, Unpack
 from viewer.config import Config
 from viewer.errors import StorageError, ViewerError
 from viewer.models import Basket, Report
+from viewer.models.evidence import ArtifactReceipt
 from viewer.models.report import ReportAgent, ReportBasket, ReportInference, ReportRun
 from viewer.persistence.database import LOGIN, Actor, Database
 from viewer.persistence.storage import Store, StoredBody
+from viewer.presentation.cost_summary import CostEvidenceError
 from viewer.presentation.inference import public_inference
-from viewer.presentation.metrics import STATUSES, aggregate, aggregate_snapshot, tag_groups
+from viewer.presentation.metrics import (
+    STATUSES,
+    aggregate,
+    aggregate_snapshot,
+    tag_groups,
+)
 from viewer.presentation.run_projection import basket_metadata, projection, wall_time
+from viewer.presentation.task_measurements import (
+    TaskMeasurements,
+    build_task_measurements,
+)
 from viewer.util import (
     JsonValue,
     digest,
@@ -31,7 +42,11 @@ from viewer.util import (
 )
 from viewer.validation.archive import ImportedRun
 from viewer.validation.basket import validate_basket, validate_basket_report
-from viewer.validation.contracts import require, validate_report
+from viewer.validation.contracts import (
+    require,
+    validate_report,
+    validate_selected_state,
+)
 
 
 @dataclass
@@ -55,6 +70,7 @@ class CatalogueEntry(TypedDict):
     benchmark: dict | None
     prefix: str
     aggregates: dict[int, dict]
+    measurements: dict[str, TaskMeasurements]
 
 
 class MetricSelection(TypedDict, total=False):
@@ -177,6 +193,18 @@ class ViewerService:
         self._display_limits(report, basket)
         require(report.run.id == marker['run_id'] and report.basket.sha256 == marker['basket_sha256'])
         require([t.id for t in report.tasks] == [t.id for t in basket.tasks])
+        inventory = {entry['path']: ArtifactReceipt.model_validate(entry) for entry in marker['inventory']}
+
+        def read_evidence(path: str) -> bytes:
+            """Read only inventory-owned evidence through the configured size limit."""
+            require(path in inventory, 'invalid_publication')
+            return self.store.get(prefix + 'data/' + path, self.config.limits.json_bytes)
+
+        evidence = validate_selected_state(report, basket, inventory, read_evidence)
+        try:
+            measurements = build_task_measurements(evidence, report)
+        except CostEvidenceError as error:
+            raise ViewerError(error.code, error.message) from error
         return {
             'marker': {k: v for k, v in marker.items() if k != 'inventory'},
             'report': CachedReport(report.run, report.agent, report.basket, report.inference),
@@ -185,7 +213,8 @@ class ViewerService:
             'wall_time_seconds': wall_time(report.run),
             'benchmark': self._benchmark_metadata(prefix, report),
             'prefix': prefix,
-            'aggregates': aggregate_snapshot(report.tasks),
+            'aggregates': aggregate_snapshot(report.tasks, measurements),
+            'measurements': measurements,
         }
 
     def _auth_mode(self, prefix: str, report: Report) -> str | None:
@@ -306,7 +335,7 @@ class ViewerService:
                 h: min(row['marker']['published_at'] for row in runs.values() if row['marker']['basket_sha256'] == h)
                 for h in hashes
             }
-            order += sorted(hashes - set(order), key=lambda h: (first[h], h))
+            order += sorted(hashes - set(order), key=lambda basket_hash: (first[basket_hash], basket_hash))
             stored_display = self._object(
                 'settings/basket-display.json', {'version': 1, 'items': {}}, code='invalid_basket_display'
             )

@@ -5,10 +5,13 @@ from pathlib import Path
 
 import pytest
 from benchmark.errors import BenchmarkError
+from benchmark.models.evidence import ArtifactReceipt
 from benchmark.persistence.layout import artifact_path
+from benchmark.persistence.storage import read_json
 from benchmark.presentation.report import read_report
 from benchmark.presentation.visualize import visualize
 from benchmark.presentation.visualize_data import embedded_data, source_diff
+from benchmark.runtime import attempt as executor
 from benchmark.vcs.workspace import FileState
 from test_operation_workflows import stopped_run
 
@@ -71,3 +74,25 @@ def test_corrupted_source_is_not_embedded(tmp_path: Path, monkeypatch: pytest.Mo
     artifact_path(directory, source, must_exist=True).write_text('tampered source')
     with pytest.raises(BenchmarkError, match='damaged|digest|receipt'):
         embedded_data(directory, report)
+
+
+def test_missing_declared_usage_receipt_finishes_visualize_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An integrity failure uses the CLI error contract and closes its invocation."""
+    original = executor._Attempt.inventory
+
+    def omit_usage(self: executor._Attempt) -> list[ArtifactReceipt]:
+        """Simulate an incomplete native inventory without rewriting saved evidence."""
+        return [receipt for receipt in original(self) if not receipt.path.endswith('/telemetry/usage.json')]
+
+    monkeypatch.setattr(executor._Attempt, 'inventory', omit_usage)
+    directory, _, _ = stopped_run(tmp_path, monkeypatch)
+    with pytest.raises(BenchmarkError, match='Declared display usage requires a sealed receipt'):
+        visualize(directory)
+    invocations = [read_json(path) for path in (directory / '_meta/invocations').glob('*/invocation.json')]
+    selected = [row for row in invocations if row['kind'] == 'visualize']
+    assert len(selected) == 1
+    assert selected[0]['status'] == 'failed'
+    assert selected[0]['finished_at'] is not None
+    assert not (directory / 'report.html').exists()

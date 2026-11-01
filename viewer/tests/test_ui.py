@@ -190,9 +190,9 @@ def test_catalogue_filters_pinned_expansion_and_task_statuses(
     assert page.get_by_role('link', name='Agent B', exact=True).count() == 1
     page.get_by_role('button', name='Reset', exact=True).click()
     page.wait_for_function('() => document.querySelectorAll(\'tr.run-row\').length === 3')
-    c = page.locator('tr.run-row').filter(has=page.get_by_role('link', name='Agent C', exact=True))
-    assert c.locator('td').nth(6).inner_text() == '—'
-    assert c.locator('td').nth(11).inner_text() == '—'
+    agent_c_row = page.locator('tr.run-row').filter(has=page.get_by_role('link', name='Agent C', exact=True))
+    assert agent_c_row.locator('td').nth(6).inner_text() == '—'
+    assert agent_c_row.locator('td').nth(11).inner_text() == '—ⓘ'
     page.locator('#statuses input[value=fail]').check()
     page.wait_for_function(
         (
@@ -200,7 +200,7 @@ def test_catalogue_filters_pinned_expansion_and_task_statuses(
             'Content.includes(\'Agent C\')).children[6].textContent !== \'\u2014\''
         )
     )
-    assert float(c.locator('td').nth(6).inner_text()) == 0.2
+    assert float(agent_c_row.locator('td').nth(6).inner_text()) == 0.2
     page.screenshot(path='/tmp/prsim-viewer-catalogue.png', full_page=True)
 
 
@@ -442,7 +442,12 @@ def test_password_confirmation_requires_matching_typed_value(
     confirm.press('Control+v')
     assert confirm.input_value() == ''
     changes = []
-    page.on('request', lambda r: changes.append(r) if r.method == 'PUT' and r.url.endswith('/auth/password') else None)
+    page.on(
+        'request',
+        lambda request: (
+            changes.append(request) if request.method == 'PUT' and request.url.endswith('/auth/password') else None
+        ),
+    )
     page.locator('#account-password').fill('secret')
     page.locator('#account-new-password').fill('changed')
     confirm.press_sequentially('different')
@@ -580,9 +585,9 @@ def test_hidden_basket_removes_facets_and_stale_selected_filter(
     page.keyboard.press('Escape')
     page.wait_for_function('() => document.querySelectorAll(\'tr.run-row\').length===1')
     rid = next(r for r in svc.runs if svc.run(r)['display_name'] == 'Agent B')
-    h = svc.run(rid)['basket_hash']
+    basket_hash = svc.run(rid)['basket_hash']
     svc.set_settings(
-        svc.settings()['revision'], svc.order, {k: {'hidden': k == h, 'collapsed': False} for k in svc.order}
+        svc.settings()['revision'], svc.order, {k: {'hidden': k == basket_hash, 'collapsed': False} for k in svc.order}
     )
     page.locator('#direction').select_option('asc')
     expect(page.locator('#counts')).to_have_text('2 shown / 2 runs')
@@ -590,7 +595,7 @@ def test_hidden_basket_removes_facets_and_stale_selected_filter(
         'openai/Alpha [high]',
         'openai/Alpha [low]',
     ]
-    assert page.locator('#filter-basket option[value="' + h + '"]').count() == 0
+    assert page.locator('#filter-basket option[value="' + basket_hash + '"]').count() == 0
     assert page.locator('#filter-model').evaluate('(s)=>s.selectedOptions.length') == 0
     page.goto(origin + '/run?run_id=' + rid)
     page.wait_for_selector('.task')
