@@ -4,14 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
-from test_basket_v3 import add_omission, payload
-from test_runner import config_and_basket
-
 from benchmark.errors import BenchmarkError
 from benchmark.persistence.run_store import RunStore
 from benchmark.persistence.storage import canonical_bytes
 from benchmark.runtime.coordinator import _validate_inputs, initial_report
 from benchmark.validation.basket import load_basket
+from test_basket_v3 import add_omission, payload
+from test_runner import config_and_basket
 
 
 @pytest.mark.parametrize('mutation', ['format', 'selection', 'omission'])

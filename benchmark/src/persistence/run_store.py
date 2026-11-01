@@ -12,8 +12,6 @@ from tempfile import TemporaryDirectory
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import ValidationError
-
 from benchmark.config import RunConfig
 from benchmark.errors import BenchmarkError
 from benchmark.execution.agent_input import freeze_agent_input, validate_agent_input
@@ -97,6 +95,7 @@ from benchmark.presentation.result import (
 from benchmark.pricing.summary import CostEvidenceError, build_cost_summary
 from benchmark.validation.basket import Basket, load_basket
 from benchmark.validation.contracts import validate_document
+from pydantic import ValidationError
 
 
 def _selection(registration: TaskRegistration) -> StateTaskItem:
@@ -1024,6 +1023,19 @@ class RunStore:
         with self._writer():
             return self._rebuild()
 
+    def needs_outcome_recovery(self, task_id: str) -> bool:
+        """Require an outcome unless a sealed quota failure explicitly needs native replay."""
+        selected = next(row for row in self.state.tasks if row.id == task_id)
+        if selected.seal is None or selected.outcome is not None:
+            return False
+        seal = read_reference(self.directory, selected.seal, Seal)
+        error = seal.task.infrastructure_error
+        return not (
+            selected.processing_status in ('retry_pending', 'interrupted')
+            and error is not None
+            and error.code == 'provider_quota_exhausted'
+        )
+
     def reserve(self, task_id: str, attempt: ReportAttempt) -> Report:
         """Persist unique start ownership and sequence before an executor can spawn."""
         with self._writer():
@@ -1033,7 +1045,7 @@ class RunStore:
                 raise BenchmarkError(
                     'attempt_not_reservable', 'Active or completed tasks cannot start a new native attempt.'
                 )
-            if selected.seal is not None and selected.outcome is None:
+            if self.needs_outcome_recovery(task_id):
                 raise BenchmarkError(
                     'host_recovery_required', 'Sealed evidence requires host recovery, not native replay.'
                 )

@@ -4,10 +4,9 @@ import json
 from functools import cache
 from importlib.resources import files
 
-from jsonschema import Draft202012Validator, FormatChecker, validators
-
 from benchmark.errors import BenchmarkError
 from benchmark.models.base import WireModel
+from jsonschema import Draft202012Validator, FormatChecker, validators
 
 _TypeChecker = Draft202012Validator.TYPE_CHECKER.redefine('integer', lambda _checker, value: type(value) is int)
 StrictValidator = validators.extend(Draft202012Validator, type_checker=_TypeChecker)

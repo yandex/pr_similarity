@@ -14,7 +14,6 @@ from botocore.config import Config as SDKConfig
 from botocore.exceptions import ReadTimeoutError
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
-
 from viewer.config import Config
 from viewer.errors import StorageError
 from viewer.persistence.storage import (
@@ -138,7 +137,7 @@ def test_real_sdk_put_streams_to_local_mock_s3(tmp_path: Path) -> None:
             self.send_header('ETag', '"' + hashlib.md5(data).hexdigest() + '"')
             self.end_headers()
 
-        def log_message(self, *args: object) -> None:
+        def log_message(self, format: str, *args: object) -> None:
             """Suppress HTTP server diagnostics during the test."""
             pass
 

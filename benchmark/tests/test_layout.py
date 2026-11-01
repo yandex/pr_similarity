@@ -4,8 +4,6 @@ import copy
 from pathlib import Path
 
 import pytest
-from test_basket import payload
-
 from benchmark.errors import BenchmarkError
 from benchmark.models.basket import BasketV3
 from benchmark.persistence.layout import (
@@ -14,6 +12,7 @@ from benchmark.persistence.layout import (
     run_name,
     task_registry,
 )
+from test_basket import payload
 
 
 def test_readable_layout_preserves_ordinal_and_native_sequence() -> None:

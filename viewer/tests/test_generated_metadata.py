@@ -4,7 +4,6 @@ from collections.abc import Callable
 
 import pytest
 from helpers import inference
-
 from viewer.errors import ViewerError
 from viewer.presentation.inference import public_inference
 

@@ -10,10 +10,6 @@ from typing import BinaryIO, NoReturn
 
 import pytest
 import yaml
-from python_fixtures import python_receipt
-from test_artifact_workflow import _inputs, _process_identity
-from test_runner import config_and_basket, fake_attempt, provision_fixture
-
 from benchmark.config import load_config
 from benchmark.errors import BenchmarkError
 from benchmark.execution import process as process_module
@@ -30,6 +26,9 @@ from benchmark.persistence.run_store import RunStore
 from benchmark.persistence.storage import read_json, write_json
 from benchmark.runtime import coordinator
 from benchmark.runtime.lifecycle import Stop
+from python_fixtures import python_receipt
+from test_artifact_workflow import _inputs, _process_identity
+from test_runner import config_and_basket, fake_attempt, provision_fixture
 
 
 def _forbidden_model(*_args: object, **_kwargs: object) -> NoReturn:
@@ -192,13 +191,15 @@ def test_python_preparation_stops_children_and_removes_home(
         child = original_start(argv, cwd, env, input_file)
         if any('bootstrap started' in value for value in argv):
             children.append(child)
+            observed = False
             try:
                 # The supervisor cannot evaluate its deadline until this hook returns.
                 observe(child)
-            except BaseException:
-                process_module._signal_group(child, signal.SIGKILL)
-                child.wait()
-                raise
+                observed = True
+            finally:
+                if not observed:
+                    process_module._signal_group(child, signal.SIGKILL)
+                    child.wait()
         return child
 
     def probe(

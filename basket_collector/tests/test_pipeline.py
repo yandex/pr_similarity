@@ -11,8 +11,6 @@ from typing import Any
 
 import httpx
 import pytest
-from fixture_helpers import issue_identity, retrieval
-
 from basket_collector.config import (
     CollectorConfig,
     FilterConfig,
@@ -54,6 +52,7 @@ from basket_collector.runtime.progress import Progress
 from basket_collector.stages.filter import RemoteVCS, SourceChangedError
 from basket_collector.stages.generate import generate_record as real_generate_record
 from basket_collector.vcs.git import GitRepository
+from fixture_helpers import issue_identity, retrieval
 
 SHA = 'a' * 40
 BASE = 'b' * 40

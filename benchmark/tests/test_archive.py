@@ -6,9 +6,6 @@ from pathlib import Path
 from typing import NoReturn
 
 import pytest
-from test_artifact_workflow import _crash, _inputs
-from test_operation_workflows import stopped_run
-
 from benchmark.errors import BenchmarkError
 from benchmark.models import Report
 from benchmark.persistence.run_store import RunStore
@@ -20,6 +17,8 @@ from benchmark.publication.archive import (
     verify_archive,
 )
 from benchmark.runtime import coordinator, recovery
+from test_artifact_workflow import _crash, _inputs
+from test_operation_workflows import stopped_run
 
 
 def complete_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, attempts: int = 1) -> Path:

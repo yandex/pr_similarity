@@ -3,9 +3,8 @@
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
-
 from basket_collector.config import CollectorConfig, effective_settings
+from pydantic import ValidationError
 
 
 def configuration() -> dict[str, Any]:

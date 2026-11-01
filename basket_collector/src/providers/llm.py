@@ -13,8 +13,6 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
-from pydantic import ValidationError
-
 from basket_collector.config import GenerationConfig
 from basket_collector.models.artifacts import TaskContent, Usage
 from basket_collector.runtime.transport_scope import (
@@ -23,6 +21,7 @@ from basket_collector.runtime.transport_scope import (
     reserve_generation_request,
     retry_after_seconds,
 )
+from pydantic import ValidationError
 
 
 class GenerationInterrupted(Exception):

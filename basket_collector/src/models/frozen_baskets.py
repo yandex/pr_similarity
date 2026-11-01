@@ -1,9 +1,10 @@
 """Read-only published basket contracts, independent of current stage checkpoints."""
 
+# Pydantic deliberately specializes inherited schema fields at runtime.
+# Preserve these existing schemas; variance exceptions below are limited to their field declarations.
+
 import re
 from typing import Literal
-
-from pydantic import Field, StrictBool, StrictStr, field_validator, model_validator
 
 from basket_collector.models.artifacts import (
     BasketDocument,
@@ -19,6 +20,7 @@ from basket_collector.models.artifacts import (
     _sha,
     _validate_selected_basket,
 )
+from pydantic import Field, StrictBool, StrictStr, field_validator, model_validator
 
 
 class HistoricalProducer(Producer):
@@ -37,13 +39,13 @@ class HistoricalProducer(Producer):
 class HistoricalLineage(LineageReceipt):
     """Validate historical ancestor receipts without loading their stage documents."""
 
-    producer: HistoricalProducer
+    producer: HistoricalProducer  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class SelectionV2(SelectionReceipt):
     """Read the selection receipt embedded in a previously published v2 basket."""
 
-    schema_version: Literal[2]
+    schema_version: Literal[2]  # pyright: ignore[reportIncompatibleVariableOverride]
 
     @field_validator('schema_version', mode='before')
     @classmethod
@@ -57,10 +59,10 @@ class SelectionV2(SelectionReceipt):
 class BasketMetaV2(BasketMeta):
     """Read v2 coverage and provenance without accepting a resumable v2 stage."""
 
-    schema_version: Literal[2]
-    producer: HistoricalProducer
-    lineage: list[HistoricalLineage]
-    selection: SelectionV2
+    schema_version: Literal[2]  # pyright: ignore[reportIncompatibleVariableOverride]
+    producer: HistoricalProducer  # pyright: ignore[reportIncompatibleVariableOverride]
+    lineage: list[HistoricalLineage]  # pyright: ignore[reportIncompatibleVariableOverride]
+    selection: SelectionV2  # pyright: ignore[reportIncompatibleVariableOverride]
 
     @field_validator('schema_version', mode='before')
     @classmethod
@@ -87,11 +89,13 @@ class BasketV2(StrictModel):
 class BasketMetaV1(Meta):
     """Retain v1 omissions without inventing unavailable selection or coverage data."""
 
-    schema_family: Literal['pr_similarity_os.basket'] = 'pr_similarity_os.basket'
-    schema_version: Literal[1]
-    stage: Literal['export'] = 'export'
-    producer: HistoricalProducer
-    lineage: list[HistoricalLineage]
+    schema_family: Literal['pr_similarity_os.basket'] = (  # pyright: ignore[reportIncompatibleVariableOverride]
+        'pr_similarity_os.basket'
+    )
+    schema_version: Literal[1]  # pyright: ignore[reportIncompatibleVariableOverride]
+    stage: Literal['export'] = 'export'  # pyright: ignore[reportIncompatibleVariableOverride]
+    producer: HistoricalProducer  # pyright: ignore[reportIncompatibleVariableOverride]
+    lineage: list[HistoricalLineage]  # pyright: ignore[reportIncompatibleVariableOverride]
     name: StrictStr
     description: StrictStr
     maintainers: list[StrictStr]

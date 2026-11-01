@@ -12,9 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
-import pytest
-
 import benchmark.execution.python_runtime as python_runtime
+import pytest
 from benchmark.errors import BenchmarkError
 from benchmark.execution.bin_projection import BinProjection
 from benchmark.execution.python_runtime import PythonRuntime, prepare_python

@@ -5,9 +5,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import pytest
-
 import benchmark.execution.bin_projection as module
+import pytest
 from benchmark.errors import BenchmarkError
 from benchmark.execution.bin_projection import BinProjection
 

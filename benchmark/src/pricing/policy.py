@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-
 from benchmark.config import _json_values, _UniqueLoader
 from benchmark.errors import BenchmarkError
 from benchmark.models import Usage

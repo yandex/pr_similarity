@@ -16,7 +16,6 @@ from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
 import uvicorn
-
 from viewer.config import Config
 from viewer.errors import ViewerError
 from viewer.persistence.database import Database

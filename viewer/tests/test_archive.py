@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 from helpers import archive_fixture
-
 from viewer.config import Limits
 from viewer.errors import ViewerError
 from viewer.util import json_bytes, parse_json, require_object

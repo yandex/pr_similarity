@@ -9,11 +9,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import Field, StrictFloat, StrictInt, field_validator, model_validator
-
 from basket_collector.config import RetryPolicy
 from basket_collector.models.artifacts import RejectedRecord, StageError, StrictModel, settings_sha256
 from basket_collector.runtime.transport_scope import record_scope
+from pydantic import Field, StrictFloat, StrictInt, field_validator, model_validator
 
 
 def _now() -> str:

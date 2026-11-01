@@ -9,11 +9,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fixture_helpers import native_config
-from test_llm import _config as llm_config
-from test_llm import _response as llm_response
-from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
-
 from basket_collector.config import FilterConfig
 from basket_collector.models.artifacts import (
     CollectRecord,
@@ -29,6 +24,10 @@ from basket_collector.providers.github_source import GitHubRemoteVCS
 from basket_collector.providers.llm import GenerationInterrupted, LLMClient
 from basket_collector.stages.filter import RemoteVCS, process_one
 from basket_collector.vcs.git import GitRepository, GitStopRequested
+from fixture_helpers import native_config
+from test_llm import _config as llm_config
+from test_llm import _response as llm_response
+from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
 
 
 def test_sigint_between_filter_requests_keeps_pending_checkpoint(

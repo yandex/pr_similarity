@@ -23,13 +23,21 @@ class Redactor:
         """Initialize a streaming buffer for known secret spans."""
         values = sorted({value.encode('utf-8') for value in secrets if value}, key=len, reverse=True)
         self.pattern = re.compile(b'|'.join(re.escape(value) for value in values)) if values else None
-        self.reserve = max((len(value) for value in values), default=1) - 1
+        self.values = values
         self.pending = b''
 
     def feed(self, content: bytes, *, final: bool = False) -> bytes:
         """Redact complete secret spans across arbitrary stream chunks."""
         self.pending += content
-        boundary = len(self.pending) if final else max(0, len(self.pending) - self.reserve)
+        boundary = len(self.pending)
+        if not final:
+            for value in self.values:
+                start = self.pending.find(value[:1], max(0, len(self.pending) - len(value) + 1))
+                while start >= 0:
+                    if value.startswith(self.pending[start:]):
+                        boundary = min(boundary, start)
+                        break
+                    start = self.pending.find(value[:1], start + 1)
         if self.pattern is None:
             result, self.pending = self.pending[:boundary], self.pending[boundary:]
             return result

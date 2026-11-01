@@ -3,9 +3,6 @@
 from pathlib import Path
 
 import pytest
-from python_fixtures import freeze_python, write_python_probe
-from test_runner import config_and_basket
-
 from benchmark.errors import BenchmarkError
 from benchmark.json_types import JsonObject, JsonValue
 from benchmark.models import Report, State
@@ -30,6 +27,8 @@ from benchmark.persistence.storage import (
 from benchmark.presentation.result import unavailable_scoring
 from benchmark.runtime.runner import initial_report
 from benchmark.validation.basket import load_basket
+from python_fixtures import freeze_python, write_python_probe
+from test_runner import config_and_basket
 
 
 def _json_at(value: JsonValue, *path: str | int) -> JsonValue:

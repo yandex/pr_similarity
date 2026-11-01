@@ -7,24 +7,25 @@ from typing import NoReturn
 
 import pytest
 import yaml
-from test_artifact_workflow import _inputs
-from test_operation_workflows import stopped_run
-
 from benchmark.config import load_config
 from benchmark.errors import BenchmarkError
 from benchmark.execution.opencode import EventTracker
 from benchmark.execution.provisioning import Runtime
 from benchmark.json_types import JsonObject
-from benchmark.models import State
-from benchmark.models.evidence import Seal
+from benchmark.models import Report, State
+from benchmark.models.evidence import OperationSelection, Seal
 from benchmark.models.triplets import TripletIndex
 from benchmark.persistence.artifact_refs import read_reference
 from benchmark.persistence.run_store import RunStore
 from benchmark.persistence.storage import read_json, run_lock
+from benchmark.publication.archive import create_archive, verify_archive
 from benchmark.runtime import attempt as executor
 from benchmark.runtime import coordinator, recovery
 from benchmark.runtime.commands import Command
 from benchmark.runtime.lifecycle import Stop
+from test_artifact_workflow import _inputs
+from test_operation_workflows import stopped_run
+from test_runner import fake_attempt, provision_fixture
 
 
 @pytest.mark.parametrize('score_fails', [False, True])
@@ -212,3 +213,142 @@ def test_real_resume_coordinator_uses_host_recovery_without_native_preflight(
     assert current.state.tasks[0].attempt == original.attempt
     assert original.outcome is not None
     assert (directory / original.outcome.path).read_bytes() == frozen
+
+
+@pytest.mark.parametrize('score_fails', [False, True])
+def test_quota_host_recovery_keeps_native_retry_and_immutable_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, score_fails: bool
+) -> None:
+    """Rescoring a quota-stopped partial solution must not complete its native task."""
+    directory, config, _dataset = stopped_run(tmp_path, monkeypatch, quota=True)
+    selected = RunStore.open(directory).state.tasks[0]
+    assert selected.seal is not None and selected.outcome is not None
+    frozen = {ref.path: (directory / ref.path).read_bytes() for ref in [selected.seal, selected.outcome]}
+
+    def fail_score(*args: object, **kwargs: object) -> NoReturn:
+        """Fail offline scoring without exhausting the pending native retry."""
+        raise BenchmarkError('scoring_failed', 'Synthetic score failure.')
+
+    if score_fails:
+        monkeypatch.setattr(recovery, 'score_saved', fail_score)
+    with run_lock(directory) as lease:
+        store = RunStore.open(directory, lease=lease)
+        command = Command(directory, 'run', level='ERROR', progress_total=1)
+        stop = Stop()
+        try:
+            report = recovery.recover_host_scores(store, config, command, stop)
+        finally:
+            command.close()
+        row = report.tasks[0]
+        assert row.processing_status == 'retry_pending'
+        assert row.execution.status == 'error'
+        assert row.scoring.status == ('unavailable' if score_fails else 'available')
+        assert not stop.is_set()
+        assert store.state.tasks[0].attempt == selected.attempt
+    assert all((directory / name).read_bytes() == value for name, value in frozen.items())
+
+
+@pytest.mark.parametrize('score_fails', [False, True])
+def test_quota_crash_after_seal_resumes_with_new_native_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, score_fails: bool
+) -> None:
+    """A real crash before outcome must not strand a sealed quota task after host recovery."""
+
+    def crash_before_score(self: executor._Attempt) -> None:
+        """Crash after the immutable native seal but before any outcome can be written."""
+        raise OSError('Synthetic crash after seal.')
+
+    with monkeypatch.context() as local:
+        local.setattr(executor._Attempt, 'score', crash_before_score)
+        with pytest.raises(OSError, match='Synthetic crash'):
+            stopped_run(tmp_path, local, quota=True)
+    directory = tmp_path / 'run'
+    seal_path = next(directory.glob('tasks/*/attempts/001/seal.json'))
+    frozen = seal_path.read_bytes()
+    assert not list(directory.glob('tasks/*/attempts/001/outcome.json'))
+    config = load_config(tmp_path / 'config.yaml')
+
+    def fail_score(*args: object, **kwargs: object) -> NoReturn:
+        """Fail derivative scoring while the quota still requires fresh native work."""
+        raise BenchmarkError('scoring_failed', 'Synthetic recovery scoring failure.')
+
+    if score_fails:
+        monkeypatch.setattr(recovery, 'score_saved', fail_score)
+    provision_fixture(monkeypatch)
+    monkeypatch.setattr(coordinator, 'auth_snapshot', lambda *_args, **_kwargs: None)
+    code, _ = coordinator.run(
+        config, tmp_path / 'basket.json', resume=directory, attempt_function=fake_attempt(['success'])
+    )
+    assert code == 0
+    store = RunStore.open(directory)
+    row = store.snapshot().tasks[0]
+    assert row.processing_status == 'completed'
+    assert row.final_attempt is not None and row.final_attempt.sequence == 2
+    previous = store.state.tasks[0].history[0]
+    assert previous.seal is not None and previous.outcome is None
+    assert previous.scoring is not None
+    assert seal_path.read_bytes() == frozen
+    archive = tmp_path / 'recovered.tar.gz'
+    create_archive(directory, archive, require_complete=False)
+    manifest = verify_archive(archive)
+    assert manifest.complete is (not score_fails)
+    if score_fails:
+        assert any(
+            item.path is not None and item.path.endswith('/001/outcome.json') for item in manifest.missing_artifacts
+        )
+
+
+def test_quota_resume_after_signal_preserves_saved_score_and_replays_native(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal after durable host recovery cannot strand the next quota resume."""
+
+    def crash_before_score(self: executor._Attempt) -> None:
+        """Leave a real quota seal without an outcome."""
+        raise OSError('Synthetic crash after seal.')
+
+    with monkeypatch.context() as local:
+        local.setattr(executor._Attempt, 'score', crash_before_score)
+        with pytest.raises(OSError, match='Synthetic crash'):
+            stopped_run(tmp_path, local, quota=True)
+    directory = tmp_path / 'run'
+    config = load_config(tmp_path / 'config.yaml')
+    provision_fixture(monkeypatch)
+    monkeypatch.setattr(coordinator, 'auth_snapshot', lambda *_args, **_kwargs: None)
+    original_accept = RunStore.accept_operation
+
+    def interrupt_after_commit(store: RunStore, selection: OperationSelection) -> Report:
+        """Deliver SIGINT only after the real scoring operation is durably selected."""
+        result = original_accept(store, selection)
+        os.kill(os.getpid(), signal.SIGINT)
+        return result
+
+    with monkeypatch.context() as local:
+        local.setattr(RunStore, 'accept_operation', interrupt_after_commit)
+        code, _ = coordinator.run(
+            config, tmp_path / 'basket.json', resume=directory, attempt_function=fake_attempt(['success'])
+        )
+    assert code == 130
+    store = RunStore.open(directory)
+    selected = store.state.tasks[0]
+    assert selected.processing_status == 'interrupted'
+    assert store.snapshot().tasks[0].scoring.status == 'available'
+    assert selected.seal is not None and selected.scoring is not None and selected.outcome is None
+    frozen = {
+        ref.path: (directory / ref.path).read_bytes()
+        for ref in [selected.seal, selected.scoring.receipt, selected.scoring.result]
+    }
+
+    def forbidden_score(*args: object, **kwargs: object) -> NoReturn:
+        """Reject recomputation of a score already saved by the first resume."""
+        raise AssertionError('Saved host score must be reused.')
+
+    monkeypatch.setattr(recovery, 'score_saved', forbidden_score)
+    code, _ = coordinator.run(
+        config, tmp_path / 'basket.json', resume=directory, attempt_function=fake_attempt(['success'])
+    )
+    assert code == 0
+    final = RunStore.open(directory)
+    assert final.state.tasks[0].attempt is not None and final.state.tasks[0].attempt.sequence == 2
+    assert final.state.tasks[0].history[0].scoring == selected.scoring
+    assert all((directory / path).read_bytes() == content for path, content in frozen.items())

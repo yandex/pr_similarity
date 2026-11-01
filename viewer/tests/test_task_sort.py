@@ -10,7 +10,6 @@ from starlette.testclient import TestClient
 from test_api import client as client
 from test_api import create_user
 from test_metrics import task
-
 from viewer.models.evidence import TripletIndex
 from viewer.presentation.queries import TaskQuery, public_task
 from viewer.util import digest, json_bytes, parse_json

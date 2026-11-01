@@ -7,8 +7,6 @@ from typing import cast
 
 import httpx
 import pytest
-from fixture_helpers import descriptor, retrieval, task_identity
-
 from basket_collector.config import (
     CollectorConfig,
     GenerationConfig,
@@ -23,6 +21,7 @@ from basket_collector.models.artifacts import (
 )
 from basket_collector.providers.llm import LLMCallError, LLMClient, LLMConfigurationError
 from basket_collector.stages.generate import generate_record
+from fixture_helpers import descriptor, retrieval, task_identity
 
 SHA = 'a' * 40
 TIME = '2026-09-29T00:00:00Z'

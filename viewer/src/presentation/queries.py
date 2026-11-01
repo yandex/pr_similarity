@@ -5,7 +5,6 @@ from datetime import datetime
 from functools import cmp_to_key
 
 from starlette.datastructures import QueryParams
-
 from viewer.errors import ViewerError
 from viewer.models.report import ReportTask
 from viewer.presentation import run_projection

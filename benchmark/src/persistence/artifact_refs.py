@@ -2,13 +2,12 @@
 
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from benchmark.errors import BenchmarkError
 from benchmark.json_types import JsonObject
 from benchmark.models.base import ArtifactReceipt, WireModel
 from benchmark.persistence.layout import artifact_path
 from benchmark.persistence.storage import bytes_sha256, parse_json
+from pydantic import ValidationError
 
 ArtifactReference = ArtifactReceipt
 

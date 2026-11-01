@@ -4,14 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
-from test_operation_workflows import stopped_run
-
 from benchmark.errors import BenchmarkError
 from benchmark.persistence.layout import artifact_path
 from benchmark.presentation.report import read_report
 from benchmark.presentation.visualize import visualize
 from benchmark.presentation.visualize_data import embedded_data, source_diff
 from benchmark.vcs.workspace import FileState
+from test_operation_workflows import stopped_run
 
 
 @pytest.mark.parametrize('exists', [True, False])

@@ -7,9 +7,6 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
-from fixture_helpers import descriptor, issue_identity, retrieval
-from pydantic import BaseModel, ValidationError
-
 from basket_collector.models.artifacts import (
     BasketDocument,
     BasketMeta,
@@ -20,6 +17,8 @@ from basket_collector.models.artifacts import (
     TasksDocument,
     format_agent_task,
 )
+from fixture_helpers import descriptor, issue_identity, retrieval
+from pydantic import BaseModel, ValidationError
 
 H40 = 'a' * 40
 H64 = 'b' * 64

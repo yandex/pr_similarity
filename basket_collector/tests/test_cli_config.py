@@ -4,7 +4,6 @@ import errno
 from pathlib import Path
 
 import pytest
-
 from basket_collector.pipeline import Pipeline, main
 
 

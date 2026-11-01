@@ -3,12 +3,11 @@
 from typing import Any
 
 import pytest
+from basket_collector.models.artifacts import BasketDocument, CollectDocument, FilterDocument, SelectionSnapshot
+from basket_collector.persistence.storage import sha256
 from fixture_helpers import task_identity
 from pydantic import ValidationError
 from test_contracts import _basket, _collect, _filter
-
-from basket_collector.models.artifacts import BasketDocument, CollectDocument, FilterDocument, SelectionSnapshot
-from basket_collector.persistence.storage import sha256
 
 
 def selection(identity: str) -> dict[str, Any]:

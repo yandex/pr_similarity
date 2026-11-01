@@ -8,10 +8,6 @@ from typing import Any
 
 import httpx
 import pytest
-from test_contracts import _collect
-from test_gitlab_source import configured, merged, project
-from test_pipeline import TIME, FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
-
 from basket_collector.config import CollectorConfig
 from basket_collector.models.artifacts import (
     BasketDocument,
@@ -27,6 +23,9 @@ from basket_collector.pipeline import Pipeline, PipelineInterrupted, Shutdown
 from basket_collector.providers.github_source import GitHubRemoteVCS
 from basket_collector.providers.remote import ChangeRejected, RemoteError, RemoteInterrupted
 from basket_collector.runtime.progress import Progress
+from test_contracts import _collect
+from test_gitlab_source import configured, merged, project
+from test_pipeline import TIME, FakeGitHub, FakeGitRepository, _config, _filter_one, _producer
 
 
 def rejection(number: int = 2) -> RejectedRecord:

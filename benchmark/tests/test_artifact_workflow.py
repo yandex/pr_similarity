@@ -17,10 +17,6 @@ from typing import NoReturn
 
 import pytest
 import yaml
-from test_basket import FixtureBasket, payload
-from test_pricing import policy
-from test_workspace import git
-
 from benchmark.config import RunConfig, load_config
 from benchmark.execution.provisioning import Runtime
 from benchmark.metrics.rescore import rescore
@@ -44,6 +40,9 @@ from benchmark.validation.basket import load_basket
 from benchmark.validation.contracts import validate_document
 from benchmark.validation.triplet_paths import triplet_path
 from benchmark.vcs.git import GitCache
+from test_basket import FixtureBasket, payload
+from test_pricing import policy
+from test_workspace import git
 
 
 @dataclass(frozen=True)

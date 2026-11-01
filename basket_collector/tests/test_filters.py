@@ -3,8 +3,6 @@
 import hashlib
 
 import pytest
-from fixture_helpers import descriptor, retrieval, task_identity
-
 from basket_collector.config import (
     FilesConfig,
     FilterConfig,
@@ -25,6 +23,7 @@ from basket_collector.models.artifacts import (
     ResolvedRevisions,
     SourceRevisions,
 )
+from fixture_helpers import descriptor, retrieval, task_identity
 
 SHA = 'a' * 40
 OTHER = 'b' * 40

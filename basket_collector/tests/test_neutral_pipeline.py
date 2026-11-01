@@ -9,7 +9,6 @@ from pathlib import Path
 import httpx
 import jsonschema
 import pytest
-
 from basket_collector.config import CollectorConfig, GitHubConfig
 from basket_collector.models.artifacts import BasketDocument
 from basket_collector.persistence.storage import read_document

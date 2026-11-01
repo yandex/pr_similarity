@@ -5,7 +5,6 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-
 from viewer.models.report import ReportInference, ReportInfra, ReportTask, ReportTelemetryApiEquivalent
 from viewer.presentation.inference import build_inference
 from viewer.presentation.metrics import (

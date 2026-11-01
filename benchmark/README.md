@@ -85,6 +85,11 @@ Keep secret values out of YAML and version control. Model access, Git access
 and viewer login are separate credentials. See [credential cleanup](docs/credentials.md#credentials-after-a-run)
 if you want to remove the private login after your batch.
 
+If ChatGPT reports `usage_limit_reached`, the benchmark stops issuing tasks,
+saves active attempt evidence and prints a manual resume command. Wait until
+quota is available before resuming; a new login is not required by this error.
+See [quota-stop and task states](docs/reference.md#resume-retries-progress-and-logging).
+
 ### Select tasks and retain the run path
 
 Use the included [2026H1 pandas and OpenSearch baskets](examples/baskets/README.md)

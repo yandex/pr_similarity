@@ -41,6 +41,17 @@ execution, native infrastructure, captured changes, score availability
 and usage. Valid scores can survive timeout/provider errors; similarity is not test
 correctness. Host scoring recovery selects operations without rewriting native outcome.
 
+For `provider_quota_exhausted`, read the run error and selected attempt
+`infrastructure_error` separately from coordinator `processing_status` and native
+`execution.status`. A quota attempt can have execution `error`, state `retry_pending`,
+a nonempty diff and an available partial score at the same time. Unissued tasks
+remain `pending`; cancelled siblings are `interrupted`, not quota failures.
+Host scoring alone does not complete the quota task. If outcome is absent, a valid
+selected seal retains the native reason; follow registered refs rather than guessing.
+Historical attempts saved as `completed` / ordinary `agent_error` are not automatically
+reclassified: report that limitation without editing state. See
+[quota-stopped results](../../../benchmark/docs/results.md#quota-stopped-runs).
+
 Use `report.inference` configured/effective values and origins. Model displays
 `model [effort]` for a known level, otherwise `model`;
 unknown is not a default. Preserve basket generator provenance separately. Setup

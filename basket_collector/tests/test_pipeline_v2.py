@@ -6,9 +6,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-from test_collect_rejections import RejectingGitHub, pipeline
-from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer, auth_generation
-
 from basket_collector.config import FilterConfig
 from basket_collector.models.artifacts import (
     BasketDocument,
@@ -26,6 +23,8 @@ from basket_collector.providers.llm import LLMClient
 from basket_collector.providers.remote import RemoteError, RemoteVCS
 from basket_collector.runtime.attempts import AttemptRunner
 from basket_collector.vcs.git import GitInfrastructureError, GitRepository
+from test_collect_rejections import RejectingGitHub, pipeline
+from test_pipeline import FakeGitHub, FakeGitRepository, _config, _filter_one, _producer, auth_generation
 
 
 def test_collect_failure_does_not_stop_remaining_records(tmp_path: Path) -> None:

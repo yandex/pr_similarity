@@ -15,6 +15,14 @@ Check
 coverage and omissions as well as task identity: collector omissions are not
 failed agent attempts. Confirm the viewer uses the same current contracts.
 
+A completed run or successful final retry does not prove that its registered
+history is complete. After a quota-stop crash, a historical attempt with only a
+seal and failed host scoring remains incomplete even if a later attempt succeeded.
+The publication dry-run must reject that missing evidence; do not discard history
+or fabricate an outcome to make it pass. Report the completeness failure separately
+from quota availability and current task scores. See
+[quota-stopped results](../../../benchmark/docs/results.md#quota-stopped-runs).
+
 Diagnosis, config preparation and dry-run do not authorize upload. An explicit
 publication request authorizes that upload without repeated confirmation.
 `make publish RUN=... URL=... DRY_RUN=1` freezes/validates local evidence without

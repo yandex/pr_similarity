@@ -4,6 +4,7 @@ import threading
 from types import FrameType
 from typing import Literal, Protocol
 
+from benchmark.execution.provider_errors import ERROR_PRIORITY
 from benchmark.models.report import ReportError, TaskDraft
 from benchmark.models.state import StateTaskItem
 
@@ -30,6 +31,25 @@ class Stop(threading.Event):
         super().__init__()
         self.signal_number: int | None = None
         self.interrupt_count = 0
+        self._failure_lock = threading.Lock()
+        self._failure: ReportError | None = None
+
+    @property
+    def failure(self) -> ReportError | None:
+        """Read the first fatal cause at the strongest observed priority."""
+        with self._failure_lock:
+            return self._failure.model_copy() if self._failure is not None else None
+
+    def fail(self, failure: ReportError) -> bool:
+        """Record a fatal cause before waking workers; return whether it was selected."""
+        with self._failure_lock:
+            selected = self._failure is None or ERROR_PRIORITY.get(failure.code, 99) < ERROR_PRIORITY.get(
+                self._failure.code, 99
+            )
+            if selected:
+                self._failure = failure.model_copy()
+            self.set()
+            return selected
 
     def signal(self, number: int, _frame: FrameType | None) -> None:
         """Record cancellation intent once; repeated signals only request a notice."""

@@ -6,11 +6,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-from test_archive import complete_run
-from test_publish import TOKEN, receipt, viewer_transport
-
 from benchmark.publication.publication_progress import PublicationProgress
 from benchmark.publication.publish import publish
+from test_archive import complete_run
+from test_publish import TOKEN, receipt, viewer_transport
 
 
 def test_plain_elapsed_beyond_two_minutes_and_prompt_pause() -> None:

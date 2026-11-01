@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from benchmark.runtime.commands import Command
 from benchmark.validation.basket import load_basket
 from benchmark.validation.contracts import document_validator

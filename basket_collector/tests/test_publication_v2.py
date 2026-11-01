@@ -3,13 +3,12 @@
 from pathlib import Path
 
 import pytest
-from test_contracts import _basket, _collect, _filter, _tasks
-from test_contracts_v2 import selection
-
 from basket_collector.models.artifacts import BasketDocument, CollectDocument, FilterDocument, TasksDocument
 from basket_collector.persistence import artifact_io
 from basket_collector.persistence.publication import PublicationStore
 from basket_collector.persistence.storage import StorageError, receipt
+from test_contracts import _basket, _collect, _filter, _tasks
+from test_contracts_v2 import selection
 
 
 def document(title: str = 'original') -> CollectDocument:

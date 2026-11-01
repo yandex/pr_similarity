@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 from helpers import archive_fixture, documents
-
 from viewer.errors import ViewerError
 from viewer.models import (
     ArchiveManifest,

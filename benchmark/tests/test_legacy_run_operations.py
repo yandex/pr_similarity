@@ -4,8 +4,6 @@ from pathlib import Path
 from typing import Never
 
 import pytest
-from test_runner import config_and_basket
-
 from benchmark.errors import BenchmarkError
 from benchmark.metrics import rescore as scoring_operations
 from benchmark.persistence import run_store
@@ -14,6 +12,7 @@ from benchmark.persistence.storage import read_json, write_json
 from benchmark.pricing import operations as pricing_operations
 from benchmark.runtime import coordinator
 from benchmark.validation.basket import load_basket
+from test_runner import config_and_basket
 
 
 def _inventory(directory: Path) -> dict[str, bytes | None]:

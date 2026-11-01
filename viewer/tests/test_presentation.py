@@ -6,7 +6,6 @@ from pathlib import Path
 
 from helpers import archive_fixture
 from starlette.datastructures import QueryParams
-
 from viewer.config import Config, Limits
 from viewer.models import BasketV3
 from viewer.models.report import ReportRun, ReportTask

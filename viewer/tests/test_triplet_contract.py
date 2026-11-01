@@ -4,7 +4,6 @@ from copy import deepcopy
 
 import pytest
 from helpers import documents
-
 from viewer.errors import ViewerError
 from viewer.models.evidence import ArtifactReceipt
 from viewer.models.report import ReportTask

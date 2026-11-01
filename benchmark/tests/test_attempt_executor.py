@@ -8,10 +8,6 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
-from python_fixtures import freeze_python, python_probe
-from test_basket import payload
-from test_telemetry import native_db
-
 from benchmark.config import RunConfig, load_config
 from benchmark.errors import BenchmarkError
 from benchmark.execution.agent_input import freeze_agent_input
@@ -37,6 +33,9 @@ from benchmark.runtime import attempt as executor
 from benchmark.runtime.commands import Command
 from benchmark.runtime.lifecycle import Stop
 from benchmark.vcs.git import TreeEntry
+from python_fixtures import freeze_python, python_probe
+from test_basket import payload
+from test_telemetry import native_db
 
 
 def fixture_runtime() -> Runtime:
@@ -139,7 +138,11 @@ def reservation(
 
 
 def controlled_native(
-    monkeypatch: pytest.MonkeyPatch, registration: TaskRegistration, *, errors: list[dict] | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    registration: TaskRegistration,
+    *,
+    errors: list[dict] | None = None,
+    model: str = 'fixture/model',
 ) -> list[Path]:
     """Use real stdout routing, SQLite capture, Git diff and triplet export offline."""
     cache = MemoryCache(registration.basket_row.revisions.before)
@@ -151,7 +154,7 @@ def controlled_native(
     def native_command(self: Sandbox, argv: list[str]) -> list[str]:
         """Substitute a provider-free child while retaining private native state."""
         if 'debug' in argv:
-            return [sys.executable, '-c', 'print(\'{"model":"fixture/model"}\')']
+            return [sys.executable, '-c', 'print(' + repr(json.dumps({'model': model})) + ')']
         homes.append(self.home)
         database = self.home / 'data/opencode/opencode.db'
         database.parent.mkdir(parents=True, exist_ok=True)

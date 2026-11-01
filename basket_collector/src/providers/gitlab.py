@@ -10,7 +10,6 @@ from collections.abc import Callable, Iterator
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
-
 from basket_collector.config import SourceConfig
 from basket_collector.providers.remote import RemoteError, RemoteInterrupted
 from basket_collector.runtime.http_runtime import HTTPRuntime
@@ -82,11 +81,15 @@ class GitLabClient:
 
     def _notify(self, reason: str) -> None:
         """Submit only ephemeral wait state to an optional observer."""
+        callback = self.wait_callback
+        if callback is None:
+            return
         try:
-            if self.wait_callback is not None:
-                self.wait_callback(reason)
+            callback(reason)
         except Exception:
-            pass
+            # Optional display failures must not stop requests or expose exception text.
+            self.wait_callback = None
+            logging.getLogger('basket_collector.diagnostics').warning('GitLab wait observer failed and was disabled.')
 
     def _retry_wait(self, seconds: float) -> None:
         """Display retry waiting without changing delay or cancellation."""

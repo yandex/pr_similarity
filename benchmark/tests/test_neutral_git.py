@@ -10,8 +10,6 @@ from threading import Event
 from types import SimpleNamespace
 
 import pytest
-from test_basket import payload
-
 from benchmark.errors import BenchmarkError
 from benchmark.metrics.scoring import score_pr
 from benchmark.models.basket import BasketRecord
@@ -22,6 +20,7 @@ from benchmark.validation.basket import load_basket
 from benchmark.vcs import git as module
 from benchmark.vcs.git import GitCache, git_environment
 from benchmark.vcs.workspace import capture_changes, prepare_workspace
+from test_basket import payload
 
 
 def test_concurrent_ensure_waits_beyond_git_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

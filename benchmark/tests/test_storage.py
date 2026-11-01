@@ -7,7 +7,6 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 
 import pytest
-
 from benchmark.errors import BenchmarkError
 from benchmark.persistence import storage
 from benchmark.persistence.storage import (
@@ -58,7 +57,7 @@ def test_wait_forever_process_release(tmp_path: Path, monkeypatch: pytest.Monkey
         try:
             with storage.file_lock(path, wait_forever=True, cancel=cancel):
                 entered.set()
-        except BaseException as exc:
+        except Exception as exc:
             errors.append(exc)
 
     worker = threading.Thread(target=waiter)

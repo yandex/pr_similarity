@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from benchmark.persistence.storage import canonical_bytes as encode
 from benchmark.persistence.storage import sha256 as hash_json
 from benchmark.validation.basket import load_basket

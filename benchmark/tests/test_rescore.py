@@ -3,8 +3,6 @@
 from pathlib import Path
 
 import pytest
-from test_operation_workflows import stopped_run
-
 from benchmark.errors import BenchmarkError
 from benchmark.metrics import rescore as module
 from benchmark.models.evidence import ArtifactReceipt, OperationResult
@@ -17,6 +15,7 @@ from benchmark.persistence.run_store import RunStore
 from benchmark.persistence.storage import read_json
 from benchmark.persistence.triplets import TripletStates
 from benchmark.runtime import attempt as executor
+from test_operation_workflows import stopped_run
 
 
 def test_rescore_selects_complete_task_results_and_preserves_native_fields(

@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from basket_collector.config import GitHubConfig, SourceConfig
 from basket_collector.models.sources import (
     Repository,

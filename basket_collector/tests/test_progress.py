@@ -3,7 +3,6 @@
 import io
 
 import pytest
-
 from basket_collector.runtime.progress import Progress
 
 

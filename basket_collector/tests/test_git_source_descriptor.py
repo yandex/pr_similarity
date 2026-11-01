@@ -4,7 +4,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from basket_collector.models.artifacts import SourceRevisions
 from basket_collector.models.sources import SourceDescriptor, source_hash
 from basket_collector.vcs.git import GitRepository

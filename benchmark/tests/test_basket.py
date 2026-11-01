@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import TypedDict
 
 import pytest
-
 from benchmark.errors import BenchmarkError
 from benchmark.persistence.storage import canonical_bytes
 from benchmark.validation.basket import load_basket

@@ -3,6 +3,7 @@
 import json
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
@@ -15,12 +16,13 @@ from benchmark.execution.agent_input import (
     save_effective,
 )
 from benchmark.execution.process import ProcessResult, run_process
+from benchmark.execution.provider_errors import classify_provider_error
 from benchmark.execution.sandbox import Sandbox
 from benchmark.execution.transcript import Transcript
 from benchmark.json_types import JsonObject
 from benchmark.models.base import WireModel, json_value
 from benchmark.models.evidence import StreamReceipt
-from benchmark.models.report import ReportAgentInput
+from benchmark.models.report import ReportAgentInput, ReportError
 from benchmark.persistence.storage import (
     atomic_write,
     bytes_sha256,
@@ -48,6 +50,7 @@ class EventTracker:
     warnings: list[str] = field(default_factory=list)
     stream_receipt: StreamReceipt | None = None
     _ambiguous_session: bool = False
+    on_error: Callable[[JsonObject], None] | None = None
 
     def accept(self, line: str) -> None:
         """Capture launch session identity and sanitized native events."""
@@ -70,6 +73,8 @@ class EventTracker:
         error = value.get('error')
         if value.get('type') == 'error' and isinstance(error, dict):
             self.errors.append(error)
+            if self.on_error is not None:
+                self.on_error(error)
         if value.get('type') not in {'step_start', 'step_finish', 'text', 'reasoning', 'tool_use', 'error'}:
             return
         session = value.get('sessionID')
@@ -97,6 +102,19 @@ class Invocation:
     agent_started: bool = False
     run_directory: Path | None = None
     agent_input: ReportAgentInput | None = None
+    on_quota: Callable[[ReportError], None] | None = None
+    tracker: EventTracker | None = field(default=None, init=False)
+    effective_provider: str | None = None
+    effective_captured: bool = False
+
+    @property
+    def oauth_openai(self) -> bool:
+        """Prefer captured provider identity over the frozen configured model."""
+        model = self.config.data.agent.config.opencode_json.get('model')
+        provider = model.partition('/')[0] if isinstance(model, str) else None
+        if self.effective_captured:
+            provider = self.effective_provider
+        return self.config.data.agent.auth.mode == 'chatgpt_oauth' and provider == 'openai'
 
     def prepare(self, task: str) -> bytes:
         """Agent-facing files live outside the scored source tree."""
@@ -104,6 +122,7 @@ class Invocation:
         self.logs.mkdir(parents=True, exist_ok=True)
         self.sandbox.runtime_files.mkdir(parents=True, exist_ok=True)
         agent = self.config.data.agent
+        native: JsonObject | None = None
         credentials = self.config.credential_environment()
         secret_values = list(credentials.values())
         if self.auth_content is not None:
@@ -160,6 +179,7 @@ class Invocation:
                 raise BenchmarkError('resource_changed', 'Setup script changed after config validation.', exit_code=1)
             save_public(self.artifacts / 'setup.sh', content)
             atomic_write(self.sandbox.runtime_files / 'setup.sh', content)
+        assert native is not None
         bindings = {**agent.env, **credentials}
         self._environment = self.sandbox.environment(
             bindings, config_content=json.dumps(native, ensure_ascii=False), auth_content=self.auth_content
@@ -213,6 +233,9 @@ class Invocation:
                     'limitations': ['Repository config inheritance is part of the frozen basket environment.'],
                 },
             )
+            model = data.get('model') if isinstance(data, dict) else None
+            self.effective_provider = model.partition('/')[0] if isinstance(model, str) else None
+            self.effective_captured = True
             return EffectiveConfigResult(status='available', path=effective_path, reason=None)
         except OPERATION_ERRORS as error:
             if lines:
@@ -262,7 +285,14 @@ class Invocation:
     def run(self, prompt: bytes, cancel: threading.Event) -> tuple[ProcessResult, EventTracker]:
         """No --continue, --session, --attach, auto permission or sharing overrides."""
         assert self._environment is not None
-        tracker = EventTracker()
+
+        def on_error(error: JsonObject) -> None:
+            """Request quota cancellation before waiting for native process completion."""
+            failure = classify_provider_error(error, oauth_openai=self.oauth_openai)
+            if failure.code == 'provider_quota_exhausted' and self.on_quota is not None:
+                self.on_quota(failure)
+
+        tracker = self.tracker = EventTracker(on_error=on_error)
         model = self.config.data.agent.config.opencode_json.get('model')
         if model is not None and not isinstance(model, str):
             raise TypeError('Native model label must be a string.')

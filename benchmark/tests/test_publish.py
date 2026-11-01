@@ -9,8 +9,6 @@ from typing import NoReturn
 
 import httpx
 import pytest
-from test_archive import complete_run
-
 from benchmark.errors import BenchmarkError
 from benchmark.execution.agent_input import benchmark_settings
 from benchmark.models import Report, State
@@ -21,6 +19,7 @@ from benchmark.persistence.run_store import RunStore
 from benchmark.persistence.storage import read_json, write_json
 from benchmark.presentation.inference import generated_groups
 from benchmark.publication.publish import publish
+from test_archive import complete_run
 
 TOKEN = 'fixture_token_for_tests_only'
 

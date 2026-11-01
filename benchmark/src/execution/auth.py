@@ -11,7 +11,6 @@ from tempfile import TemporaryDirectory
 from typing import TypeGuard
 
 import httpx
-
 from benchmark.errors import BenchmarkError
 from benchmark.execution.cancellation import check_cancelled
 from benchmark.json_types import JsonObject

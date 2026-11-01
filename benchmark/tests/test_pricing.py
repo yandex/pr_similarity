@@ -7,7 +7,6 @@ from typing import TypedDict
 
 import pytest
 import yaml
-
 from benchmark.errors import BenchmarkError
 from benchmark.json_types import JsonObject
 from benchmark.models import Usage

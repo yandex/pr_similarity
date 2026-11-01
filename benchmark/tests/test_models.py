@@ -5,9 +5,6 @@ import inspect
 from pathlib import Path
 
 import pytest
-from test_inference import identity
-from test_run_store import fresh_store
-
 from benchmark.errors import BenchmarkError
 from benchmark.json_types import JsonValue
 from benchmark.models import WireModel
@@ -15,6 +12,8 @@ from benchmark.models.evidence import ConfigIdentity, OperationDetails
 from benchmark.models.report import ReportTelemetryCost
 from benchmark.persistence.storage import canonical_bytes, parse_json
 from benchmark.validation.contracts import document_validator, validate_document
+from test_inference import identity
+from test_run_store import fresh_store
 
 
 @pytest.mark.parametrize(

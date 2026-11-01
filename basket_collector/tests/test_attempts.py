@@ -4,7 +4,6 @@ import threading
 from pathlib import Path
 
 import pytest
-
 from basket_collector.config import RetryPolicy
 from basket_collector.models.artifacts import StageError
 from basket_collector.persistence.storage import atomic_write, read_json

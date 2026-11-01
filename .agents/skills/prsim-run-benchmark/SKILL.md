@@ -36,10 +36,22 @@ explicit seal refs. Resume rejects changed semantic inputs.
 
 Preparation does not authorize model calls. For an authorized run use
 `make run CONFIG=... DATASET=...`; retain the exact printed timestamp/agent/suffix
-directory. For resume supply its RESUME and original whole basket/compatible
-identity. Worker counts/technical paths may change; local name/Setup edits are
+directory. For resume use
+`make run CONFIG=... DATASET=<original-basket> RESUME=<run-dir>` with the original
+whole basket and compatible identity. `RESUME` is a path; `RUN` selects saved
+runs for report operations. Worker counts/technical paths may change; local name/Setup edits are
 ignored. Intact selected native seals allow host-only scoring with the same native
-UUID/timings and no new model call. A new task retry consumes a new sequence.
+UUID/timings and no new model call. Recovering a score does not finish interrupted
+native work; a required native retry consumes a new sequence.
+
+On `provider_quota_exhausted`, report the stopped run and provider reset hint.
+The hint does not authorize automatic waiting or another invocation. Resume only
+within the user's authorized scope after quota is available; this error does not
+itself require `make auth`. Quota attempts remain `retry_pending` even if a partial
+score exists; unissued tasks stay `pending`. Resume starts a fresh native attempt,
+not an OpenCode session continuation. API-key runs and generic 429 responses keep
+their own policy. See the
+[quota-stop contract](../../../benchmark/docs/reference.md#resume-retries-progress-and-logging).
 
 Read `report.json`, `run.log` and the selected attempt’s live `agent.log`.
 Native JSON is `events.jsonl`; stderr/non-JSON is `runtime.log`.

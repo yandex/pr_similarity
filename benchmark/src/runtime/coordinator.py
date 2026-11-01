@@ -334,7 +334,8 @@ class Coordinator:
             self.command.message(f'Task {ordinal:03d}: recovered {notice.kind} for saved native evidence.')
             if notice.fatal is not None:
                 self.command.message(
-                    'A previous native attempt failed authentication; this explicit resume checks current access.',
+                    'A previous native attempt stopped on a provider limit or credentials; '
+                    'this explicit resume checks current access.',
                     level='WARNING',
                 )
         configured = baseline.inference.configured
@@ -403,7 +404,7 @@ class Coordinator:
         if self.resumed:
             self.report = recover_host_scores(self.store, self.config, self.command, self.stop)
         pending = [row for row in self.store.state.tasks if row.processing_status != 'completed']
-        host = [row for row in pending if row.seal is not None and row.outcome is None]
+        host = [row for row in pending if self.store.needs_outcome_recovery(row.id)]
         native = [row for row in pending if row not in host]
         if self.stop.is_set():
             return
@@ -607,8 +608,8 @@ class Coordinator:
         self.report = self.store.accept_fact(identifier, 'seal', outcome.seal)
         self.report = self.store.accept_fact(identifier, 'outcome', outcome_ref, processing_status=status)
         if outcome.fatal is not None:
-            self.fatal = outcome.fatal
-            self.stop.set()
+            self.stop.fail(outcome.fatal)
+            self.fatal = self.stop.failure
         row = next(item for item in self.report.tasks if item.id == identifier)
         self.command.task_result(identifier, mf=row.scoring.Mf_mlp, lcf=row.scoring.LCf_mlp)
         ordinal = self.store.task(identifier).ordinal
@@ -676,6 +677,9 @@ class Coordinator:
         """Close run scheduling while retaining native facts and offline error distinctions."""
         self.report = self.store.snapshot()
         run_status: Literal['interrupted', 'failed', 'completed_with_errors', 'completed']
+        self.fatal = self.stop.failure or self.fatal
+        if self.fatal is not None:
+            self.report.run.error = self.fatal
         if self.stop.signal_number is not None:
             status, run_status = 128 + self.stop.signal_number, 'interrupted'
         elif self.fatal is not None:
@@ -720,7 +724,29 @@ class Coordinator:
         )
         self.command.message(final_summary(self.report))
         self.command.message(spend_summary(self.report.costs.all_attempts))
-        if run_status == 'interrupted':
+        quota_stopped = self.fatal is not None and self.fatal.code == 'provider_quota_exhausted'
+        if quota_stopped:
+            complete = all(
+                read_reference(self.run_dir, row.seal, Seal).archive_complete
+                for row in self.store.state.tasks
+                if row.seal is not None
+            ) and all(
+                row.processing_status != 'running' and (row.attempt is None or row.seal is not None)
+                for row in self.store.state.tasks
+            )
+            detail = (
+                'Completed results and attempt evidence were saved.'
+                if complete
+                else 'Some attempt evidence could not be saved; inspect report.json and benchmark.log.'
+            )
+            self.command.message('Run stopped: provider_quota_exhausted. ' + detail, level='WARNING')
+            counts = self.report.summary
+            self.command.message(
+                f'Tasks: completed={counts.completed_tasks}, pending={counts.pending_tasks}, '
+                f'retry_pending={counts.retry_pending_tasks}, interrupted={counts.interrupted_tasks}.',
+                level='WARNING',
+            )
+        if run_status == 'interrupted' or quota_stopped:
             config_path = str(self.config.source_path) if self.config.source_path else 'config.yaml'
             values = [f'CONFIG={config_path}', f'DATASET={self.dataset}', f'RESUME={self.run_dir}']
             self.command.message(
@@ -740,12 +766,15 @@ class Coordinator:
                 row.processing_status = 'interrupted'
         self.report.run.status = 'failed'
         self.report.run.finished_at = utc_now()
-        self.report.run.error = ReportError(
+        self.report.run.error = self.stop.failure or ReportError(
             code=error.code if isinstance(error, BenchmarkError) else 'run_failed',
             message=error.message if isinstance(error, BenchmarkError) else 'Benchmark failed; see the DEBUG file log.',
         )
 
         self.persist()
+        if self.stop.failure is not None:
+            self.command.message('Run evidence could not be fully saved; see the DEBUG file log.', level='ERROR')
+            return self.finish()
         self.command.message(self.report.run.error.message, level='ERROR')
         self.command.message(final_summary(self.report))
         self.command.message(spend_summary(self.report.costs.all_attempts))
@@ -869,6 +898,7 @@ def run(
     if initial is not None:
         run_dir.mkdir(parents=True, mode=0o700)
         allocation = run_dir.lstat()
+    completed = False
     try:
         with run_lock(run_dir) as lease:
             if allocation is not None:
@@ -879,7 +909,7 @@ def run(
                 else RunStore.open(run_dir, lease=lease)
             )
             _validate_inputs(store, config, basket)
-            return Coordinator(
+            result = Coordinator(
                 config,
                 basket,
                 store,
@@ -891,7 +921,8 @@ def run(
                 attempt_function=attempt_function,
                 progress=progress,
             ).execute()
-    except BaseException:
-        if allocation is not None:
+        completed = True
+        return result
+    finally:
+        if not completed and allocation is not None:
             _cleanup_empty_allocation(run_dir, allocation, lock_identity)
-        raise

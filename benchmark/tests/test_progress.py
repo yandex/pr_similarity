@@ -12,13 +12,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from test_runner import config_and_basket, fake_attempt, provision_fixture
-
 from benchmark.errors import BenchmarkError
 from benchmark.presentation import progress as progress_module
 from benchmark.presentation.progress import Progress
 from benchmark.runtime import coordinator
 from benchmark.runtime.runner import run
+from test_runner import config_and_basket, fake_attempt, provision_fixture
 
 
 def test_plain_heartbeat_uses_frozen_total_and_saved_completed_count() -> None:

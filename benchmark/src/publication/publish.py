@@ -13,7 +13,6 @@ from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
 import httpx
-
 from benchmark.errors import OPERATION_ERRORS, BenchmarkError
 from benchmark.execution.agent_input import benchmark_settings
 from benchmark.models import Report, WireModel

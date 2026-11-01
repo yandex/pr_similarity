@@ -13,7 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, TypeVar
+from typing import Any, NoReturn, TypeVar
 
 from basket_collector.config import (
     CollectorConfig,
@@ -406,7 +406,7 @@ class Pipeline:
         """Run bounded workers and pass their completed results to the writer."""
         remaining = iter(items)
         active: dict[Future[R], T] = {}
-        failure: BaseException | None = None
+        failure: Exception | KeyboardInterrupt | SystemExit | None = None
 
         def guarded(item: T) -> R:
             """Reject a queued PR if shutdown won the scheduling race."""
@@ -460,7 +460,8 @@ class Pipeline:
                             failure = exc
                             self.shutdown.stop_event.set()
                         continue
-                    except BaseException as exc:
+                    except (Exception, KeyboardInterrupt, SystemExit) as exc:
+                        # Preserve completed neighbors before propagating a worker failure or explicit exit.
                         if failure is None:
                             failure = exc
                             self.shutdown.stop_event.set()
@@ -1925,7 +1926,7 @@ class Pipeline:
 class _SafeParser(argparse.ArgumentParser):
     """Reject arguments without echoing possible credential values."""
 
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         """Keep rejected argument payloads out of the terminal."""
         self.exit(2, 'Invalid arguments; use --help for accepted options. Keep credentials in the environment.\n')
 

@@ -7,8 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from test_basket import payload
-
 from benchmark.errors import BenchmarkError
 from benchmark.models.basket import BasketRecord, ChangedFile
 from benchmark.persistence.storage import read_json, write_json
@@ -16,6 +14,7 @@ from benchmark.persistence.triplets import load_triplets, save_triplets
 from benchmark.validation.triplet_paths import triplet_path
 from benchmark.vcs.git import GitCache
 from benchmark.vcs.workspace import capture_changes, prepare_workspace
+from test_basket import payload
 
 
 def git(path: Path, *args: str) -> str:

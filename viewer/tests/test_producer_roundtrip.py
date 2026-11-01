@@ -9,7 +9,6 @@ from helpers import service_for
 from playwright.sync_api import Page, expect
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
-
 from viewer.config import Config
 from viewer.util import digest
 from viewer.validation.archive import validate_archive

@@ -8,8 +8,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from test_runner import config_and_basket, fake_attempt, provision_fixture
-
 from benchmark import __main__ as cli
 from benchmark.config import load_config
 from benchmark.models import BasketV3
@@ -17,6 +15,7 @@ from benchmark.persistence.storage import read_json, write_json
 from benchmark.presentation.report import read_report
 from benchmark.presentation.visualize import _status, _task, visualize
 from benchmark.runtime.runner import run
+from test_runner import config_and_basket, fake_attempt, provision_fixture
 
 
 def sample(tmp_path: Path, name: str, monkeypatch: pytest.MonkeyPatch) -> Path:

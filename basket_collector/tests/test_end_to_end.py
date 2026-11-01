@@ -5,8 +5,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fixture_helpers import local_git, native_config
-
 from basket_collector.config import CollectorConfig
 from basket_collector.models.artifacts import BasketDocument, Producer
 from basket_collector.persistence.storage import read_document
@@ -14,6 +12,7 @@ from basket_collector.pipeline import Pipeline
 from basket_collector.providers.github import GitHubClient
 from basket_collector.providers.github_source import GitHubRemoteVCS
 from basket_collector.vcs.git import GitRepository
+from fixture_helpers import local_git, native_config
 
 
 def _git(directory: Path, *args: str) -> str:

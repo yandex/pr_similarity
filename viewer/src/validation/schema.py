@@ -6,7 +6,6 @@ from types import MappingProxyType
 
 from jsonschema import Draft202012Validator, FormatChecker, validators
 from jsonschema.exceptions import ValidationError
-
 from viewer.errors import ViewerError
 from viewer.models import WireModel
 from viewer.util import parse_json, require_object

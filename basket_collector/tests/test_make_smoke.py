@@ -12,8 +12,6 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
-from fixture_helpers import task_identity
-
 from basket_collector.models.artifacts import (
     BasketDocument,
     CollectDocument,
@@ -26,6 +24,7 @@ from basket_collector.persistence.storage import (
     read_document,
     stage_sha256,
 )
+from fixture_helpers import task_identity
 
 PROJECT = Path(__file__).resolve().parents[1]
 SITE = Path(__file__).resolve().parent / 'fixtures'

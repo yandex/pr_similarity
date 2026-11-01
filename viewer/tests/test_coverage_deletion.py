@@ -9,7 +9,6 @@ from starlette.datastructures import QueryParams
 from starlette.testclient import TestClient
 from test_auth import login
 from test_metrics import task
-
 from viewer.errors import StorageError, ViewerError
 from viewer.presentation.metrics import aggregate
 from viewer.presentation.queries import Query

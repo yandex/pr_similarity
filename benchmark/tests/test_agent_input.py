@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from benchmark.config import RunConfig, load_config
 from benchmark.errors import BenchmarkError
 from benchmark.execution.agent_input import (

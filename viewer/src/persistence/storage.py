@@ -11,7 +11,6 @@ from typing import Protocol, Self
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
-
 from viewer.config import Config
 from viewer.errors import StorageError, ViewerError
 from viewer.util import safe_path

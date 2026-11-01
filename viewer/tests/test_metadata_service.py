@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 from helpers import archive_fixture, inference
 from test_service import publish, service
-
 from viewer.errors import ViewerError
 from viewer.util import digest, json_bytes, parse_json, require_object
 from viewer.validation.archive import ImportedRun, validate_archive

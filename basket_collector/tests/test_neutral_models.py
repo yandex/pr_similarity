@@ -6,10 +6,9 @@ from pathlib import Path
 from typing import TypedDict
 
 import pytest
-from pydantic import ValidationError
-
 from basket_collector.models.artifacts import BasketDocument
 from basket_collector.models.sources import SourceDescriptor, change_id
+from pydantic import ValidationError
 
 
 class FixtureChanges(TypedDict):

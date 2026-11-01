@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from benchmark.config import load_config
 from benchmark.errors import BenchmarkError
 

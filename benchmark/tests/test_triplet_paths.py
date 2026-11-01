@@ -3,7 +3,6 @@
 from pathlib import PurePosixPath
 
 import pytest
-
 from benchmark.validation.triplet_paths import triplet_path
 
 

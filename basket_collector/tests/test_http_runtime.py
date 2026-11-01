@@ -8,7 +8,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
-
 from basket_collector.config import GitHubConfig, SourceConfig
 from basket_collector.providers.github import GitHubClient, GitHubError
 from basket_collector.providers.gitlab import GitLabClient

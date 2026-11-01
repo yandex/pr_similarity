@@ -3,7 +3,6 @@
 import pytest
 from helpers import _artifact_files, _native_facts, documents
 from pydantic import ValidationError
-
 from viewer.errors import ViewerError
 from viewer.models.evidence import (
     ArtifactReceipt,

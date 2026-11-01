@@ -17,6 +17,10 @@ Follow the root guide and this README. Use the module's `.venv` and Make interfa
   documenting integration. Exclusions remove AI changes only, not human targets.
 - Start analysis at `report.json`, follow final-attempt references, and keep
   execution, changes, scores and usage independent. Unknown is not zero.
+- Keep `provider_quota_exhausted` distinct from ordinary agent errors. Preserve
+  queued tasks and partial evidence for explicit resume; recovering a score does
+  not complete a quota-stopped native task. Follow the
+  [quota-stop and resume contract](docs/reference.md#resume-retries-progress-and-logging).
 - OAuth profiles persist outside runs. Do not print their contents or delete them
   while another run uses them. Never include them in archives or commits.
 - Code changes: `make test` and `make smoke` are offline; real model calls need

@@ -14,6 +14,7 @@ from benchmark.execution.agent_input import validate_agent_input
 from benchmark.execution.auth import auth_snapshot
 from benchmark.execution.opencode import EventTracker, Invocation
 from benchmark.execution.process import ProcessResult
+from benchmark.execution.provider_errors import ERROR_PRIORITY, FATAL_PROVIDER_CODES, classify_provider_error
 from benchmark.execution.provisioning import Runtime
 from benchmark.execution.sandbox import Sandbox
 from benchmark.execution.telemetry import capture_telemetry, unavailable_telemetry
@@ -293,6 +294,7 @@ class _Attempt:
             attempt_sequence=self.attempt.sequence,
             run_directory=self.run_dir,
             agent_input=self.agent_input,
+            on_quota=self.quota_stop,
         )
         self.prompt = self.invocation.prepare(self.row.agent_task)
         for value in self.invocation.secrets():
@@ -347,37 +349,43 @@ class _Attempt:
             self.opencode_started = self.invocation.agent_started
             if self.opencode_started:
                 self.native_timing.started_at, self.native_timing.finished_at = started, utc_now()
-        self.row.artifacts.agent_log = (self.relative / 'agent.log').as_posix()
-        if (self.logs / 'events.jsonl').is_file():
-            self.row.artifacts.agent_events = (self.relative / 'events.jsonl').as_posix()
-        self.classify_errors()
-        if self.provider_error is not None:
-            self.failed(self.provider_error)
+            if self.tracker is None:
+                self.tracker = self.invocation.tracker
+            self.row.artifacts.agent_log = (self.relative / 'agent.log').as_posix()
+            if (self.logs / 'events.jsonl').is_file():
+                self.row.artifacts.agent_events = (self.relative / 'events.jsonl').as_posix()
+            self.classify_errors()
+            if self.provider_error is not None:
+                self.failed(self.provider_error)
+
+    def quota_stop(self, failure: ReportError) -> None:
+        """Stop shared work immediately while keeping state writes with the coordinator."""
+        if self.stop.fail(failure):
+            self.command.message(
+                f'ChatGPT usage limit reached (task {self.registration.ordinal:03d}, '
+                f'attempt {self.attempt.sequence:03d}). Stopping this run; '
+                'no new tasks will be started. Saving active attempts.',
+                level='WARNING',
+            )
+            self.command.message(failure.message.removeprefix('ChatGPT usage limit reached. '), level='WARNING')
 
     def classify_errors(self) -> None:
         """Keep auth precedence, infrastructure 5xx policy and ordinary agent errors separate."""
         if self.tracker is None or not self.tracker.errors:
             return
-        failures = []
-        for error in self.tracker.errors:
-            data = error.get('data')
-            data = data if isinstance(data, dict) else {}
-            status_code = data.get('statusCode')
-            if status_code in (401, 403) or error.get('name') in ('ProviderAuthError', 'AuthenticationError'):
-                failures.append(
-                    BenchmarkError('auth_required', 'Provider rejected credentials; renew them and resume.')
-                )
-            elif type(status_code) is int and 500 <= status_code < 600:
-                failures.append(BenchmarkError('provider_unavailable', 'Provider could not complete the request.'))
-            else:
-                failures.append(BenchmarkError('agent_error', 'OpenCode reported a terminal agent error.'))
-        priority = {'auth_required': 0, 'provider_unavailable': 1, 'agent_error': 2}
-        failure = min(failures, key=lambda item: priority[item.code])
+        oauth_openai = self.invocation is not None and self.invocation.oauth_openai
+        failures = [classify_provider_error(error, oauth_openai=oauth_openai) for error in self.tracker.errors]
+        failure = min(failures, key=lambda item: ERROR_PRIORITY[item.code])
         if failure.code != 'agent_error':
-            self.provider_error = failure
-        if failure.code == 'auth_required':
-            self.stop.set()
-        if self.row.execution.status not in ('timeout', 'cancelled'):
+            self.provider_error = BenchmarkError(failure.code, failure.message)
+        if failure.code in FATAL_PROVIDER_CODES:
+            self.stop.fail(failure)
+        if failure.code == 'provider_quota_exhausted':
+            self.row.processing_status = 'interrupted'
+            self.row.execution.status = 'error'
+        elif (self.stop.failure is not None and self.stop.failure.code == 'provider_quota_exhausted') or (
+            self.row.execution.status not in ('timeout', 'cancelled')
+        ):
             self.row.execution.status = 'error'
         self.command.message(f'{self.label}: {failure.message}', level='WARNING')
         try:
@@ -437,8 +445,14 @@ class _Attempt:
         """Preserve native failure facts while keeping policy decisions with the coordinator."""
         self.command.diagnostic(error)
         code = error.code if isinstance(error, BenchmarkError) else 'task_failed'
+        observed_provider_error = (
+            self.provider_error is not None
+            and code == self.provider_error.code
+            and self.stop.failure is not None
+            and self.stop.failure.code == 'provider_quota_exhausted'
+        )
         cancelled = code == 'operation_cancelled' or (
-            self.stop.is_set() and code not in ('auth_required', 'credentials_missing')
+            self.stop.is_set() and code not in FATAL_PROVIDER_CODES and not observed_provider_error
         )
         if cancelled:
             self.row.processing_status = 'interrupted'
@@ -460,9 +474,9 @@ class _Attempt:
             if self.opencode_started and self.row.execution.status in ('running', 'not_started'):
                 self.row.execution.status = 'error'
             self.command.message(f'{self.label}: {failure.message}', level='WARNING')
-            if code in ('auth_required', 'credentials_missing'):
+            if code in FATAL_PROVIDER_CODES:
                 self.fatal = ReportError(code=code, message=failure.message)
-                self.stop.set()
+                self.stop.fail(self.fatal)
         if self.stage == 'capture':
             self.evidence.source = EvidenceStatus(status='incomplete', reason=code)
             self.archive_complete &= not self.opencode_started

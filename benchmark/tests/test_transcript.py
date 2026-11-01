@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from benchmark.execution.opencode import EventTracker
 from benchmark.execution.process import ProcessResult
 from benchmark.execution.transcript import Transcript

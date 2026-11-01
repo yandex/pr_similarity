@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from basket_collector.models.artifacts import BasketDocument
 from basket_collector.models.frozen_baskets import BasketV1, BasketV2, validate_frozen_basket
 from basket_collector.persistence.artifact_io import StorageError
