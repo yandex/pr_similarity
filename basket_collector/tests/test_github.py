@@ -6,6 +6,7 @@ import json
 import threading
 import time
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import httpx
@@ -708,12 +709,12 @@ def test_rate_limit_cooldown_is_shared_with_concurrent_request(
     cooldown_started = threading.Event()
     second_sent = threading.Event()
     attempts = 0
-    failures: list[Exception] = []
+    stop = threading.Event()
     real_wait = GitHubClient._wait
 
     def observed_wait(self: GitHubClient, seconds: float) -> None:
         """Observe cooldown waits before delegating to the original wait."""
-        if threading.current_thread().name == 'rate-limited' and seconds >= 0.25:
+        if threading.current_thread().name.startswith('rate-limited') and seconds >= 0.25:
             cooldown_started.set()
         real_wait(self, seconds)
 
@@ -748,29 +749,29 @@ def test_rate_limit_cooldown_is_shared_with_concurrent_request(
         return httpx.Response(200, json={'number': 1})
 
     with GitHubClient(
-        GitHubConfig(max_retries=1, requests_per_second=1000000), transport=httpx.MockTransport(handler), token='test'
+        GitHubConfig(max_retries=1, requests_per_second=1000000),
+        transport=httpx.MockTransport(handler),
+        token='test',
+        stop_event=stop,
     ) as client:
 
         def first() -> None:
-            """Send the first request in a worker and capture failures."""
-            try:
-                if limit_kind == 'graphql':
-                    client.get_closing_issues('o/r', 1)
-                else:
-                    client.get_pull_request('o/r', 1)
-            except Exception as exc:
-                failures.append(exc)
+            """Send the first request while its future retains the result or failure."""
+            if limit_kind == 'graphql':
+                client.get_closing_issues('o/r', 1)
+            else:
+                client.get_pull_request('o/r', 1)
 
-        worker = threading.Thread(target=first, name='rate-limited')
-        worker.start()
-        assert cooldown_started.wait(2)
-        second = threading.Thread(target=lambda: client.get_pull_request('o/r', 2))
-        second.start()
-        assert not second_sent.wait(0.1)
-        worker.join(2)
-        second.join(2)
-        assert not worker.is_alive() and not second.is_alive()
-    assert failures == []
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix='rate-limited') as executor:
+            worker = executor.submit(first)
+            try:
+                assert cooldown_started.wait(2)
+                second = executor.submit(client.get_pull_request, 'o/r', 2)
+                assert not second_sent.wait(0.1)
+                worker.result(timeout=2)
+                second.result(timeout=2)
+            finally:
+                stop.set()
     assert second_sent.is_set()
     assert attempts == 2
 
@@ -779,7 +780,6 @@ def test_graphql_cooldown_wait_is_interruptible(monkeypatch: pytest.MonkeyPatch)
     """Verify shutdown interrupts a worker waiting on GraphQL cooldown."""
     stop = threading.Event()
     wait_started = threading.Event()
-    failures: list[Exception] = []
     attempts = 0
     real_wait = GitHubClient._wait
 
@@ -806,21 +806,16 @@ def test_graphql_cooldown_wait_is_interruptible(monkeypatch: pytest.MonkeyPatch)
         stop_event=stop,
     ) as client:
 
-        def run() -> None:
-            """Run the rate-limited request and capture its shutdown result."""
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            worker = executor.submit(client.get_closing_issues, 'o/r', 1)
             try:
-                client.get_closing_issues('o/r', 1)
-            except Exception as exc:
-                failures.append(exc)
-
-        worker = threading.Thread(target=run)
-        worker.start()
-        assert wait_started.wait(2)
-        stop.set()
-        worker.join(1)
-        assert not worker.is_alive()
+                assert wait_started.wait(2)
+                stop.set()
+                with pytest.raises(GitHubInterrupted):
+                    worker.result(timeout=1)
+            finally:
+                stop.set()
     assert attempts == 1
-    assert len(failures) == 1 and isinstance(failures[0], GitHubInterrupted)
 
 
 def test_prebooked_worker_observes_later_shared_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -828,12 +823,12 @@ def test_prebooked_worker_observes_later_shared_cooldown(monkeypatch: pytest.Mon
     reserved = threading.Event()
     release = threading.Event()
     second_sent = threading.Event()
-    failures: list[Exception] = []
+    stop = threading.Event()
     real_wait = GitHubClient._wait
 
     def observed_wait(self: GitHubClient, seconds: float) -> None:
         """Observe cooldown waits before delegating to the original wait."""
-        if threading.current_thread().name == 'prebooked' and not reserved.is_set():
+        if threading.current_thread().name.startswith('prebooked') and not reserved.is_set():
             reserved.set()
             assert release.wait(2)
         real_wait(self, seconds)
@@ -850,28 +845,26 @@ def test_prebooked_worker_observes_later_shared_cooldown(monkeypatch: pytest.Mon
         return httpx.Response(200, json={'number': 1})
 
     with GitHubClient(
-        GitHubConfig(max_retries=0, requests_per_second=20), transport=httpx.MockTransport(handler), token='test'
+        GitHubConfig(max_retries=0, requests_per_second=20),
+        transport=httpx.MockTransport(handler),
+        token='test',
+        stop_event=stop,
     ) as client:
         assert client.get_pull_request('o/r', 1)['number'] == 1
 
-        def prebooked() -> None:
-            """Send the reserved request in a worker and capture failures."""
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix='prebooked') as executor:
+            worker = executor.submit(client.get_pull_request, 'o/r', 2)
             try:
-                client.get_pull_request('o/r', 2)
-            except Exception as exc:
-                failures.append(exc)
-
-        worker = threading.Thread(target=prebooked, name='prebooked')
-        worker.start()
-        assert reserved.wait(2)
-        with pytest.raises(GitHubError) as error:
-            client.get_pull_request('o/r', 3)
-        assert error.value.code == 'github_rate_limited'
-        release.set()
-        assert not second_sent.wait(0.1)
-        worker.join(2)
-        assert not worker.is_alive()
-    assert failures == []
+                assert reserved.wait(2)
+                with pytest.raises(GitHubError) as error:
+                    client.get_pull_request('o/r', 3)
+                assert error.value.code == 'github_rate_limited'
+                release.set()
+                assert not second_sent.wait(0.1)
+                worker.result(timeout=2)
+            finally:
+                release.set()
+                stop.set()
     assert second_sent.is_set()
 
 

@@ -1,10 +1,35 @@
 [PR Similarity](../../README.md) / [basket_collector](../README.md)
 
-# Resume and partial results
+# Choose your basket
 
-- [Choose your basket](#choose-your-basket)
-- [Inspect the basket artifacts and explain missing tasks](#inspect-the-basket-artifacts-and-explain-missing-tasks)
-- [Read a published basket](#read-a-published-basket)
+The workflow is `collect → filter → generate → export`. You can inspect each
+stage before continuing; `basket.json` is the frozen export boundary.
+For a first run, choose a shipped example rather than filling the whole schema
+from scratch. To keep its relative paths valid while customizing it:
+
+```bash
+cp examples/github-date-range.yaml examples/my-basket.yaml
+```
+
+Edit that file's dataset name/maintainers, repository, dates, filters and output
+locations. Give experiments separate output/cache directories. Never put token
+values in the YAML. Read the config once without API/Git/LLM calls:
+
+```bash
+.venv/bin/python - <<'PY'
+from basket_collector.config import load_config
+config = load_config('examples/my-basket.yaml')
+print('name:', config.dataset.name)
+print('output:', config.output_dir)
+PY
+```
+
+For baseline comparisons, freeze one basket and reuse its exact bytes for every
+agent. Do not regenerate task statements between agents. The benchmark keeps
+human-after data outside the agent's before-only workspace even when the export
+contains a golden diff.
+
+## Resume and partial results
 
 Ctrl+C saves progress. Run the same command with the same `CONFIG` to continue.
 Each record has its own retry budget. An exhausted record becomes `failed`;
@@ -34,7 +59,10 @@ make basket CONFIG=examples/github-llm-diff.yaml OVERWRITE=1
 
 `OVERWRITE=1` recalculates the command's stages: all stages for `basket`, or the
 named stage for a direct command. It cannot be combined with `RETRY_FAILED` or
-`RESELECT`. Retries and recalculation may incur new model charges.
+`RESELECT`.
+
+> [!WARNING]
+> Retries and recalculation may incur new model charges.
 
 `RESELECT` applies to `filter` and `basket`; `RETRY_FAILED` applies to every
 record stage and `basket`. An empty basket is never exported. Exit code 3 means
@@ -44,34 +72,14 @@ choosing a flag. `ALLOW_PARTIAL` does not retry failures or accept a changed
 selection; `RESELECT` does not accept omissions. If both decisions are needed,
 pass both flags deliberately. `RETRY_FAILED` does not apply to `export`.
 
-The presence of `basket.json` after exit code 3 does not prove this invocation
-exported a new basket: it may be the previous publication. Inspect stage status,
-`selection.json`, and the export's lineage, coverage and omissions. Keep the
-previous export intact while deciding how to continue.
+> [!IMPORTANT]
+> After exit code 3, `basket.json` may still be the previous export. Inspect stage
+> status, `selection.json`, lineage, coverage and omissions before using it.
 
-## Choose your basket
+## Configuration details
 
-The workflow is `collect → filter → generate → export`. You can inspect each
-stage before continuing; `basket.json` is the frozen export boundary.
-For a first run, choose a shipped example rather than filling the whole schema
-from scratch. To keep its relative paths valid while customizing it:
-
-```bash
-cp examples/github-date-range.yaml examples/my-basket.yaml
-```
-
-Edit that file's dataset name/maintainers, repository, dates, filters and output
-locations. Give experiments separate output/cache directories. Never put token
-values in the YAML. Read the config once without API/Git/LLM calls:
-
-```bash
-.venv/bin/python - <<'PY'
-from basket_collector.config import load_config
-config = load_config('examples/my-basket.yaml')
-print('name:', config.dataset.name)
-print('output:', config.output_dir)
-PY
-```
+<details>
+<summary>Selection rules, retry settings and config fields</summary>
 
 | Config area | Decision |
 |---|---|
@@ -108,12 +116,12 @@ calls; LLM generation uses `issue`, `diff` or `diff+issue` according to the conf
 The collector currently uses API access for LLM generation; the benchmark's
 ChatGPT OAuth profile is not a collector login.
 
-For baseline comparisons, freeze one basket and reuse its exact bytes for every
-agent. Do not regenerate task statements between agents. The benchmark keeps
-human-after data outside the agent's before-only workspace even when the export
-contains a golden diff.
+</details>
 
 ### Inspect the basket artifacts and explain missing tasks
+
+<details>
+<summary>Stage files and a read-only inspection script</summary>
 
 | File under `output_dir` | What to inspect |
 |---|---|
@@ -123,7 +131,7 @@ contains a golden diff.
 | `tasks.json` | Selected task outcomes, including failures and generation rejections |
 | `basket.json` | Last published export, with `meta.coverage` and explicit `meta.omissions` |
 | `.work/<stage>.json` | Unfinished stage/checkpoint state; not a completed export |
-| `logs_<timestamp>_*/collector.log` | Per-command DEBUG diagnostics, even at console INFO |
+| `logs_<timestamp>_*/collector.log` | Per-command DEBUG diagnostics with UTC timestamps (`Z`), even at console INFO |
 
 Each stage has `meta.status`, `meta.counts`, settings/hash and predecessor lineage.
 Read those before assuming the next stage is complete. Changing settings,
@@ -168,9 +176,12 @@ Ctrl+C saves checkpoints. Resume with the same CONFIG. If an interrupted record
 used its last attempt, `RETRY_FAILED=1` explicitly opens a new budget. Preserve
 the final export and its source config after validation.
 
-
+</details>
 
 ## Read a published basket
+
+<details>
+<summary>Read historical exports through the Python API</summary>
 
 Use the separate frozen-input API to validate an existing export without opening
 or modifying its collector working directory:
@@ -188,3 +199,5 @@ print(basket.sha256)  # SHA-256 of the original bytes in basket.content.
 `models.artifacts.BasketDocument` and `persistence.storage.read_document` remain
 current-stage APIs. Use `read_basket` for historical published exports; they are
 not checkpoint inputs and are never upgraded on read.
+
+</details>

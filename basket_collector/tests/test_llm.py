@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import httpx
@@ -472,7 +473,6 @@ def test_cooldown_arriving_during_durable_request_reservation(monkeypatch: pytes
     monkeypatch.setenv('TEST_LLM_KEY', 'fixture')
     reserved, release, waiting = threading.Event(), threading.Event(), threading.Event()
     sent: list[float] = []
-    errors: list[Exception] = []
     reservations: list[bool] = []
 
     class ObservedEvent(threading.Event):
@@ -502,14 +502,11 @@ def test_cooldown_arriving_during_durable_request_reservation(monkeypatch: pytes
 
             def worker() -> None:
                 """Run an actual record request with a slow coordinator acknowledgement."""
-                try:
-                    with record_scope(), generation_requests(reserve):
-                        client.generate('system', 'blocked worker')
-                except Exception as error:
-                    errors.append(error)
+                with record_scope(), generation_requests(reserve):
+                    client.generate('system', 'blocked worker')
 
-            thread = threading.Thread(target=worker)
-            thread.start()
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(worker)
             try:
                 assert reserved.wait(2)
                 clock[0] = 101
@@ -519,10 +516,9 @@ def test_cooldown_arriving_during_durable_request_reservation(monkeypatch: pytes
                 assert waiting.wait(2)
                 assert sent == [101]
                 clock[0] = 161
-                thread.join(2)
-                assert not thread.is_alive() and not errors
+                future.result(timeout=2)
                 assert sent == [101, 161] and reservations == [True]
             finally:
                 release.set()
                 stop.set()
-                thread.join(2)
+                executor.shutdown(wait=True, cancel_futures=True)

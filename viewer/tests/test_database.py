@@ -56,16 +56,16 @@ def test_password_disable_revoke_and_restart_owner(tmp_path: Path) -> None:
     """Verify password disable revoke and restart owner."""
     db = Database(tmp_path / 'runtime')
     db.create_user('Alice', 'secret')
-    g = db.issue('Alice', 'secret', 'publish')
+    grant = db.issue('Alice', 'secret', 'publish')
     db.reserve_owner('run', 'Alice', 'basket')
     db.update_user('Alice', enabled=False)
     with pytest.raises(ViewerError):
-        db.authorize(g['token'], 'publish')
+        db.authorize(grant['token'], 'publish')
     db.update_user('Alice', enabled=True)
-    g = db.issue('Alice', 'secret', 'publish')
+    grant = db.issue('Alice', 'secret', 'publish')
     db.set_password('Alice', 'new')
     with pytest.raises(ViewerError):
-        db.authorize(g['token'], 'publish')
+        db.authorize(grant['token'], 'publish')
     with pytest.raises(ViewerError):
         db.issue('alice', 'new', 'publish')
     assert db.list_users() == [{'login': 'Alice', 'enabled': True}]

@@ -147,8 +147,8 @@ def test_actual_producer_archive_is_navigable_in_browser(
     page.locator('button.file').first.click()
     page.locator('.diff-grid').wait_for()
     assert page.locator('.diff-panel h4').all_text_contents() == [
-        'Human diff',
-        'Agent diff',
+        'Human (+1 −0)',
+        'Agent (+1 −0)',
     ]
     page.get_by_role('button', name='Close diff', exact=True).click()
     page.locator('button.config-button').click()

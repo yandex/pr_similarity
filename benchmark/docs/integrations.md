@@ -3,34 +3,12 @@
 # Connect MCP and RAG
 
 Native OpenCode MCP config and sandbox-visible CLI tools are supported. Network
-access is shared with the host, while filesystem access is limited:
+access is shared with the host; files are limited to the attempt’s sandbox.
 
-| Inside bubblewrap | Access / lifetime |
-|---|---|
-| `/repo` | Writable before-only source; cwd is the basket workspace |
-| `/repo/.git` | Read-only fresh local baseline, without original PR history |
-| `/sandbox-home` (`$HOME`) | Writable private state shared by setup/agent within the attempt |
-| `/benchmark-runtime` | Read-only config, setup and copied declared resources |
-| `/benchmark-bin/opencode` | Read-only pinned OpenCode executable |
-| `/benchmark-python` | Read-only base Python snapshot, without host or benchmark packages |
-| `/sandbox-home/.venv` | Writable Python environment private to this attempt |
-| `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` where present | Read-only host system tools/libraries |
-| Selected DNS/TLS files from `/etc` | Read-only name resolution and certificate support |
-| `/etc/alternatives` where present | Read-only links for host system libraries, including BLAS/LAPACK |
-| `/tmp` | Fresh writable tmpfs for each individual invocation |
-
-System libraries still come from the host. Mounting `/etc/alternatives` preserves
-their symlink chains into the exposed system directories; it does not install
-project dependencies or expose the whole `/etc`. Targets outside those directories
-remain unavailable. Install project dependencies in setup.
-
-There is **no YAML option for arbitrary host bind mounts**, a host HOME, Docker
-socket, custom PATH, or a persistent setup daemon. The launcher owns `HOME`,
-`PATH`, `XDG_*`, `OPENCODE_*`, `GIT_*`, `LD_*`, `VIRTUAL_ENV` and Python
-import/prefix controls (including `PYTHONPATH` and `PYTHONHOME`); config bindings cannot replace
-them. A host tool under your HOME, host virtualenv or host `/tmp` is not visible.
-Install it into the private HOME, package nonsensitive files as declared local
-resources, or fetch pinned inputs in setup. Copied local resources reject symlinks.
+> [!IMPORTANT]
+> Install tools and dependencies in the attempt's private HOME through setup, or
+> declare local resources to copy. Host HOME, host virtualenvs and arbitrary bind
+> mounts are unavailable. Setup daemons do not persist into agent execution.
 
 ### Remote MCP, local MCP and a retrieval CLI
 
@@ -130,3 +108,37 @@ These fragments follow the pinned
 [MCP schema for the bundled runtime](https://github.com/anomalyco/opencode/blob/v1.18.33/packages/core/src/v1/config/mcp.ts)
 and [skills schema](https://github.com/anomalyco/opencode/blob/v1.18.33/packages/core/src/v1/config/skills.ts).
 Newer runtime documentation may describe a different config shape.
+
+## Sandbox reference
+
+<details>
+<summary>Mounts, reserved environment variables and tool lifetime</summary>
+
+| Inside bubblewrap | Access / lifetime |
+|---|---|
+| `/repo` | Writable before-only source; cwd is the basket workspace |
+| `/repo/.git` | Read-only fresh local baseline, without original PR history |
+| `/sandbox-home` (`$HOME`) | Writable private state shared by setup/agent within the attempt |
+| `/benchmark-runtime` | Read-only config, setup and copied declared resources |
+| `/benchmark-bin/opencode` | Read-only pinned OpenCode executable |
+| `/benchmark-python` | Read-only base Python snapshot, without host or benchmark packages |
+| `/sandbox-home/.venv` | Writable Python environment private to this attempt |
+| `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` where present | Read-only host system tools/libraries |
+| Selected DNS/TLS files from `/etc` | Read-only name resolution and certificate support |
+| `/etc/alternatives` where present | Read-only links for host system libraries, including BLAS/LAPACK |
+| `/tmp` | Fresh writable tmpfs for each individual invocation |
+
+System libraries still come from the host. Mounting `/etc/alternatives` preserves
+their symlink chains into the exposed system directories; it does not install
+project dependencies or expose the whole `/etc`. Targets outside those directories
+remain unavailable. Install project dependencies in setup.
+
+There is **no YAML option for arbitrary host bind mounts**, a host HOME, Docker
+socket, custom PATH, or a persistent setup daemon. The launcher owns `HOME`,
+`PATH`, `XDG_*`, `OPENCODE_*`, `GIT_*`, `LD_*`, `VIRTUAL_ENV` and Python
+import/prefix controls (including `PYTHONPATH` and `PYTHONHOME`); config bindings cannot replace
+them. A host tool under your HOME, host virtualenv or host `/tmp` is not visible.
+Install it into the private HOME, package nonsensitive files as declared local
+resources, or fetch pinned inputs in setup. Copied local resources reject symlinks.
+
+</details>

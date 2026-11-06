@@ -456,7 +456,7 @@ class CollectorConfig(ConfigModel):
     @field_validator('schema_version', mode='before')
     @classmethod
     def check_version(cls, value: object) -> int:
-        """Reject bool/float and pre-release formats before any external operation."""
+        """Require integer schema version 2 before any external operation."""
         if type(value) is not int or value != 2:
             raise ValueError('schema_version must be integer 2; only collector v2 configuration is supported')
         return value

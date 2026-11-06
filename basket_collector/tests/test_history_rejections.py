@@ -2,6 +2,7 @@
 
 import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -255,7 +256,6 @@ def test_broken_history_warning_stops_active_workers_before_drain(
     neighbor_started = threading.Event()
     warning_failed = threading.Event()
     calls: list[int] = []
-    failures: list[Exception] = []
 
     def filter_one(
         record: CollectRecord,
@@ -282,26 +282,19 @@ def test_broken_history_warning_stops_active_workers_before_drain(
         warning_failed.set()
         raise OSError('fixture output stream closed')
 
-    def run() -> None:
-        """Capture the original failure without blocking the test thread."""
-        try:
-            pipeline.run('filter')
-        except Exception as error:
-            failures.append(error)
-
     monkeypatch.setattr('basket_collector.pipeline.process_one', filter_one)
     monkeypatch.setattr(pipeline, '_print_history_rejection', broken_warning)
-    worker = threading.Thread(target=run)
-    worker.start()
+    executor = ThreadPoolExecutor(max_workers=1)
+    worker = executor.submit(pipeline.run, 'filter')
     try:
         assert warning_failed.wait(5)
         stopped = pipeline.shutdown.stop_event.wait(2)
     finally:
         pipeline.shutdown.stop_event.set()
-        worker.join(timeout=5)
+        executor.shutdown(wait=True, cancel_futures=True)
     assert stopped, 'coordinator waited for active workers without signalling stop'
-    assert not worker.is_alive() and len(failures) == 1
-    assert isinstance(failures[0], OSError) and str(failures[0]) == 'fixture output stream closed'
+    with pytest.raises(OSError, match='^fixture output stream closed$'):
+        worker.result(timeout=5)
     document, _state = read_checkpoint(Path(config.output_dir) / '.work/filter.json', FilterDocument)
     assert document.meta.status == 'failed' and document.meta.counts.rejected == 1
     assert document.meta.counts.pending == 2 and 3 not in calls

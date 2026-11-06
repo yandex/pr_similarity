@@ -7,44 +7,55 @@ standalone web UI. Publication checks the basket data against the report and
 saved evidence. Guests can browse immediately; administrators manage users,
 basket visibility and cache refresh through the UI.
 
-## Use the leaderboard
-
-Open a deployed viewer's HTTPS address to browse public baskets, runs, scores
-and Human/Agent diffs without local setup. Owners can publish and manage their
-runs; administrators manage accounts and presentation. See the
-[leaderboard guide](docs/leaderboard.md) for metrics, visibility and account actions.
-
-## Prerequisites
-
-- **Linux**, **Python 3.12 or newer** with venv/pip support, and **GNU Make**.
-- Network access to **PyPI** for setup. A persistent deployment also needs a
-  private **S3-compatible object store** and an **HTTPS entrypoint**.
-
 ## Quick start
 
-`make setup` creates a missing environment without prompting. If `.venv`
-already exists or `VENV_PYTHON` is executable, it asks
-`Virtual environment already exists. Reinstall dependencies? [Y/n] `.
-Enter or `Y` repeats setup in that environment without deleting it; `n` skips
-all setup steps. EOF cancels setup before installation. An accepted setup
-upgrades pip before installing project dependencies; it uses `PACKAGE_INDEX_URL`
-for pip bootstrap, upgrade and dependency installation.
-
-Run from this directory. `make help` lists commands and variables without setup.
+To host a local viewer, you need Linux, Python 3.12 or newer, Make and access
+to PyPI. Run from `viewer/`:
 
 ```sh
-make help
 make setup PYTHON=python3.12
 cp examples/mock.json config.local.json
 make start
 make admin-profile-create LOGIN=admin
 ```
 
-Open **http://127.0.0.1:8000**. The mock configuration stores data locally and
-needs no object storage or credentials. The catalogue starts empty. To populate
-it with the [benchmark](../benchmark/docs/publication.md#publish-to-a-leaderboard), expose
-the mock service through verified HTTPS (reverse proxy or configured TLS); the
-benchmark publisher does not accept the quick-start HTTP origin.
+Enter the administrator password when prompted, then open **http://127.0.0.1:8000**.
+Log in to create users and manage baskets. The mock configuration stores data
+locally and starts with an empty catalogue.
+
+> [!NOTE]
+> To browse an existing service, open its HTTPS address; no local installation
+> is needed. See [Use the leaderboard](docs/leaderboard.md#use-the-leaderboard).
+
+> [!IMPORTANT]
+> Benchmark publication requires verified HTTPS. Before uploading to this local
+> viewer, configure TLS or an HTTPS reverse proxy and set `public_origin` to its
+> external origin. See the [deployment guide](docs/deployment.md#persistent-linux-service).
+
+Manage the local process from the same directory:
+
+```sh
+make status
+make logs
+make stop
+```
+
+## Use the leaderboard
+
+Open a deployed viewer's HTTPS address to browse public baskets, runs, scores
+and Human/Agent unified diffs or full files with change maps without local setup.
+Use **Diff / Full file** beside the file-dialog close button to switch both panels. Owners can publish and manage their
+runs; administrators manage accounts and presentation. See the
+[leaderboard guide](docs/leaderboard.md) for metrics, visibility and account actions.
+
+## Configuration
+
+[examples/full.json](examples/full.json) lists every server setting and resource
+limit. See the [configuration reference](docs/configuration.md) for units, path
+resolution and storage/TLS alternatives. Use the [persistent Linux service recipe](docs/deployment.md)
+for a supervised installation.
+
+## Accounts
 
 The admin command prompts for a password. Run it on the service machine as the
 same OS user that owns the runtime. Log in to create ordinary users through
@@ -55,18 +66,50 @@ Users manages ordinary accounts only: admin passwords and access are protected
 from changes through UI/API. Use **Change password** for your own password, or
 `make admin-profile-password-set LOGIN=admin` for recovery on the service machine.
 
+## Development
+
+The root [operator skills](../README.md#work-with-a-coding-assistant) cover
+publication and analysis. [AGENTS.md](AGENTS.md) is the local development guide;
+[CLAUDE.md](CLAUDE.md) imports it. Service administration and deployment are
+separate from uploading a run.
+
+| Task | Command |
+| --- | --- |
+| Foreground service / local background service | `make serve` / `make start` |
+| Status, log, stop | `make status`, `make logs`, `make stop` |
+| Create an admin locally | `make admin-profile-create LOGIN=admin` |
+| Assign a role locally | `make admin-role-set LOGIN=student ROLE=user` |
+| Create / enable / disable a user | `make admin-user-create LOGIN=student`, `make admin-user-enable LOGIN=student`, `make admin-user-disable LOGIN=student` |
+| Reset a password | `make admin-password-set LOGIN=student` |
+| Refresh caches | `make admin-refresh` |
+
+All service/admin commands accept `CONFIG=<path>`. Administration can use
+`URL=<https-origin>`; the local provisioning commands access SQLite directly.
+Additional commands and setup variables are listed by `make help`.
+
 ```sh
-make status
-make logs
-make stop
+make browser-setup
+make test
 ```
 
-## Configuration
+Chromium needs the [Playwright system libraries](https://playwright.dev/python/docs/browsers#system-dependencies).
+`make test` is the required offline test and release smoke check. It includes
+real Chromium browser scenarios, HTTP authentication and archive download,
+publication/recovery with local storage, and archives produced by the benchmark.
+Run the complete suite without skipped tests after code or UI changes; a partial
+pytest selection does not satisfy the release smoke check. Browser setup and the
+benchmark test environment must be available for these checks.
 
-[examples/full.json](examples/full.json) lists every server setting and resource
-limit. See the [configuration reference](docs/configuration.md) for units, path
-resolution and storage/TLS alternatives. Use the [persistent Linux service recipe](docs/deployment.md)
-for a supervised installation.
+Tests use local/mock storage and temporary servers; they do not deploy or call
+a real bucket. `GET /healthz` returns `{"status":"ok"}` for a running process.
+`GET /readyz` returns 200 only after recovery and catalogue validation; otherwise
+it returns 503 with the startup phase and a safe error code. The CLI starts its
+listener during validation; result APIs return 503 until ready. Full startup
+validation is still required, so large stores can take time to become ready.
+## Advanced topics
+
+<details>
+<summary>Persistent deployment</summary>
 
 For a persistent deployment, copy `examples/s3.json` to `config.local.json`
 and set these fields:
@@ -104,10 +147,34 @@ runtime owner:
 make admin-profile-create CONFIG=config.local.json LOGIN=admin
 ```
 
+> [!WARNING]
+> Back up SQLite with its backup API before upgrading a persistent service.
+> Keep the runtime directory, admin token and original archives.
+
 Startup creates the private runtime and a random admin token automatically.
-Passwords are entered at hidden prompts. Keep the runtime private and back up
-SQLite using its backup API before upgrades; keep the backup available for recovery. Storage, recovery and optional trash lifecycle
-settings are described in the [service reference](docs/reference.md#storage-backup-and-recovery).
+Passwords are entered at hidden prompts. Keep the runtime private.
+Storage, recovery and optional trash lifecycle settings are described in the [service reference](docs/reference.md#storage-backup-and-recovery).
+
+</details>
+
+<a id="prerequisites"></a>
+<details>
+<summary>Setup behavior and development label</summary>
+
+`make setup` creates a missing environment without prompting. If `.venv`
+already exists or `VENV_PYTHON` is executable, it asks
+`Virtual environment already exists. Reinstall dependencies? [Y/n] `.
+Enter or `Y` repeats setup in that environment without deleting it; `n` skips
+all setup steps. EOF cancels setup before installation. An accepted setup
+upgrades pip before installing project dependencies; it uses `PACKAGE_INDEX_URL`
+for pip bootstrap, upgrade and dependency installation.
+
+The header shows the installed viewer version. Use `make start DEV=1` or
+`make serve DEV=1` to add `[dev]` for a development deployment (default: `DEV=0`).
+For direct `python -m viewer serve` launches, set `PRSIM_VIEWER_DEV=1`.
+Restart the service to change the label. This flag only changes the label.
+
+</details>
 
 <details>
 <summary>Compatibility</summary>
@@ -115,43 +182,25 @@ settings are described in the [service reference](docs/reference.md#storage-back
 The viewer can display supported archives from earlier installations without
 converting the original files. Update benchmark and viewer together before
 publishing new results, and preserve SQLite backups when upgrading the service.
+The reader accepts state v3 recovery observations alongside v2 run/report/native
+facts. An interrupted historical attempt may omit only explicitly unrecorded
+native facts; the current selected attempt still needs valid publication evidence.
 See the [saved-data note](../README.md#reading-data-from-earlier-releases).
 
 </details>
 
-## Development
+<a id="publication-completion"></a>
+<details>
+<summary>Publication completion and recovery</summary>
 
-The root [operator skills](../README.md#work-with-a-coding-assistant) cover
-publication and analysis. [AGENTS.md](AGENTS.md) is the local development guide;
-[CLAUDE.md](CLAUDE.md) imports it. Service administration and deployment are
-separate from uploading a run.
+Publication updates only the affected run and returns after its files, settings
+and receipt are saved. Layout edits do not scan run evidence. Failed completion
+retains the previous catalogue; the journal supports retry and restart recovery.
+Recovery validates files already recorded as transferred against storage, so
+losing their local staging copies does not prevent completion. Files still
+awaiting transfer are validated from staging before installation.
+Catalogue versions are built separately from storage reads and installed as one
+coherent unit. A background worker retries interrupted writes without requiring
+a new user mutation.
 
-| Task | Command |
-| --- | --- |
-| Foreground service / local background service | `make serve` / `make start` |
-| Status, log, stop | `make status`, `make logs`, `make stop` |
-| Create an admin locally | `make admin-profile-create LOGIN=admin` |
-| Assign a role locally | `make admin-role-set LOGIN=student ROLE=user` |
-| Create / enable / disable a user | `make admin-user-create LOGIN=student`, `make admin-user-enable LOGIN=student`, `make admin-user-disable LOGIN=student` |
-| Reset a password | `make admin-password-set LOGIN=student` |
-| Refresh caches | `make admin-refresh` |
-
-All service/admin commands accept `CONFIG=<path>`. Administration can use
-`URL=<https-origin>`; the local provisioning commands access SQLite directly.
-Additional commands and setup variables are listed by `make help`.
-
-```sh
-make browser-setup
-make test
-```
-
-Chromium needs the [Playwright system libraries](https://playwright.dev/python/docs/browsers#system-dependencies).
-`make test` is the required offline test and release smoke check. It includes
-real Chromium browser scenarios, HTTP authentication and archive download,
-publication/recovery with local storage, and archives produced by the benchmark.
-Run the complete suite without skipped tests after code or UI changes; a partial
-pytest selection does not satisfy the release smoke check. Browser setup and the
-benchmark test environment must be available for these checks.
-
-Tests use local/mock storage and temporary servers; they do not deploy or call
-a real bucket. `GET /healthz` returns `{"status":"ok"}` for a running service.
+</details>

@@ -17,6 +17,8 @@ def _project(tmp_path: Path, *, existing: bool, usable: bool = True) -> tuple[Pa
     shutil.copy2(Path(__file__).parents[1] / 'Makefile', tmp_path / 'Makefile')
     interpreter = tmp_path / 'setup-python'
     interpreter.write_text('#!' + sys.executable + '\n' + '''
+"""Record setup interpreter calls and emulate installation outcomes."""
+
 import json
 import os
 import shutil

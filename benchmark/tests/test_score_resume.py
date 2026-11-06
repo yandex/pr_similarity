@@ -291,11 +291,9 @@ def test_quota_crash_after_seal_resumes_with_new_native_attempt(
     archive = tmp_path / 'recovered.tar.gz'
     create_archive(directory, archive, require_complete=False)
     manifest = verify_archive(archive)
-    assert manifest.complete is (not score_fails)
-    if score_fails:
-        assert any(
-            item.path is not None and item.path.endswith('/001/outcome.json') for item in manifest.missing_artifacts
-        )
+    assert manifest.complete
+    assert previous.interruption is not None
+    assert previous.outcome is None
 
 
 def test_quota_resume_after_signal_preserves_saved_score_and_replays_native(

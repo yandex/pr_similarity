@@ -101,6 +101,7 @@ def recover_native_facts(store: RunStore, config: RunConfig) -> list[RecoveryNot
             report = store.snapshot()
             report.tasks[index].processing_status = 'interrupted'
             store.commit(report)
+    store.recover_interruptions()
     return notices
 
 

@@ -23,10 +23,18 @@ open `tasks/<key>/attempts/NNN/`. Never choose a success/newest directory instea
 of the authoritative selection. Valid state can rebuild a report cache; damaged
 state or unsupported layouts are not reconstructed by guessing.
 
+For registered interruption.json, verify its start/optional-seal receipts and
+missing-fact list. It records recovery observation, not a measured finish time,
+native result or cost. Publication completeness and historical usage completeness
+are separate: a publishable state-v3 run may have unknown historical usage. Keep
+that distinction when comparing final-attempt metrics with all-attempt costs.
+
 Read shared native input through `report.agent_input`: `agent/opencode.json`
 and declared resources are frozen once. Effective refs point to unique
 `agent/effective/<sha256>.json` files, owned by each selected attempt seal.
-Shared bytes do not imply shared execution or successful capture.
+Shared bytes do not imply shared execution or successful capture. The public
+opencode.json button shows frozen input, not the merged effective config. Inspect
+registered effective artifacts directly when that distinction matters to analysis.
 
 Read live `agent.log` for timestamped text/tool targets/outcomes. Follow truncated
 output's `events.jsonl` line; raw JSON retains unknown event types. Read stderr and

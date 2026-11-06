@@ -1840,18 +1840,19 @@ class Pipeline:
         """Execute one stage or the ordered basket under an exclusive output lock.
 
         Args:
-                command: A stage name or ``basket``.
-                overwrite: Rebuild selected stages from their inputs.
-                retry_failed: Retry only completed per-PR generation failures.
-                allow_partial: Accept the exact known omissions at selection or export.
-                reselect: Accept a changed ordered selection after processing candidates.
+            command: A stage name or ``basket``.
+            overwrite: Rebuild selected stages from their inputs.
+            retry_failed: Reopen exhausted record attempt budgets in the selected stages.
+            allow_partial: Accept the exact known omissions at selection or export.
+            reselect: Accept a changed ordered selection after processing candidates.
 
         Returns:
-                Zero on success or three when a direct generate run has failed PRs.
+            Zero on success. Three when a partial/selection decision is required,
+            no successful records remain, or a record stage has unaccepted omissions.
 
         Raises:
-                PipelineInterrupted: If a signal stops the run after checkpointing.
-        StorageError: If an input, checkpoint, or stage identity is inconsistent.
+            PipelineInterrupted: If a signal stops the run after checkpointing.
+            StorageError: If an input, checkpoint, or stage identity is inconsistent.
 
         """
         self._validate_command(command, overwrite, retry_failed, reselect)

@@ -73,10 +73,10 @@ def test_duplicate_json_rejected_with_valid_inventory(tmp_path: Path) -> None:
 
 def test_config_rejects_unknown_fields_and_credentials_in_url(tmp_path: Path) -> None:
     """Verify config rejects unknown fields and credentials in url."""
-    p = tmp_path / 'config.json'
-    p.write_text(json.dumps({'storage': 'mock', 'bogus': 1}))
+    config_path = tmp_path / 'config.json'
+    config_path.write_text(json.dumps({'storage': 'mock', 'bogus': 1}))
     with pytest.raises(ViewerError):
-        Config.load(p)
+        Config.load(config_path)
     with pytest.raises(ViewerError):
         Config(storage='s3', bucket='bucket', endpoint='https://a:b@host')
     with pytest.raises(ViewerError):

@@ -13,8 +13,8 @@ const scoreClass = value => value === null || value === undefined ? 'score-unkno
 const taskClass = row => row.status_counts.fail ? 'health-fail' : row.status_counts['no-op'] || row.status_counts.timeout ? 'health-warn' : 'health-ok';
 const statusSummary = row => Object.entries(row.status_counts).map(([s,c]) => statusLabels[s] + ': ' + c).join(' · ');
 const groups = ['user', 'model', 'setup', 'basket'];
-const runId = new URLSearchParams(location.search).get('run_id');
-const detail = location.pathname === '/run';
+const runId = window.prsimLocal?.runId ?? new URLSearchParams(location.search).get('run_id');
+const detail = Boolean(window.prsimLocal) || location.pathname === '/run';
 const usersPage = location.pathname === '/admin/users';
 const settingsPage = location.pathname === '/settings';
 const basketExpanded = new Map();
@@ -127,6 +127,7 @@ function filters() {
   return query;
 }
 async function api(path, options = {}) {
+  if (window.prsimLocal) return window.prsimLocal.read(path, options);
   const response = await fetch('/api/v1' + path, options);
   const data = await response.json();
   if (!response.ok) {const error = new Error(data.error?.message || 'Request failed (' + response.status + ')'); error.code = data.error?.code; throw error;}
@@ -153,6 +154,7 @@ function pinButton(row) {
       await reload();
     } catch (error) { showError(error); value.disabled = false; }
   }, 'pin');
+  value.hidden = Boolean(window.prsimLocal);
   value.setAttribute('aria-label', (row.pinned ? 'Unpin ' : 'Pin ') + row.display_name);
   value.setAttribute('aria-pressed', String(row.pinned));
   value.disabled = window.viewerAccount.actor?.role !== 'admin';
@@ -413,6 +415,23 @@ function diffBlock(text) {
   pre.append(lines);
   return pre;
 }
+function unifiedDiffPanel(title, data) {
+  const panel = node('section', null, 'diff-panel');
+  let added = 0, removed = 0, inHunk = false;
+  for (const line of data.text.split('\n')) {
+    if (line.startsWith('@@')) inHunk = true;
+    else if (inHunk && line.startsWith('+')) ++added;
+    else if (inHunk && line.startsWith('-')) ++removed;
+  }
+  panel.append(node('h4', title + ' (+' + added + ' −' + removed + ')' + (data.truncated ? ' · shown lines' : '')));
+  if (data.truncated) panel.append(node('p', 'Diff truncated by display limits', 'truncated'));
+  const pre = diffBlock(data.text || (data.truncated ? 'Content exceeds display limit' : 'No changes.'));
+  pre.tabIndex = 0; pre.setAttribute('aria-label', title);
+  panel.append(pre);
+  return panel;
+}
+let fileViewMode = 'diff';
+let diffSelection = null;
 let diffVersion = 0;
 let diffAbort = null;
 let diffOpener = null;
@@ -428,7 +447,7 @@ function finishDiffClose() {
   const opener = diffOpener?.isConnected ? diffOpener : document.querySelector('.task>summary');
   opener?.focus({preventScroll: true});
   if (diffPosition) window.scrollTo(diffPosition.x, diffPosition.y);
-  diffPosition = null; diffOpener = null;
+  diffPosition = null; diffOpener = null; diffSelection = null;
 }
 function closeDiff() {
   if (!diffDialog.open) return;
@@ -440,6 +459,10 @@ async function openDiff(task, file, opener) {
   diffAbort = new AbortController();
   const signal = diffAbort.signal;
   diffOpener = opener;
+  diffSelection = {task, file, opener};
+  const full = fileViewMode === 'full';
+  $('file-view-diff').setAttribute('aria-pressed', String(!full));
+  $('file-view-full').setAttribute('aria-pressed', String(full));
   for (const widget of filterWidgets.values()) widget.close(false);
   $('diff-title').textContent = task.repository + ' #' + task.number + ' · ' + file.path;
   $('diff-content').replaceChildren(node('p', 'Loading diff…', 'diff-message'));
@@ -449,21 +472,17 @@ async function openDiff(task, file, opener) {
     document.body.classList.add('diff-open'); diffDialog.showModal();
   }
   try {
-    const data = await api('/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(task.task_id) + '/files/' + encodeURIComponent(file.file_id) + '?' + taskSelection(), {signal});
+    const data = await api('/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(task.task_id) + '/files/' + encodeURIComponent(file.file_id) + '?' + taskSelection() + (full ? '&view=full' : ''), {signal});
     if (version !== diffVersion || !diffDialog.open) return;
     const grid = node('div', null, 'diff-grid');
-    for (const [key, title] of [['human_diff', 'Human diff'], ['agent_diff', 'Agent diff']]) {
-      const panel = node('section', null, 'diff-panel'); panel.append(node('h4', title));
-      if (data[key].truncated) panel.append(node('p', 'Diff truncated by display limits.', 'truncated'));
-      const pre = diffBlock(data[key].text || '(No content diff)');
-      pre.tabIndex = 0; pre.setAttribute('aria-label', title);
-      panel.append(pre); grid.append(panel);
+    for (const [role, title] of [['human', 'Human'], ['agent', 'Agent']]) {
+      grid.append(full ? fullFilePanel(title, data[role + '_file']) : unifiedDiffPanel(title, data[role + '_diff']));
     }
     $('diff-content').replaceChildren(grid); diffDialog.removeAttribute('aria-busy');
     requestAnimationFrame(() => {
       if (version !== diffVersion || !diffDialog.open) return;
       for (const pre of grid.querySelectorAll('pre')) {
-        const first = pre.querySelector('.diff-add,.diff-remove');
+        const first = pre.querySelector('.full-line.added,.full-line.removed');
         if (first) pre.scrollTop = Math.max(0, first.offsetTop - 28);
       }
     });
@@ -474,6 +493,14 @@ async function openDiff(task, file, opener) {
     $('diff-content').replaceChildren(message, retry);
     diffDialog.removeAttribute('aria-busy');
   }
+}
+for (const mode of ['diff', 'full']) {
+  $('file-view-' + mode).addEventListener('click', () => {
+    if (fileViewMode === mode || !diffDialog.open || !diffSelection) return;
+    fileViewMode = mode;
+    const {task, file, opener} = diffSelection;
+    openDiff(task, file, opener);
+  });
 }
 $('diff-close').addEventListener('click', closeDiff);
 diffDialog.addEventListener('cancel', event => {event.preventDefault(); closeDiff();});
@@ -496,14 +523,21 @@ function makeFile(task, file) {
   const value = button('', () => openDiff(task, file, value), 'file');
   value.dataset.fileId = file.file_id;
   value.setAttribute('aria-label', 'View diff for ' + file.path);
-  value.append(node('span', file.path, 'file-path'), node('span', number(file.score), scoreClass(file.score)), node('span', 'View diff', 'file-action'));
+  const path = node('span', file.path, 'file-path');
+  const state = file.changed_agent === true && file.changed_human === false ? 'Extra' : file.changed_human === true && file.changed_agent === false ? 'Missed' : null;
+  if (state) {
+    const badge = node('span', state, 'usage-status partial file-state ' + state.toLowerCase());
+    path.append(badge);
+    value.setAttribute('aria-label', 'View diff for ' + file.path + ' · ' + state + ' file');
+  }
+  value.append(path, node('span', number(file.score), scoreClass(file.score)), node('span', 'View diff', 'file-action'));
   return value;
 }
 function originalTaskLink(task) {
   try {
     const url = new URL(task.url);
     if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
-      const source = node('a', task.kind === 'merge_request' ? 'Original MR' : 'Original PR', 'task-source-link');
+      const source = node('a', task.kind === 'merge_request' ? 'Open Human MR' : 'Open Human PR', 'task-source-link button-link');
       source.href = url.href; source.target = '_blank'; source.rel = 'noopener noreferrer'; return source;
     }
   } catch (_) {}
@@ -519,10 +553,11 @@ function makeTask(task) {
   const title = node('span', caption, 'title');
   const expand = button('Expand task', event => {event.preventDefault(); event.stopPropagation(); details.open = !details.open;}, 'task-toggle');
   expand.setAttribute('aria-label', 'Expand task ' + task.repository + ' #' + task.number);
-  const score = node('span', null, 'numeric ' + scoreClass(task.score)); score.append(scoreView(task, 'score'));
-  summary.append(node('span', task.status === 'fail' ? 'FAIL' : task.status === 'OK' ? 'OK' : 'WARN · ' + statusLabels[task.status], 'badge ' + task.status), title, score, expand);
-  const telemetry = node('span', 'Total Tokens: ', 'task-metrics'); telemetry.append(measurement(task.tokens.total), ' · Agent Time: ', durationView(task));
-  telemetry.title = tokensTitle(task) + '\n' + timeTitle(task); summary.insertBefore(telemetry, expand);
+  const score = taskMetric(task, 'score');
+  summary.append(node('span', task.status === 'OK' ? 'OK' : statusLabels[task.status], 'badge ' + task.status), title, expand);
+  const telemetry = node('div', null, 'task-metrics');
+  telemetry.append(score, taskMetric(task, 'f1_files'), taskMetric(task, 'time'), taskMetric(task, 'tokens'), taskMetric(task, 'cost'));
+  summary.insertBefore(telemetry, expand);
   expand.setAttribute('aria-expanded', String(expandedTasks.has(task.task_id)));
   details.append(summary);
   let loaded = false;
@@ -539,9 +574,8 @@ function makeTask(task) {
       const data = await api('/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(task.task_id) + '?' + taskSelection(reportHash, publicationHash));
       if (view !== generation || !details.isConnected) return;
       body.replaceChildren(node('h3', 'Task condition'), node('pre', data.condition, 'condition'));
-      if (sourceLink) body.prepend(sourceLink);
-      const info = node('p', 'Score: ', 'muted'); info.append(scoreView(data, 'score'), ' · F1 files: ', scoreView(data, 'f1_files'), ' · Agent Time: ', durationView(data), ' · Cost: ', costView(data), ' USD'); body.append(info);
-      const tokens = node('p', 'Tokens: ', 'muted'); tokens.append(tokensView(data), ' · Total: ', measurement(data.tokens.total)); body.append(tokens);
+      if (window.prsimLocal && data.diagnostic) body.append(node('p', data.diagnostic, 'error'));
+      body.prepend(taskChangeToolbar(task, sourceLink, reportHash, publicationHash));
       body.append(node('h3', 'Files (' + data.files.length + ')'));
       for (const file of data.files) body.append(makeFile(task, file));
       if (!data.files.length) body.append(node('p', data.scoring_status === 'available' ? 'No changed files.' : 'File scoring unavailable.', 'muted'));
@@ -569,59 +603,15 @@ async function renderRun(version) {
   runPublicationHash = row.publication_sha256;
   runAuthMode = row.auth_mode;
   document.title = row.display_name + ' · PR Similarity Viewer';
-  const header = node('section', null, 'run-header');
-  const title = node('h1', row.display_name); title.append(pinButton(row)); header.append(title);
-  const actions = node('div', null, 'run-actions'); actions.append(configButton(row));
-  const actor = window.viewerAccount.actor;
-  if (actor && (actor.login === row.user || actor.role === 'admin')) {
-    const remove = button('Delete Run', async () => {
-      if (!confirm('Delete "' + row.display_name + '"? It will disappear from the leaderboard. The publication is retained in server trash.')) return;
-      remove.disabled = true;
-      try {
-        await window.viewerRequest('/runs/' + encodeURIComponent(runId) + '?expected_publication_sha256=' + encodeURIComponent(row.publication_sha256), 'DELETE');
-        location.assign('/');
-      } catch (error) {showError(error); remove.disabled = false;}
-    }, 'delete-run'); actions.append(remove);
-  }
-  if (window.viewerAccount.actor?.role === 'admin') {
-    const archive = node('a', 'Download Run Archive', 'button-link'); archive.href = '/api/v1/runs/' + encodeURIComponent(runId) + '/archive';
-    archive.setAttribute('download', runId + '.tar.gz'); actions.append(archive);
-  }
-  header.append(actions);
-  header.append(node('div', row.user + ' · ' + row.runtime + ' · ' + row.status + ' · ' + dateText(row.created_at), 'metadata'));
-  header.append(node('p', row.run_id + ' · Basket ' + row.basket_hash.slice(0, 12), 'hash'));
-  const benchmark = row.benchmark;
-  if (benchmark) {
-    const controls = node('section', null, 'benchmark-metadata'); controls.append(node('h2', 'Benchmark settings'));
-    const timeout = benchmark.timeout_seconds == null ? '—' : time(benchmark.timeout_seconds);
-    const setupTimeout = benchmark.setup_timeout_seconds == null ? '—' : time(benchmark.setup_timeout_seconds);
-    const retries = benchmark.retries;
-    controls.append(node('p', 'Agent timeout: ' + timeout + ' · Setup timeout: ' + setupTimeout));
-    controls.append(node('p', 'Retries: ' + (retries?.max_retries ?? '—') + ' · Categories: ' + (retries?.categories?.join(', ') || 'None')));
-    controls.append(node('p', 'Diff exclusions: ' + (benchmark.diff_excludes?.join(', ') || 'None')));
-    header.append(controls);
-  }
-
-  const basket = node('section', null, 'basket-info');
-  basket.append(node('h2', row.basket.name), node('p', row.basket.description, 'basket-description'));
-  const source = row.basket.task_source;
-  const contexts = {'diff': 'Diff', 'issue': 'Issues', 'diff+issue': 'Diff + issues'};
-  const sourceText = source.source === 'issue' ? 'Issues' : source.source === 'llm' ? 'LLM · ' + (contexts[source.context] || 'Mode unknown') : '—';
-  basket.append(node('p', 'Task source: ' + sourceText, 'task-source')); header.append(basket);
-  const tags = node('table', null, 'run-tags'); const tr = node('tr');
-  for (const group of ['model', 'setup']) { const cell = tagsCell(row, group, 7); cell.prepend(node('div', group, 'muted')); tr.append(cell); }
-  tags.append(tr); header.append(tags);
-  const cards = node('div', null, 'stat-grid');
-  cards.append(stat('Score', scoreView(row, 'score'), 'Selected task score', scoreClass(row.score)), stat('F1 files', scoreView(row, 'f1_files'), 'File precision/recall F1', scoreClass(row.f1_files)), stat('Median time', durationView(row, true), timeTitle(row)), stat('Total Agent Time', durationView(row), timeTitle(row)), stat('Wall Time', time(row.wall_time_seconds), 'Exact seconds: ' + row.wall_time_seconds + '\nElapsed from run creation to execution completion, including pauses before resume. Unaffected by task selection or report edits.'), stat('Cost, USD', costView(row), costTitle(row)), stat('Selected tasks', row.selected_tasks + '/' + row.total_tasks, statusSummary(row), taskClass(row)));
-  header.append(cards);
-  const tokens = node('p', 'Tokens (cache read / input / output / cache write / reasoning): ', 'muted'); tokens.append(tokensView(row)); tokens.title = tokensTitle(row);
-  const total = node('p', 'Total: ', 'token-total'); total.append(measurement(row.tokens.total)); header.append(tokens, total);
-  header.append(node('p', statusSummary(row), 'muted'));
+  const previousRunFocus = document.activeElement;
+  const header = buildRunSummary(row);
   const returnTask = diffDialog.open ? diffOpener?.closest('.task')?.dataset.taskId : null;
   closeDiff();
   const taskControls = $('task-sorting'); taskControls.hidden = false;
   const focused = document.activeElement?.id;
   $('content').replaceChildren(header, node('h2', 'Tasks (' + tasks.total + ')'), taskControls, ...tasks.items.map(makeTask));
+  window.prsimLocal?.afterRender?.();
+  if (previousRunFocus?.isConnected && previousRunFocus.closest('.controls')) previousRunFocus.focus({preventScroll: true});
   if (['task-sort', 'task-direction', 'task-order-reset'].includes(focused)) $(focused).focus({preventScroll: true});
   if (returnTask) {
     const task = [...$('content').querySelectorAll('.task')].find(value => value.dataset.taskId === returnTask);
@@ -692,3 +682,518 @@ if (detail) { $('page-kind').textContent = 'Run Report'; $('catalogue-filters').
 if (usersPage || settingsPage) document.querySelector('.controls').hidden = true;
 window.addEventListener('viewer-account-change', () => reload());
 window.viewerAccountReady.then(() => reload());
+
+;
+const labelMap={cache_read:'Cache read',input:'Input',output:'Output',cache_write:'Cache write',reasoning:'Reasoning',total:'Total'};
+
+const compact=v=>v==null?'—':new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:1}).format(v);
+function statusBadge(v) {const b=node('span',v.status==='partial'?'Partial':v.status==='unavailable'?'Unavailable':'Complete','usage-status '+v.status);return b;}
+
+let panel=null,anchor=null,pinned=false,hideTimer;
+function dismissPanel(restore=false){if(!panel)return;const last=anchor;panel.hidden=true;if(last){last.removeAttribute('aria-describedby');last.removeAttribute('aria-expanded')}anchor=null;pinned=false;if(restore&&last?.isConnected)last.focus()}
+function positionPanel(){
+ if(!panel||panel.hidden||!anchor)return;
+ const r=(anchor.querySelector('.compact-total') || anchor).getBoundingClientRect();if(!anchor.isConnected||r.bottom<0||r.top>innerHeight){dismissPanel();return}
+ panel.style.maxHeight='calc(100dvh - 16px)';const w=panel.offsetWidth,natural=panel.scrollHeight+2;
+ const below=innerHeight-r.bottom-16,above=r.top-16;const down=below>=natural||below>=above;
+ const available=Math.max(80,down?below:above);panel.style.maxHeight=available+'px';
+ panel.style.left=Math.max(8,Math.min(r.left,innerWidth-w-8))+'px';
+ panel.style.top=(down?r.bottom+8:Math.max(8,r.top-panel.offsetHeight-8))+'px';
+}
+function ensurePanel(){if(panel)return;panel=node('section',null,'unified-popover');panel.id='usage-popover';panel.hidden=true;document.body.append(panel);panel.addEventListener('mouseenter',()=>clearTimeout(hideTimer));panel.addEventListener('mouseleave',scheduleHide);panel.addEventListener('focusin',()=>clearTimeout(hideTimer));panel.addEventListener('focusout',scheduleHide)}
+function scheduleHide(){clearTimeout(hideTimer);hideTimer=setTimeout(()=>{if(!pinned&&!panel?.matches(':hover')&&!anchor?.matches(':hover')&&!panel?.contains(document.activeElement)&&document.activeElement!==anchor)dismissPanel()},180)}
+function openPanel(control,title,content){ensurePanel();clearTimeout(hideTimer);if(anchor&&anchor!==control)dismissPanel();anchor=control;pinned=false;panel.replaceChildren();panel.setAttribute('role','tooltip');panel.setAttribute('aria-label',title);const h=node('header');h.append(node('strong',title));panel.append(h);if(content)panel.append(content);panel.classList.toggle('tooltip-title-only',!content);panel.hidden=false;control.setAttribute('aria-describedby',panel.id);positionPanel()}
+
+function compactCoverage(v){return v.request_coverage_available?number(v.known_requests,0)+' / '+number(v.total_requests,0)+' requests measured':'Request coverage unknown'}
+function tokenTooltip(row){
+ const box=node('div',null,'small-usage'),list=node('dl',null,'token-list');
+ for(const c of categories){const v=row.tokens[c],term=node('dt',labelMap[c]),value=node('dd',compact(displayedAmount(v)));if(v.status!=='complete')value.append(node('span',v.status==='partial'?'partial':'unavailable','small-state'));list.append(term,value)}
+ box.append(list);
+ const values=['total',...categories].map(c=>row.tokens[c]);
+ const shared=values.every(v=>v.known_requests===values[0].known_requests&&v.total_requests===values[0].total_requests&&v.request_coverage_available===values[0].request_coverage_available);
+ if(shared)box.append(node('p',compactCoverage(row.tokens.total),'tip-foot'));
+ else{for(const c of ['total',...categories])box.append(node('p',labelMap[c]+': '+compactCoverage(row.tokens[c]),'tip-foot'))}
+ if(values.some(v=>v.status==='partial'))box.append(node('p','Partial = known subtotal','tip-foot'));
+ box.append(node('p','Final attempts only','tip-foot'));
+ return box;
+}
+function costTooltip(row) {
+ const box = node('div', null, 'small-usage');
+ box.append(node('p', displayedAmount(row.cost) == null ? 'Unavailable' : money(displayedAmount(row.cost)) + ' USD', 'tip-cost'));
+ box.append(node('p', compactCoverage(row.cost), 'tip-foot'));
+ const sources = Object.keys(row.cost.sources || {});
+ if (sources.length > 1) {
+   box.append(tooltipRows([['Source', 'Native + saved reprice'], ['Basis', 'Mixed pricing sources']]));
+ } else if (sources[0] === 'reprice') {
+   box.append(tooltipRows([['Source', 'Saved reprice'], ['Basis', 'API-equivalent estimate']]));
+ } else {
+   box.append(tooltipRows([['Source', sources[0] === 'opencode' ? 'Reported by OpenCode' : 'Unavailable']]));
+ }
+ if (row.cost.status === 'partial') box.append(node('p', 'Partial = known subtotal', 'tip-foot'));
+ if (row.cost.native_zero_tasks > 0) {
+   box.append(node('p', row.auth_mode === 'chatgpt_oauth' ? 'Subscription zero reported' : 'Native zero reported', 'tip-foot'));
+   box.append(node('p', 'Zero does not verify free API usage', 'tip-foot'));
+ }
+ box.append(node('p', 'Final attempts only', 'tip-foot'));
+ return box;
+}
+function metricControl(row,kind){
+ const value=kind==='Tokens'?row.tokens.total:row.cost;
+ const display=kind==='Tokens'?compact(displayedAmount(value)):displayedAmount(value)==null?'—':'$'+number(displayedAmount(value),2);
+ const control=button('',event=>{event.stopPropagation();show()},'metric-trigger');
+ const show=()=>openPanel(control,kind,kind==='Tokens'?tokenTooltip(row):costTooltip(row));
+ control.append(node('span',display,'compact-total'));
+ if(value.status!=='complete')control.append(statusBadge(value));
+ else if(kind==='Tokens'&&categories.some(c=>row.tokens[c].status!=='complete'))control.append(node('span','Usage incomplete','usage-status partial'));
+ control.setAttribute('aria-label',kind+' '+display+'; show breakdown');
+ control.addEventListener('mouseenter',show);control.addEventListener('mouseleave',scheduleHide);
+ control.addEventListener('focus',()=>{if(!control.matches(':hover'))show()});control.addEventListener('blur',scheduleHide);
+ return control;
+}
+const originalRow=runRow;
+runRow=function(row,position){const tr=originalRow(row,position),cell=tr.cells[10],cost=tr.cells[11];
+ cell.replaceChildren(metricControl(row,'Tokens'));cell.removeAttribute('title');
+ cost.replaceChildren(metricControl(row,'Cost'));cost.removeAttribute('title');
+ for(const el of tr.querySelectorAll('[title]')){el.dataset.tip=el.title;el.removeAttribute('title')}
+ for(const btn of tr.querySelectorAll('.metric-note')){btn.dataset.tip=btn.getAttribute('aria-label');const replacement=node('span','ⓘ','quiet-info');replacement.tabIndex=0;replacement.dataset.tip=btn.dataset.tip;replacement.setAttribute('aria-label',btn.dataset.tip);btn.replaceWith(replacement);}
+ tr.cells[3].dataset.tip=row.tag_groups.model.join(' · ');
+ tr.cells[5].textContent=new Date(row.created_at).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+ const runStatus = tr.cells[2].querySelectorAll('.run-meta')[1];
+ if (row.status === 'completed') runStatus.remove();
+ else {
+   const label = row.status.replaceAll('_', ' ');
+   const badge = node('span', label.charAt(0).toUpperCase() + label.slice(1), 'usage-status partial run-status');
+   badge.setAttribute('aria-label', 'Run status: ' + row.status);
+   runStatus.replaceChildren(badge);
+ }
+ const taskCell = tr.cells[8];
+ taskCell.className = 'numeric task-status-cell';
+ delete taskCell.dataset.tip;
+ const statuses = [['OK', 'OK', 'ok'], ['no-op', 'No-op', 'noop'], ['timeout', 'Timeout', 'timeout'], ['fail', 'Fail', 'fail']];
+ const summary = statuses.map(([key, label]) => label + ': ' + row.status_counts[key]).join(' · ');
+ const breakdown = button('', event => {
+   event.stopPropagation();
+   openPanel(breakdown, 'Task statuses', node('p', 'All tasks. ' + summary));
+ }, 'task-status-breakdown');
+ breakdown.dataset.tip = 'All tasks. ' + summary;
+ breakdown.setAttribute('aria-label', 'All tasks. ' + summary);
+ statuses.forEach(([key, label, color], index) => {
+   if (index) breakdown.append(node('span', '/', 'task-status-separator'));
+   const value = node('span', String(row.status_counts[key]), 'task-status-count task-status-' + color);
+   value.dataset.status = key;
+   breakdown.append(value);
+ });
+ taskCell.replaceChildren(breakdown);
+ return tr;
+};
+// One tooltip owner; native title and old metric buttons are absent in improved rows.
+document.addEventListener('pointerover',e=>{const target=e.target.closest('[data-tip]');if(!target||target.contains(e.relatedTarget)||pinned)return;openTip(target)});
+document.addEventListener('pointerout',e=>{if(e.target.closest('[data-tip]'))scheduleHide()});
+document.addEventListener('focusin',e=>{const target=e.target.closest('[data-tip]');if(target&&!pinned)openTip(target)});
+document.addEventListener('focusout',scheduleHide);
+document.addEventListener('pointerdown',e=>{if(panel&&!panel.hidden&&!panel.contains(e.target)&&!anchor?.contains(e.target))dismissPanel()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&panel&&!panel.hidden){e.preventDefault();dismissPanel(pinned)}});
+window.addEventListener('scroll',positionPanel,true);window.addEventListener('resize',positionPanel);
+const originalBasket=basketSection;
+basketSection=function(b,page){const section=originalBasket(b,page);const colgroup=node('colgroup');for(const width of [26,34,220,150,88,90,60,65,120,96,140,105]){const col=node('col');col.style.width=width+'px';colgroup.append(col)}section.querySelector('table').prepend(colgroup);const pinHead=section.querySelectorAll('th')[1];pinHead.textContent='★';pinHead.setAttribute('aria-label','Pinned');return section};
+
+const decorateRow=runRow;runRow=function(row,pos){const tr=decorateRow(row,pos);const labels=['Rank','Pinned','Run','Model','Setup','Date','Score','F1 files','Tasks','Median time','Tokens','Cost'];[...tr.cells].forEach((td,i)=>td.dataset.label=labels[i]);return tr;};
+
+const descriptionBasket = basketSection;
+basketSection = function(basket, page) {
+ const section = descriptionBasket(basket, page);
+ section.querySelectorAll('th')[11].textContent = 'Cost';
+ const heading = section.querySelector('.basket-heading');
+ const hash = heading.querySelector('.hash');
+ const description = (basket.description || '').trim();
+ if (description) hash.replaceWith(node('span', description, 'basket-description'));
+ else hash.remove();
+ heading.querySelector('.basket-description-tip')?.remove();
+ heading.querySelector('h2').removeAttribute('aria-describedby');
+ return section;
+};
+
+// Bind the tooltip to the displayed value rather than the full table cell.
+const tooltipDefinitions = new WeakMap();
+function tooltipRows(rows) {
+ const list = node('dl', null, 'tooltip-fields');
+ for (const [label, value, color] of rows) {
+   const term = node('dt', label);
+   const content = node('dd', String(value), color || '');
+   list.append(term, content);
+ }
+ return list;
+}
+function bindTip(target, title, build) {
+ target.dataset.tip = '';
+ tooltipDefinitions.set(target, {title, build});
+ if (!target.matches('button,a,input,select')) target.tabIndex = 0;
+}
+function openTip(target) {
+ const definition = tooltipDefinitions.get(target);
+ if (definition) openPanel(target, definition.title, definition.build());
+ else {
+   const field = target.closest('[data-label]')?.dataset.label;
+   const title = field ? field + (target.matches('.quiet-info') ? ' coverage' : '') : target.getAttribute('aria-label');
+   if (!title) return;
+   const body = node('div');
+   for (const line of target.dataset.tip.split(/\n| · /).filter(Boolean)) body.append(node('p', line));
+   openPanel(target, title, body);
+ }
+}
+function valueAnchor(cell) {
+ const anchor = node('span', null, 'value-tip-anchor');
+ anchor.append(...cell.childNodes);
+ if ('tip' in cell.dataset) {anchor.dataset.tip = cell.dataset.tip; delete cell.dataset.tip;}
+ cell.append(anchor);
+ anchor.tabIndex = 0;
+ return anchor;
+}
+const tooltipRow = runRow;
+runRow = function(row, position) {
+ const tr = tooltipRow(row, position);
+ for (const cell of tr.cells) {
+   if (cell.matches('[data-tip]') && ![tr.cells[2], tr.cells[3]].includes(cell)) valueAnchor(cell);
+ }
+ const name = tr.cells[2].querySelector('.run-name');
+ bindTip(name, 'Run ID', () => node('p', row.run_id));
+ delete tr.cells[3].dataset.tip;
+ const facts = row.inference?.configured || {};
+ const known = fact => fact?.status === 'known' ? fact.value : 'Unknown';
+ const provider = known(facts.provider);
+ const rawModel = known(facts.model);
+ const model = provider !== 'Unknown' && rawModel.startsWith(provider + '/') ? rawModel.slice(provider.length + 1) : rawModel;
+ for (const tag of tr.cells[3].querySelectorAll('.tag')) {
+   bindTip(tag, 'Model', () => tooltipRows([['Provider', provider], ['Model', model], ['Effort', known(facts.effort)]]));
+ }
+ for (const tag of tr.cells[4].querySelectorAll('.tag')) bindTip(tag, 'Custom run tags', () => null);
+ const date = tr.cells[5].querySelector('.value-tip-anchor') || valueAnchor(tr.cells[5]);
+ bindTip(date, 'Run date and time', () => {
+   const box = node('div');
+   box.append(node('p', row.created_at), node('p', 'Display zone: ' + Intl.DateTimeFormat().resolvedOptions().timeZone, 'tip-foot'));
+   return box;
+ });
+ const score = tr.cells[6].querySelector('.value-tip-anchor') || valueAnchor(tr.cells[6]);
+ bindTip(score, 'Run Score', () => null);
+ const f1 = tr.cells[7].querySelector('.value-tip-anchor') || valueAnchor(tr.cells[7]);
+ bindTip(f1, 'Global File Selection F1 (Precision/Recall)', () => null);
+ const duration = tr.cells[9].querySelector('.value-tip-anchor') || valueAnchor(tr.cells[9]);
+ for (const child of duration.querySelectorAll('[data-tip]')) delete child.dataset.tip;
+ bindTip(duration, 'Agent execution time', () => {
+   const box = node('div');
+   const seconds = value => value == null ? 'Unavailable' : String(value) + ' s';
+   box.append(tooltipRows([
+     ['Measured tasks', row.time.known_tasks + ' / ' + row.time.total_tasks],
+     ['Median per task', seconds(row.time.median_seconds)],
+     ['Total', seconds(row.time.total_seconds)]
+   ]), node('p', 'Total across selected tasks', 'tip-foot'), node('p', 'Setup excluded', 'tip-foot'), node('p', 'Final attempts only', 'tip-foot'));
+   return box;
+ });
+ const tasks = tr.cells[8].querySelector('.task-status-breakdown');
+ const taskRows = () => tooltipRows([
+   ['OK', row.status_counts.OK, 'task-status-ok'],
+   ['No-op', row.status_counts['no-op'], 'task-status-noop'],
+   ['Timeout', row.status_counts.timeout, 'task-status-timeout'],
+   ['Fail', row.status_counts.fail, 'task-status-fail']
+ ]);
+ bindTip(tasks, 'Task statuses · all tasks', taskRows);
+ tasks.onclick = event => {event.stopPropagation();openTip(tasks);};
+ return tr;
+};
+
+// A disabled pin button cannot receive pointer or keyboard events itself.
+const plainPinButton = pinButton;
+pinButton = function(row) {
+ const control = plainPinButton(row);
+ if (window.prsimLocal) return control;
+ control.removeAttribute('title');
+ const wrapper = node('span', null, 'pin-tip-anchor');
+ const title = row.pinned ? 'Unpin run' : 'Pin run';
+ const content = () => node('p', 'Administrators only', 'tip-foot');
+ wrapper.append(control);
+ bindTip(wrapper, title, content);
+ wrapper.setAttribute('aria-label', title + '. Administrators only');
+ wrapper.tabIndex = control.disabled ? 0 : -1;
+ if (!control.disabled) bindTip(control, title, content);
+ wrapper.addEventListener('click', event => event.stopPropagation());
+ return wrapper;
+};
+// Tag expansion replaces nodes; apply the same hint to newly shown tags.
+const setupTagHints = new MutationObserver(() => {
+ for (const tag of document.querySelectorAll('.run-row td:nth-child(5) .tag')) {
+   if (!tooltipDefinitions.has(tag)) bindTip(tag, 'Custom run tags', () => null);
+ }
+});
+setupTagHints.observe(document.getElementById('content'), {childList: true, subtree: true});
+
+
+// Run overview uses the catalogue's value formatting and tooltip definitions.
+const runPanelState = new Map();
+function runDisclosure(row,key,title){const d=node('details',null,'mock-disclosure');d.open=runPanelState.get(row.run_id+key)||false;d.append(node('summary',title));d.addEventListener('toggle',()=>runPanelState.set(row.run_id+key,d.open));return d;}
+function summaryValue(value, state) {
+ const wrap = node('span', null, 'summary-value');
+ wrap.append(node('span', value, 'summary-number'));
+ if (state) wrap.append(node('span', state === 'partial' ? 'Partial' : 'Unavailable', 'usage-status ' + state));
+ return wrap;
+}
+function summaryCard(label, value, color = '') {
+ const card = node('div', null, 'stat ' + color);
+ card.dataset.metric = label;
+ card.append(node('span', label, 'label'), value);
+ return card;
+}
+function buildRunSummary(row) {
+ const header = node('section', null, 'run-header run-overview');
+ const reusable = runRow(row, 1);
+ const top = node('div', null, 'run-topline');
+ const title = node('h1');
+ const name = node('span', row.display_name, 'run-title-text');
+ title.append(name, pinButton(row));
+  const actions = node('div', null, 'run-actions'); actions.append(configButton(row));
+  const actor = window.viewerAccount.actor;
+  if (actor && (actor.login === row.user || actor.role === 'admin')) {
+    const remove = button('Delete Run', async () => {
+      if (!confirm('Delete "' + row.display_name + '"? It will disappear from the leaderboard. The publication is retained in server trash.')) return;
+      remove.disabled = true;
+      try {
+        await window.viewerRequest('/runs/' + encodeURIComponent(runId) + '?expected_publication_sha256=' + encodeURIComponent(row.publication_sha256), 'DELETE');
+        location.assign('/');
+      } catch (error) {showError(error); remove.disabled = false;}
+    }, 'delete-run'); actions.append(remove);
+  }
+  if (window.viewerAccount.actor?.role === 'admin') {
+    const archive = node('a', 'Download Run Archive', 'button-link'); archive.href = '/api/v1/runs/' + encodeURIComponent(runId) + '/archive';
+    archive.setAttribute('download', runId + '.tar.gz'); actions.append(archive);
+  }
+
+ actions.querySelector('.config-button').remove();
+ const copy = button('Copy run ID', async event => {
+   event.stopPropagation();
+   try {await navigator.clipboard.writeText(row.run_id); copy.textContent = 'Copied';}
+   catch (_) {copy.textContent = 'Copy failed';}
+   setTimeout(() => {if (copy.isConnected) copy.textContent = 'Copy run ID';}, 1800);
+ }, 'copy-run-id');
+ copy.setAttribute('aria-live', 'polite');
+ actions.prepend(copy);
+ top.append(title, actions);
+ const metadata = node('div', null, 'metadata');
+ metadata.append(node('span', row.user));
+ const status = reusable.querySelector('.run-status');
+ if (status) metadata.append(status);
+ metadata.append(node('span', new Date(row.created_at).toLocaleString('en-GB', {dateStyle:'medium', timeStyle:'long'})));
+ const tags = node('div', null, 'run-context-tags');
+ for (const [index, label, cls] of [[4, 'Setup', 'setup-tags']]) {
+   const group = node('div', null, 'run-context-group ' + cls);
+   group.append(node('span', label, 'context-label'));
+   const values = node('div', null, 'context-values');
+   values.append(...reusable.cells[index].childNodes);
+   group.append(values); tags.append(group);
+   if (cls === 'setup-tags') {
+     const annotate = () => {for (const tag of group.querySelectorAll('.tag')) if (!tooltipDefinitions.has(tag)) bindTip(tag, 'Custom run tags', () => null);};
+     group.addEventListener('click', annotate); annotate();
+   }
+ }
+ const model = node('div', null, 'run-model-fields');
+ for (const key of ['provider','model','effort']) {
+   const fact = row.inference?.configured?.[key];
+   const provider = row.inference?.configured?.provider?.value;
+   const shown = key==='model' && provider && fact?.value?.startsWith(provider+'/') ? fact.value.slice(provider.length+1) : fact?.value;
+   const field = node('div'); field.append(node('span', key[0].toUpperCase()+key.slice(1), 'context-label'), node('span', shown || 'Unknown'));
+   model.append(field);
+ }
+ tags.prepend(model);
+ const basket = node('section', null, 'run-basket-context');
+ basket.append(node('h2', row.basket.name), node('p', row.basket.description, 'run-basket-description'));
+ const source = row.basket.task_source;
+ const contexts = {diff: 'Diff', issue: 'Issues', 'diff+issue': 'Diff + issues'};
+ const sourceText = source.source === 'issue' ? 'Issues' : source.source === 'llm' ? 'LLM · ' + (contexts[source.context] || 'Mode unknown') : 'Unknown';
+ basket.append(node('p', 'Task source: ' + sourceText, 'run-source'));
+ const options = node('div', null, 'run-options'); window.viewerConfigButtons(options, row);tags.append(options);
+ const setup = runDisclosure(row,'setup','Run setup');
+ const area = node('div',null,'mock-context');setup.append(area);
+ function panel(title,rows){const box=node('section',null,'mock-panel');box.append(node('h3',title));const fields=node('dl',null,'mock-fields');for(const [label,value] of rows){const dd=node('dd');dd.append(value instanceof Node?value:document.createTextNode(String(value)));fields.append(node('dt',label),dd);}box.append(fields);area.append(box);return box;}
+ const b=row.benchmark;
+ const runtime=panel('Runtime & access',[['OpenCode',row.runtime?.replace(/^opencode:v?/, '') || 'Unknown'],['Authentication','Loading…'],['Permissions','Loading…']]);
+ panel('Execution',[
+ ['Agent timeout',b?.timeout_seconds == null ? 'Unknown' : time(b.timeout_seconds)],
+ ['Retries',b?.retries?.max_retries == null ? 'Unknown' : b.retries.max_retries+' additional '+(b.retries.max_retries===1?'attempt':'attempts')],
+ ['Retry categories',b?.retries?.categories?.join(', ') || (b?.retries?.categories ? 'None':'Unknown')],
+ ['Diff exclusions',b?.diff_excludes?.join(', ') || (b?.diff_excludes ? 'None':'Unknown')]
+ ]);
+ const agent=panel('Agent setup',[['Setup script','Loading…'],['Setup timeout',b?.setup_timeout_seconds == null ? 'Not applicable':time(b.setup_timeout_seconds)],['Task instructions','Loading…'],['Extra instructions','Loading…'],['Skills / plugins','Loading…'],['Environment overrides','Loading…']]);
+ function fillSetup(data){
+   if(!header.isConnected)return;
+   const info=data.setup_summary || {},native=data.config;
+   const auth={api_key:'API key',chatgpt_oauth:'ChatGPT OAuth'};
+   runtime.querySelectorAll('dd')[1].textContent=auth[info.auth_mode || row.auth_mode] || 'Unknown';
+   runtime.querySelectorAll('dd')[2].textContent=native ? (JSON.stringify(native.permission)==='{"*":"allow"}' ? 'Allow all tools' : native.permission ? 'Custom rules':'Runtime default') : 'Unavailable';
+   const cells=agent.querySelectorAll('dd');cells[0].textContent=info.setup_script===true?'Configured':info.setup_script===false?'None':'Unknown';
+   if(info.instructions_default && info.instructions_text){const trigger=button('[default]',()=>window.viewerShowInstructions(info.instructions_text,trigger),'mock-default');cells[2].replaceChildren(trigger);}else cells[2].textContent=data.setup_summary?'Custom':'Unknown';
+   cells[3].textContent=native ? (native.instructions?.length ? native.instructions.length+' configured':'None configured'):'Unavailable';
+   cells[4].textContent=native ? ((native.skills && Object.keys(native.skills).length) || native.plugin?.length ? 'Configured':'None configured'):'Unavailable';
+   cells[5].textContent=info.env_count===0?'None':info.env_count==null?'Unknown':info.env_count+' configured';
+ }
+ window.viewerLoadInputConfig(row).then(fillSetup).catch(()=>{for(const cell of area.querySelectorAll('dd'))if(cell.textContent==='Loading…')cell.textContent='Unavailable';});
+ header.append(top, metadata, tags, basket, setup);
+ const controls = document.querySelector('.controls');
+ controls.querySelector('.hint').textContent = 'Statuses select tasks for metrics; the task list stays complete';
+ const settings=runDisclosure(row,'metrics','Run Metric Settings');settings.classList.add('mock-filter-disclosure');settings.append(controls);header.append(settings);
+ const cards = node('div', null, 'stat-grid run-summary-grid');
+ for (const [index, label, field, tip] of [[6, 'Score', 'score', 'Run Score'], [7, 'F1 files', 'f1_files', 'Global File Selection F1 (Precision/Recall)']]) {
+   const value = reusable.cells[index].querySelector('.value-tip-anchor');
+   const state = row[field] == null ? 'unavailable' : row.scored_tasks < row.selected_tasks ? 'partial' : null;
+   value.replaceChildren(summaryValue(number(row[field]), state));
+   bindTip(value, tip, () => state ? tooltipRows([['Scored tasks', row.scored_tasks + ' / ' + row.selected_tasks]]) : null);
+   cards.append(summaryCard(label, value, scoreClass(row[field])));
+ }
+ const counts = node('div', null, 'task-counts-visible');
+ for(const [key,label,cls] of [['OK','OK','ok'],['no-op','No-op','noop'],['timeout','Timeout','timeout'],['fail','Fail','fail']]) counts.append(node('span', row.status_counts[key]+' '+label, 'task-status-'+cls));
+ const taskCard = summaryCard('Tasks', counts);
+ taskCard.append(node('div', row.selected_tasks + ' / ' + row.total_tasks + ' selected for metrics', 'selection-note'));
+ const tokens = summaryCard('Tokens', summaryValue(compact(displayedAmount(row.tokens.total)), row.tokens.total.status === 'complete' ? null : row.tokens.total.status));
+ const breakdown = node('div', null, 'summary-breakdown');
+ const sharedCoverage = categories.every(key => compactCoverage(row.tokens[key]) === compactCoverage(row.tokens.total));
+ for (const key of categories) {
+   const value = row.tokens[key];
+   const line = node('div'); line.append(node('span', labelMap[key]), node('span', compact(displayedAmount(value)) + (value.status === 'complete' ? '' : ' · '+value.status)));
+   breakdown.append(line);
+   if (!sharedCoverage && value.status !== 'complete') breakdown.append(node('p', compactCoverage(value), 'metric-context'));
+ }
+ tokens.append(breakdown, node('p', compactCoverage(row.tokens.total), 'metric-context'));
+ if(row.tokens.total.status==='partial')tokens.append(node('p', 'Partial = known subtotal', 'metric-context'));
+ tokens.append(node('p', 'Final attempts only', 'metric-context'));
+ cards.append(taskCard, tokens);
+ const median = reusable.cells[9].querySelector('.value-tip-anchor');
+ const timeDetails = tooltipDefinitions.get(median).build;
+ const timeState = row.time.median_seconds == null ? 'unavailable' : row.time.known_tasks < row.time.total_tasks ? 'partial' : null;
+ median.replaceChildren(summaryValue(time(row.time.median_seconds), timeState));
+ const medianCard = summaryCard('Median time', median); medianCard.append(node('p', 'Agent time per task', 'metric-context')); cards.append(medianCard);
+ const totalSeconds = row.time.total_seconds ?? (row.time.known_tasks > 0 ? row.time.known_subtotal_seconds : null);
+ const total = node('span', null, 'value-tip-anchor');
+ total.append(summaryValue(time(totalSeconds), totalSeconds == null ? 'unavailable' : row.time.total_seconds == null ? 'partial' : null));
+ bindTip(total, 'Agent execution time', timeDetails);
+ const totalCard = summaryCard('Total Agent Time', total); totalCard.append(node('p', 'Sum across selected tasks', 'metric-context')); cards.append(totalCard);
+ const wall = node('span', null, 'value-tip-anchor'); wall.append(summaryValue(time(row.wall_time_seconds), row.wall_time_seconds == null ? 'unavailable' : null));
+ bindTip(wall, 'Wall time', () => {
+   const box = node('div');
+   box.append(tooltipRows([['Seconds', row.wall_time_seconds ?? 'Unavailable']]), node('p', 'From run start to completion', 'tip-foot'), node('p', 'Includes pauses before resume', 'tip-foot'), node('p', 'Independent of task selection', 'tip-foot'));
+   return box;
+ });
+ const wallCard = summaryCard('Wall Time', wall); wallCard.append(node('p', 'Run duration, including pauses', 'metric-context'));
+ const cost = summaryCard('Cost', summaryValue(displayedAmount(row.cost) == null ? '—' : '$'+number(displayedAmount(row.cost),2), row.cost.status === 'complete' ? null : row.cost.status));
+ const sources = Object.keys(row.cost.sources || {});
+ cost.append(node('p', compactCoverage(row.cost), 'metric-context'));
+ cost.append(node('p', sources.length > 1 ? 'Native + Repriced' : sources[0] === 'reprice' ? 'Repriced · API-equivalent estimate' : sources[0] === 'opencode' ? 'Native · OpenCode' : 'Pricing source unavailable', 'metric-context'));
+ if (row.cost.native_zero_tasks > 0) cost.append(node('p', (row.auth_mode === 'chatgpt_oauth' ? 'Subscription zero reported' : 'Native zero reported')+' · Zero does not verify free API usage', 'metric-context'));
+ if(row.cost.status==='partial')cost.append(node('p', 'Partial = known subtotal', 'metric-context'));
+ cost.append(node('p', 'Final attempts only', 'metric-context'));
+ cards.append(wallCard, cost);
+ const tokenDetails=runDisclosure(row,'tokens','Token breakdown');tokenDetails.className='mock-token-details';
+ for(const child of [...tokens.children])if(child.matches('.summary-breakdown,.metric-context'))tokenDetails.append(child);
+ tokens.append(tokenDetails);
+ for(const name of ['Score','F1 files','Tasks','Median time','Total Agent Time','Wall Time','Tokens','Cost'])cards.append(cards.querySelector('[data-metric="'+name+'"]'));
+ header.append(cards);
+ return header;
+}
+
+
+// Task metrics share the run/catalogue tooltip owner and measurement semantics.
+function taskMetric(row, kind) {
+ const wrap=node('div',null,'task-metric');
+ const labels={score:'Score',f1_files:'F1 files',tokens:'Tokens',time:'Agent time',cost:'Cost'};
+ wrap.dataset.metric=kind;wrap.append(node('span',labels[kind],'task-metric-label'));
+ let value;
+ if(kind==='tokens'||kind==='cost') {
+   value=metricControl({...row,auth_mode:row.auth_mode??runAuthMode},kind==='tokens'?'Tokens':'Cost');
+   value.addEventListener('click',event=>event.preventDefault());
+ } else {
+   let shown,state=null,title,build=()=>null;
+   if(kind==='time'){
+     const t=row.time;const seconds=t.total_seconds??(t.known_tasks>0?t.known_subtotal_seconds:null);
+     shown=time(seconds);state=seconds==null?'unavailable':t.total_seconds==null?'partial':null;title='Agent execution time';
+     build=()=>{const content=node('div');content.append(tooltipRows([['Seconds',seconds??'Unavailable']]),node('p','Final attempt · setup excluded','tip-foot'));return content;};
+   } else {
+     shown=number(row[kind]);state=row[kind]==null?'unavailable':null;
+     title=kind==='score'?'Task Score':'File Selection F1 (Precision/Recall)';
+   }
+   value=node('span',null,'value-tip-anchor '+(kind==='score'||kind==='f1_files'?scoreClass(row[kind]):''));
+   value.append(summaryValue(shown,state));bindTip(value,title,build);
+ }
+ wrap.append(value);return wrap;
+}
+
+
+function fullFilePanel(title, data) {
+ const added=data.lines.filter(line=>line.kind==='added').length;
+ const removed=data.lines.filter(line=>line.kind==='removed').length;
+ const panel=node('section',null,'diff-panel full-file-panel');
+ panel.append(node('h4',title+' (+'+added+' −'+removed+')'+(data.truncated?' · shown lines':'')));
+ const note=node('div',null,'file-view-note');
+ const states={added:'File added',deleted:'File deleted',absent:'File absent',unchanged:'No changes',modified:'Changes relative to base'};
+ note.append(node('span',states[data.state]||'Changes relative to base'));
+ const legend=node('span',null,'file-view-legend');legend.append(node('span','Added','added-key'),node('span','Removed','removed-key'));note.append(legend);panel.append(note);
+ if(data.truncated)panel.append(node('p','File view truncated by display limits','truncated'));
+ const pre=node('pre',null,'full-file');pre.tabIndex=0;pre.setAttribute('aria-label',title);
+ const lines=node('span',null,'full-file-lines');
+ for(const line of data.lines){
+  const row=node('span',null,'full-line '+line.kind);
+  const oldNumber=node('span',line.base_line??'','line-number');const newNumber=node('span',line.result_line??'','line-number');
+  oldNumber.setAttribute('aria-hidden','true');newNumber.setAttribute('aria-hidden','true');
+  row.append(oldNumber,newNumber,node('span',line.text+'\n','line-code'));lines.append(row);
+ }
+ if(!data.lines.length)lines.append(node('span',data.truncated?'Content exceeds display limit':data.state==='absent'?'File is absent':data.state==='deleted'?'Deleted empty file':'Empty file','empty-file-note'));
+ pre.append(lines);
+ const scrollWrap=node('div',null,'file-scroll-wrap');
+ const map=node('div',null,'file-change-map');map.setAttribute('role','img');map.setAttribute('aria-label','Added and removed line locations');
+ const total=Math.max(1,data.lines.length);
+ for(let i=0;i<data.lines.length;){
+  const kind=data.lines[i].kind;let end=i+1;while(end<data.lines.length&&data.lines[end].kind===kind)end++;
+  if(kind==='added'||kind==='removed'){
+   const mark=node('span',null,'file-change-mark '+kind);mark.style.top=(i/total*100)+'%';mark.style.height=((end-i)/total*100)+'%';mark.setAttribute('aria-hidden','true');map.append(mark);
+  }
+  i=end;
+ }
+ const viewport=node('span',null,'file-map-viewport');viewport.setAttribute('aria-hidden','true');map.append(viewport);
+ scrollWrap.append(pre,map);panel.append(scrollWrap);
+ pre.addEventListener('scroll',()=>updateFileMap(scrollWrap));requestAnimationFrame(()=>{if(pre.isConnected)updateFileMap(scrollWrap)});
+ if(data.ends_with_newline===false&&!data.truncated&&data.state!=='deleted')panel.append(node('p','No newline at end of file','file-view-footer'));
+ return panel;
+}
+
+function updateFileMap(wrap){
+ const pre=wrap.querySelector('pre'),viewport=wrap.querySelector('.file-map-viewport');
+ const height=Math.max(1,pre.scrollHeight);viewport.style.top=(pre.scrollTop/height*100)+'%';viewport.style.height=(Math.min(1,pre.clientHeight/height)*100)+'%';
+}
+window.addEventListener('resize',()=>document.querySelectorAll('.file-scroll-wrap').forEach(updateFileMap));
+
+
+const taskChangesCache = new Map();
+function taskChangeToolbar(task, sourceLink, reportHash, publicationHash) {
+ const toolbar=node('div',null,'task-change-toolbar'),stats=node('div',null,'task-change-stats');toolbar.append(stats);if(sourceLink)toolbar.append(sourceLink);
+ const key=[runId,task.task_id,reportHash,publicationHash].join(':');
+ function render(data){
+  stats.replaceChildren();
+  for(const [role,label] of [['human',task.kind==='merge_request'?'Human MR':'Human PR'],['agent','Agent Solution']]){
+   const item=node('div',null,'task-change-summary');item.dataset.side=role;item.append(node('span',label+':','change-label'));
+   const value=data?.[role];
+   if(!value)item.append(node('span','Loading…','muted'));
+   else{
+    if(value.added!=null && value.removed!=null){item.append(node('span','+'+number(value.added,0),'change-added'),node('span','−'+number(value.removed,0),'change-removed'));}
+    if(value.files!=null)item.append(node('span',(value.added!=null?', ':'')+number(value.files,0)+' '+(value.files===1?'file':'files'),'change-files'));
+    if(value.status!=='complete')item.append(node('span',value.status==='partial'?'Partial':'Unavailable','usage-status '+value.status));
+    if(value.status!=='complete')bindTip(item,'Change counts',()=>node('p',value.files==null?'File scoring unavailable':value.measured_files+' / '+value.files+' changed files measured'));
+   }
+   stats.append(item);
+  }
+ }
+ render(null);
+ const load=()=>{
+  if(!taskChangesCache.has(key))taskChangesCache.set(key,api('/runs/'+encodeURIComponent(runId)+'/tasks/'+encodeURIComponent(task.task_id)+'?'+taskSelection(reportHash,publicationHash)+'&view=changes').catch(error=>{taskChangesCache.delete(key);throw error}));
+  taskChangesCache.get(key).then(data=>{if(toolbar.isConnected)render(data)}).catch(error=>{
+   if(!toolbar.isConnected)return;
+   stats.replaceChildren(node('span','Change counts unavailable','muted'));
+   const retry=button(error.code==='run_changed'?'Reload run':'Retry',()=>{if(error.code==='run_changed')reload();else {render(null);load()}});stats.append(retry);
+  });
+ };
+ load();return toolbar;
+}

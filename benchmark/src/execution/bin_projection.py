@@ -65,15 +65,17 @@ class BinProjection:
         with self._lock:
             if self._args is None:
                 temporary = TemporaryDirectory(prefix='benchmark-python-bin-')
+                completed = False
                 try:
                     args = self._prepare(
                         Path(temporary.name),
                         venv,
                         directories or tuple(map(Path, ('/usr/bin', '/usr/local/bin', '/bin'))),
                     )
-                except BaseException:
-                    temporary.cleanup()
-                    raise
+                    completed = True
+                finally:
+                    if not completed:
+                        temporary.cleanup()
                 self._temporary, self._args = temporary, args
             return list(self._args)
 

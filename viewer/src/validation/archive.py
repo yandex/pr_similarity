@@ -46,7 +46,7 @@ class BoundedGzip:
     """Limit decompressed bytes and elapsed time while tarfile streams an archive."""
 
     def __init__(self, stream: ByteReader, compressed_size: int, limits: Limits, deadline: float) -> None:
-        """Initialize the resources and limits owned by this instance."""
+        """Track streamed bytes under expansion, member-size and deadline limits."""
         self.stream, self.limits, self.deadline = stream, limits, deadline
         self.cap = min(limits.unpacked_bytes, compressed_size * limits.expansion_ratio)
         self.total = 0
@@ -85,7 +85,6 @@ def validate_archive(path: Path, destination: Path, limits: Limits, *, deadline:
         """Validate tar headers before parsing extended member metadata."""
 
         def _proc_member(self, tar: tarfile.TarFile) -> tarfile.TarInfo | None:
-            # tarfile reads PAX/GNU extended headers before yielding a member.
             """Reject oversized or unsupported headers before tarfile reads their bodies."""
             extended = (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK)
             if self.type not in (*extended, tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.CONTTYPE):
@@ -156,7 +155,8 @@ def validate_archive(path: Path, destination: Path, limits: Limits, *, deadline:
             )
         if report.schema_version == 1:
             logging.getLogger('viewer.archive').warning(
-                'Run/archive schema v1 is deprecated and supported for reading only; create a new v0.3.0 run.'
+                'Run/archive schema v1 is deprecated and supported for reading only; '
+                'create a new run with the current benchmark.'
             )
         return ImportedRun(path, destination, archive_hash.hexdigest(), report, basket, manifest)
     except (ViewerError, OSError, ValueError, tarfile.TarError, EOFError, OverflowError, RecursionError) as error:

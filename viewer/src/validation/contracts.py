@@ -3,6 +3,7 @@
 import math
 import re
 from collections.abc import Callable, Mapping
+from datetime import datetime
 
 from viewer.errors import ViewerError
 from viewer.models import (
@@ -36,6 +37,7 @@ from viewer.models.evidence import (
     TripletIndex,
     parse_evidence,
 )
+from viewer.models.interruption import Interruption
 from viewer.models.python_runtime import PythonReceipt
 from viewer.models.report import (
     ReportAgentInput,
@@ -44,7 +46,7 @@ from viewer.models.report import (
     ReportTask,
     ReportTaskScoring,
 )
-from viewer.models.run import RunTaskItem
+from viewer.models.run import RunAgentInput, RunTaskItem
 from viewer.models.state import (
     StateAttempt,
     StateLastPublish,
@@ -286,9 +288,12 @@ def _same(left: WireModel | None, right: WireModel | None) -> bool:
 
 
 def validate_selected_state(
-    report: Report, basket: Basket, inventory: Mapping[str, Receipt], read_file: Callable[[str], bytes]
+    report: Report,
+    basket: Basket,
+    inventory: Mapping[str, Receipt],
+    read_file: Callable[[str], bytes],
 ) -> OperationStore:
-    """Bind report rows to the direct v1 registry/state selection, including history."""
+    """Bind report rows to the supported registry/state selection, including history."""
     registry_raw = _document_json('run.json', inventory, read_file)
     state_raw = _document_json('_meta/state.json', inventory, read_file)
     validate_document('run', registry_raw)
@@ -304,7 +309,9 @@ def validate_selected_state(
     )
     require(
         state.schema_family == 'pr_similarity_os.state'
-        and state.schema_version == report.schema_version
+        and (
+            state.schema_version == report.schema_version or (state.schema_version == 3 and report.schema_version == 2)
+        )
         and state.run_id == registry.id
         and state.registry_sha256 == inventory['run.json'].sha256
         and state.revision == report.run.revision
@@ -330,14 +337,8 @@ def validate_selected_state(
         'invalid_state',
     )
     entries = registry.tasks
-    require(
-        [entry.id for entry in entries] == [task.id for task in basket.tasks],
-        'invalid_state',
-    )
-    require(
-        [entry.id for entry in entries] == [task.id for task in report.tasks],
-        'invalid_state',
-    )
+    require([entry.id for entry in entries] == [task.id for task in basket.tasks], 'invalid_state')
+    require([entry.id for entry in entries] == [task.id for task in report.tasks], 'invalid_state')
     require(
         [entry.id for entry in state.tasks] == [entry.id for entry in entries],
         'invalid_state',
@@ -366,7 +367,10 @@ def validate_selected_state(
             }
             if kind == 'reprice':
                 metadata['calculation_id'] = selection.id
-            require(projected is not None and projected.to_wire() == metadata, 'invalid_state')
+            require(
+                projected is not None and projected.to_wire() == metadata,
+                'invalid_state',
+            )
     for registration, selected, task in zip(entries, state.tasks, report.tasks, strict=True):
         _validate_registered_task(registration, selected, task, basket, store)
     try:
@@ -374,7 +378,10 @@ def validate_selected_state(
     except CostEvidenceError as error:
         raise ViewerError(error.code, error.message) from error
     require(report.costs == costs, 'invalid_costs')
-    for selected, closed in ((state.pending_publish, False), (state.last_publish, True)):
+    for selected, closed in (
+        (state.pending_publish, False),
+        (state.last_publish, True),
+    ):
         if selected is not None:
             _validate_publication_selection(selected, closed, report, inventory, read_file)
     return store
@@ -419,7 +426,11 @@ def _validate_projection_header(report: Report, registry: Run, state: State) -> 
 
 
 def _validate_registered_task(
-    registration: RunTaskItem, selected: StateTaskItem, task: ReportTask, basket: Basket, store: OperationStore
+    registration: RunTaskItem,
+    selected: StateTaskItem,
+    task: ReportTask,
+    basket: Basket,
+    store: OperationStore,
 ) -> None:
     """Validate native history and derive the public row from its selected immutable facts."""
     require(
@@ -433,7 +444,11 @@ def _validate_registered_task(
     owners = [*selected.history, selected] if selected.attempt is not None else []
     sequences = []
     for owner in owners:
-        native, initial = _validate_registered_attempt(registration, owner, task, store)
+        if owner is not selected and owner.interruption is not None:
+            _validate_interrupted_attempt(registration, owner, task, store)
+        else:
+            require(owner.interruption is None, 'invalid_state')
+            native, initial = _validate_registered_attempt(registration, owner, task, store)
         assert owner.attempt is not None
         sequences.append(owner.attempt.sequence)
         if owner is selected:
@@ -444,15 +459,87 @@ def _validate_registered_task(
     )
 
 
+def _validate_interrupted_attempt(
+    registration: RunTaskItem,
+    owner: StateTaskItemHistoryItem,
+    task: ReportTask,
+    store: OperationStore,
+) -> None:
+    """Accept a historical recovery observation while preserving exact receipt checks."""
+    attempt = owner.attempt
+    require(type(attempt.sequence) is int and attempt.sequence >= 1, 'invalid_state')
+    prefix = registration.path + f'/attempts/{attempt.sequence:03d}/'
+    _receipt(owner.interruption, store.inventory, prefix + 'interruption.json')
+    value = store.document(prefix + 'interruption.json', Interruption)
+    require(
+        store.state.schema_version == 3
+        and value.run_id == store.registry.id
+        and value.task_id == task.id
+        and value.attempt_id == attempt.id
+        and _same(value.start, owner.start)
+        and _same(value.seal, owner.seal)
+        and owner.outcome is None
+        and value.missing == (['seal', 'outcome'] if owner.seal is None else ['outcome']),
+        'invalid_state',
+    )
+    try:
+        observed = datetime.fromisoformat(value.observed_at.replace('Z', '+00:00'))
+        require(observed.tzinfo is not None, 'invalid_state')
+    except ValueError:
+        raise ViewerError('invalid_state', 'Recovery observation requires a timestamp with timezone.') from None
+    require(
+        all(prefix + kind + '.json' not in store.inventory for kind in value.missing),
+        'invalid_state',
+    )
+    if owner.seal is not None:
+        seal = store.document(prefix + 'seal.json', InferenceSeal)
+        _validate_inference_task_identity(seal.task, task)
+        effective = seal.task.artifacts.effective_config
+        ref = effective.path if effective.status == 'saved' else None
+        if ref is not None:
+            require(ref in store.inventory, 'invalid_state')
+            require(
+                ref.startswith(prefix) or ref == 'agent/effective/' + store.inventory[ref].sha256 + '.json',
+                'invalid_state',
+            )
+        _sealed_receipts(seal, prefix, ref, store.inventory, store.registry.agent_input)
+        _validate_registered_attempt(registration, owner, task, store)
+        return
+    _receipt(owner.start, store.inventory, prefix + 'start.json')
+    start = store.document(prefix + 'start.json', Start)
+    require(
+        start.schema_version == store.registry.schema_version
+        and start.run_id == store.registry.id
+        and start.task_id == task.id
+        and start.basket_sha256 == store.registry.baseline.basket.sha256
+        and start.config_identity_sha256 == store.registry.baseline.config.identity_sha256
+        and _attempt_identity(start.attempt) == _attempt_identity(attempt)
+        and attempt.finished_at is None
+        and owner.scoring is None,
+        'invalid_state',
+    )
+    if owner.pricing is not None:
+        store.item(owner.pricing, 'reprice', task.id, attempt.id)
+
+
 def _validate_registered_attempt(
-    registration: RunTaskItem, owner: StateTaskItem | StateTaskItemHistoryItem, task: ReportTask, store: OperationStore
+    registration: RunTaskItem,
+    owner: StateTaskItem | StateTaskItemHistoryItem,
+    task: ReportTask,
+    store: OperationStore,
 ) -> tuple[NativeTask, ReportTaskScoring | None]:
     """Require a closed native seal and either its outcome or a selected available host score."""
     attempt = owner.attempt
-    require(attempt is not None and type(attempt.sequence) is int and attempt.sequence >= 1, 'invalid_state')
+    require(
+        attempt is not None and type(attempt.sequence) is int and attempt.sequence >= 1,
+        'invalid_state',
+    )
     assert attempt is not None
     prefix = registration.path + f'/attempts/{attempt.sequence:03d}/'
-    for name, selected_receipt, model in (('start', owner.start, Start), ('seal', owner.seal, Seal)):
+    for name, selected_receipt, model in (
+        ('start', owner.start, Start),
+        ('seal', owner.seal, Seal),
+    ):
         _receipt(selected_receipt, store.inventory, prefix + name + '.json')
         fact = store.document(prefix + name + '.json', model)
         require(
@@ -464,7 +551,10 @@ def _validate_registered_attempt(
             and fact.config_identity_sha256 == store.registry.baseline.config.identity_sha256,
             'invalid_state',
         )
-    start, seal = store.document(prefix + 'start.json', Start), store.document(prefix + 'seal.json', Seal)
+    start, seal = (
+        store.document(prefix + 'start.json', Start),
+        store.document(prefix + 'seal.json', Seal),
+    )
     require(seal.matches_agent_input(store.registry.agent_input), 'invalid_agent_input')
     validate_python_attempt(seal, store, prefix)
     if store.registry.schema_version == 2:
@@ -477,11 +567,16 @@ def _validate_registered_attempt(
         all(key in selected_attempt and selected_attempt[key] == value for key, value in initial_attempt.items()),
         'invalid_state',
     )
-    require(seal.task.id == task.id and _same(seal.task.final_attempt, attempt), 'invalid_state')
+    require(
+        seal.task.id == task.id and _same(seal.task.final_attempt, attempt),
+        'invalid_state',
+    )
     for selection, kind in ((owner.scoring, 'rescore'), (owner.pricing, 'reprice')):
         if selection is not None:
             store.item(selection, kind, task.id, attempt.id)
     if owner.outcome is None:
+        if isinstance(owner, StateTaskItemHistoryItem) and owner.interruption is not None:
+            return seal.task, None
         require(owner.scoring is not None, 'invalid_state')
         assert owner.scoring is not None
         score = store.score_item(owner.scoring, task.id, attempt.id)
@@ -913,7 +1008,11 @@ def _validate_inference_task_identity(sealed_task: InferenceTaskFacts, task: Rep
 
 
 def _sealed_receipts(
-    seal: InferenceSeal, prefix: str, ref: str, inventory: Mapping[str, Receipt], agent_input: ReportAgentInput
+    seal: InferenceSeal,
+    prefix: str,
+    ref: str | None,
+    inventory: Mapping[str, Receipt],
+    agent_input: ReportAgentInput | RunAgentInput,
 ) -> None:
     """Require unique attempt-scoped seal receipts matching actual archive bytes."""
     receipts = seal.artifact_receipts
@@ -923,14 +1022,18 @@ def _sealed_receipts(
     allowed = [
         agent_input.config.to_wire(),
         *(item.to_wire() for item in agent_input.resources),
-        inventory[ref].to_wire(),
     ]
+    if ref is not None:
+        allowed.append(inventory[ref].to_wire())
     if seal.schema_version == 2:
         require(seal.python_runtime is not None, 'invalid_inference')
         assert seal.python_runtime is not None
         _receipt(seal.python_runtime, inventory, '_meta/python.json')
         allowed.append(seal.python_runtime.to_wire())
-        require(seal.python_runtime.to_wire() in [item.to_wire() for item in receipts], 'invalid_inference')
+        require(
+            seal.python_runtime.to_wire() in [item.to_wire() for item in receipts],
+            'invalid_inference',
+        )
     paths = []
     for receipt in receipts:
         require(
@@ -938,14 +1041,20 @@ def _sealed_receipts(
             'invalid_inference',
         )
         path = safe_path(receipt.path)
-        require((path.startswith(prefix) or receipt.to_wire() in allowed) and path in inventory, 'invalid_inference')
+        require(
+            (path.startswith(prefix) or receipt.to_wire() in allowed) and path in inventory,
+            'invalid_inference',
+        )
         require(
             type(receipt.size_bytes) is int and receipt.size_bytes >= 0,
             'invalid_inference',
         )
         require(receipt.to_wire() == inventory[path].to_wire(), 'invalid_inference')
         paths.append(path)
-    require(len(paths) == len(set(paths)) and ref in paths, 'invalid_inference')
+    require(
+        len(paths) == len(set(paths)) and (ref is None or ref in paths),
+        'invalid_inference',
+    )
 
 
 def validate_inference_evidence(

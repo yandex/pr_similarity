@@ -31,7 +31,7 @@ from viewer.validation.schema import validate_document, validator
     [
         ('report', 2, 'report'),
         ('run', 2, 'run'),
-        ('state', 2, 'state'),
+        ('state', 3, 'state'),
         ('archive', 2, 'archive'),
         ('usage', 1, 'usage'),
         ('basket', 1, 'basket_v1'),

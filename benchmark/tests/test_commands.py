@@ -149,36 +149,41 @@ def test_blocked_renderer_cannot_hold_coordinator_shutdown(tmp_path: Path, monke
 def test_blocked_debug_stream_cannot_hold_command_or_logging_shutdown(tmp_path: Path) -> None:
     """Heartbeat logging must not hold the command or Python's atexit logging shutdown."""
     script = textwrap.dedent('''
-        import io
-        import logging
-        import sys
-        import threading
-        import time
-        from pathlib import Path
+"""Exercise logging shutdown while an optional console stream blocks."""
 
-        from benchmark.runtime.commands import Command
+import io
+import logging
+import sys
+import threading
+import time
+from pathlib import Path
 
-
-        class Blocked(io.StringIO):
-            def write(self, value: str) -> int:
-                threading.Event().wait(30)
-                return len(value)
+from benchmark.runtime.commands import Command
 
 
-        root = Path(sys.argv[1])
-        command = Command(root, 'run', secrets=['fixture-secret'], progress_mode='plain', progress_total=1)
-        command.handler.stream = Blocked()
-        command.phase('fixture-secret')
-        command.watch_interrupts(lambda: 0)
-        deadline = time.monotonic() + 2
-        log = command.logs_dir / 'benchmark.log'
-        while time.monotonic() < deadline and '<redacted>' not in log.read_text():
-            time.sleep(0.01)
-        assert '<redacted>' in log.read_text()
-        command.finish('completed')
-        logging.shutdown()
-        print('finished', flush=True)
-        ''')
+class Blocked(io.TextIOWrapper):
+    """Keep writes pending beyond the command shutdown budget."""
+
+    def write(self, value: str) -> int:
+        """Block this presentation write without holding the command owner."""
+        threading.Event().wait(30)
+        return len(value)
+
+
+root = Path(sys.argv[1])
+command = Command(root, 'run', secrets=['fixture-secret'], progress_mode='plain', progress_total=1)
+command.handler.stream = Blocked(io.BytesIO())
+command.phase('fixture-secret')
+command.watch_interrupts(lambda: 0)
+deadline = time.monotonic() + 2
+log = command.logs_dir / 'benchmark.log'
+while time.monotonic() < deadline and '<redacted>' not in log.read_text():
+    time.sleep(0.01)
+assert '<redacted>' in log.read_text()
+command.finish('completed')
+logging.shutdown()
+print('finished', flush=True)
+''')
     result = subprocess.run(
         [sys.executable, '-c', script, str(tmp_path)],
         cwd=Path(__file__).parents[1],

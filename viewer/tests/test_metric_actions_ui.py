@@ -149,19 +149,19 @@ def test_partial_metrics_tooltip_duration_and_layout(
     page.goto(origin)
     page.wait_for_selector('tr.run-row')
     row = page.locator('tr.run-row[data-run-id="' + rid + '"]')
-    assert 'Total: 127 (partial)(!)' in row.inner_text()
-    note = row.locator('.token-total .metric-note')
-    note.focus()
-    expect(page.locator('#metric-tooltip')).to_contain_text('1 of 2 selected tasks')
-    note.click()
+    tokens = row.locator('td').nth(10).locator('button')
+    expect(tokens.locator('.compact-total')).to_have_text('127')
+    expect(tokens.locator('.usage-status')).to_have_text('Partial')
+    tokens.focus()
+    expect(page.locator('.unified-popover:visible')).to_contain_text('Partial = known subtotal')
+    tokens.click()
     assert page.url == origin + '/'
-    row.locator('td').nth(11).locator('.metric-note').focus()
-    expect(page.locator('#metric-tooltip')).to_contain_text('subscription access')
+    page.keyboard.press('Escape')
+    row.locator('td').nth(11).locator('button').click()
+    expect(page.locator('.unified-popover:visible')).to_contain_text('Subscription zero reported')
     page.goto(origin + '/run?run_id=' + rid)
-    page.wait_for_selector('.run-tags')
-    assert '3m 55s' in page.locator('.run-header').inner_text()
-    cells = page.locator('.run-tags td').evaluate_all('(cells)=>cells.map(c=>c.getBoundingClientRect().width)')
-    assert 240 <= cells[0] <= 280 and cells[1] > cells[0]
+    expect(page.locator('.run-summary-grid > .stat')).to_have_count(8)
+    expect(page.locator('.stat[data-metric="Median time"]')).to_contain_text('3m 55s')
     assert page.evaluate('[time(59.94),time(59.96),time(60),time(3599.6),time(5507.4),time(0),time(null)]') == [
         '59.9 s',
         '1m 0s',
@@ -179,8 +179,8 @@ def test_partial_metrics_tooltip_duration_and_layout(
     try:
         mobile = touch.new_page()
         mobile.goto(origin + '/run?run_id=' + rid)
-        mobile.locator('.run-header .token-total .metric-note').tap()
-        expect(mobile.locator('#metric-tooltip')).to_contain_text('1 of 2 selected tasks')
+        mobile.locator('.task-metrics [data-metric="tokens"] button').first.tap()
+        expect(mobile.locator('.unified-popover:visible')).to_contain_text('Final attempts only')
     finally:
         touch.close()
 

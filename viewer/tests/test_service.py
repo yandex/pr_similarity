@@ -140,24 +140,50 @@ def test_refresh_is_atomic_when_settings_corrupt(tmp_path: Path) -> None:
     svc.db.close()
 
 
-def test_lost_staging_rolls_back_from_complete_trash(tmp_path: Path) -> None:
-    """Verify lost staging rolls back from complete trash."""
+@pytest.mark.parametrize(
+    'failure,phase', [('trash/', 'prepared'), ('DELETE', 'backed_up'), ('publication.json', 'installing')]
+)
+@pytest.mark.parametrize('partial', [False, True])
+@pytest.mark.parametrize('restart', [False, True])
+def test_lost_staging_uses_transfer_progress_and_complete_trash(
+    tmp_path: Path, failure: str, phase: str, partial: bool, restart: bool
+) -> None:
+    """Complete transferred input or restore the full backup when pending bytes are lost."""
     store = FaultStore()
     svc = service(tmp_path, store)
     report, _, _ = publish(svc, tmp_path)
     rid = report['run']['id']
     svc.set_pinned(rid, True)
-    store.armed = 'runs/alice/' + rid + '/publication.json'
+    original = svc.download(rid, 'alice').read()
+    store.armed = ('runs/alice/' + rid + '/publication.json') if failure == 'publication.json' else failure
     with pytest.raises(StorageError):
-        publish(svc, tmp_path, run_id=rid, score=0.3)
-    op = next(iter(svc.db.operations().values()))
-    shutil.rmtree(op['staging'])
-    svc.db.close()
-    db = Database(svc.config.runtime)
-    restarted = ViewerService(svc.config, store, db)
-    assert restarted.run(rid)['score'] == 1
+        publish(svc, tmp_path, run_id=rid, score=0.3, key='lost-staging')
+    op_id, op = next(iter(svc.db.operations().items()))
+    assert op['phase'] == phase
+    transferred = svc.db.progress(op_id, 'archive') == 1 and svc.db.progress(op_id, 'files') == len(
+        op['marker']['inventory']
+    )
+    expected_archive = (Path(op['staging']) / 'archive.tar.gz').read_bytes() if transferred else original
+    if partial:
+        (Path(op['staging']) / 'archive.tar.gz').unlink()
+        (Path(op['staging']) / 'data' / 'report.json').unlink()
+    else:
+        shutil.rmtree(op['staging'])
+    if restart:
+        svc.db.close()
+        db = Database(svc.config.runtime)
+        restarted = ViewerService(svc.config, store, db)
+    else:
+        svc.recover()
+        db = svc.db
+        restarted = svc
+    assert restarted.run(rid)['score'] == (0.3 if transferred else 1)
     assert restarted.run(rid)['pinned'] is True
+    assert restarted.download(rid, 'alice').read() == expected_archive
+    assert (db.receipt('alice', 'lost-staging') is not None) is transferred
     assert db.operations() == {}
+    publish(restarted, tmp_path, run_id=rid, score=0.6, key='after-recovery' if transferred else 'lost-staging')
+    assert restarted.run(rid)['score'] == 0.6
     db.close()
 
 

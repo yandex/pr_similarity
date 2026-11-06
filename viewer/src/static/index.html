@@ -12,7 +12,7 @@
   <script src="/assets/app.js" defer></script>
 </head>
 <body>
-  <header class="topbar"><a class="brand" href="/" aria-label="PR Similarity Viewer home"><img src="/assets/favicon.svg" alt="" class="brand-icon"><span>PR <span class="sim">Similarity</span> Viewer</span></a><span id="page-kind">Runs</span><span id="activity" aria-live="polite"></span><nav id="account" aria-label="Account"></nav></header>
+  <header class="topbar"><a class="brand" href="/" aria-label="PR Similarity Viewer home"><img src="/assets/favicon.svg" alt="" class="brand-icon"><span>PR <span class="sim">Similarity</span> Viewer</span></a><span id="build-info">{{BUILD_INFO}}</span><span id="page-kind">Runs</span><span id="activity" aria-live="polite"></span><nav id="account" aria-label="Account"></nav></header>
   <dialog id="account-dialog" aria-labelledby="account-title">
     <form id="account-form"><h2 id="account-title">Log in</h2>
       <label><span id="login-label">Login</span><input id="account-login" name="username" autocomplete="username" aria-labelledby="login-label" aria-describedby="account-login-hint" maxlength="64" required><small id="account-login-hint">Contact the server administrator to get a login and password.</small></label>
@@ -64,10 +64,10 @@
   </main>
   <dialog id="config-dialog" aria-labelledby="config-title">
     <header><h2 id="config-title">Run config</h2><button id="config-close" type="button" aria-label="Close config" autofocus>×</button></header>
-    <p>Saved semantic identity · selected public fields</p><section id="config-content" aria-live="polite"></section>
+    <section id="config-content" aria-live="polite"></section>
   </dialog>
   <dialog id="diff-dialog" class="diff-dialog" aria-labelledby="diff-title">
-    <header class="diff-dialog-header"><h2 id="diff-title" tabindex="0"></h2><button id="diff-close" type="button" aria-label="Close diff" autofocus>×</button></header>
+    <header class="diff-dialog-header"><h2 id="diff-title" tabindex="0"></h2><div class="file-view-controls"><div class="file-view-toggle" role="group" aria-label="File view"><button id="file-view-diff" type="button" aria-pressed="true">Diff</button><button id="file-view-full" type="button" aria-pressed="false">Full file</button></div><button id="diff-close" type="button" aria-label="Close diff" autofocus>×</button></div></header>
     <div id="diff-content" class="diff-content" aria-live="polite"></div>
   </dialog>
 </body>

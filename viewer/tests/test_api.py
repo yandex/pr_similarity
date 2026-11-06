@@ -1,5 +1,7 @@
 """HTTP contracts on a real ASGI app and in-memory S3 mock."""
 
+import io
+import sqlite3
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -7,8 +9,10 @@ from pathlib import Path
 import pytest
 from helpers import archive_fixture
 from starlette.testclient import TestClient
+from viewer import __version__
 from viewer.config import Config
-from viewer.persistence.storage import MemoryStore
+from viewer.persistence.database import Database
+from viewer.persistence.storage import MemoryStore, StoredBody
 from viewer.util import digest
 from viewer.web.api import create_app
 
@@ -42,9 +46,9 @@ def grant(client: TestClient, operation: str, login: str = 'alice', rid: str | N
     body = {'login': login, 'password': 'secret'}
     if rid:
         body['run_id'] = rid
-    r = client.post('/api/v1/auth/' + operation + '-token', json=body)
-    assert r.status_code == 200, r.text
-    return {'Authorization': 'Bearer ' + r.json()['token']}
+    response = client.post('/api/v1/auth/' + operation + '-token', json=body)
+    assert response.status_code == 200, response.text
+    return {'Authorization': 'Bearer ' + response.json()['token']}
 
 
 def upload(
@@ -113,8 +117,8 @@ def test_owner_archive_metadata_tokens_and_conflict(client: TestClient, tmp_path
         == 403
     )
     token = grant(client, 'download', rid=rid)
-    r = client.get(base + '/archive', headers=token)
-    assert r.content == data
+    response = client.get(base + '/archive', headers=token)
+    assert response.content == data
     assert client.get(base + '/archive', headers=token).status_code == 401
     token = grant(client, 'metadata', rid=rid)
     assert (
@@ -245,3 +249,48 @@ def test_missing_and_disallowed_api_responses_are_json(client: TestClient) -> No
     response = client.delete('/api/v1/baskets')
     assert response.status_code == 405 and response.json()['error']['code'] == 'method_not_allowed'
     assert client.get('/healthz').headers['content-security-policy'].startswith('default-src \'self\'')
+
+
+@pytest.mark.parametrize('dev', [False, True])
+def test_page_version_and_deployment_label(tmp_path: Path, dev: bool) -> None:
+    """Identify the serving package and development deployments on every page."""
+    token = tmp_path / 'admin'
+    token.write_text('A' * 32)
+    token.chmod(0o400)
+    config = Config(runtime=tmp_path / 'runtime', admin_token_file=token, storage='mock')
+    with TestClient(create_app(config, MemoryStore(), dev=dev)) as client:
+        for path in ('/', '/run', '/settings', '/admin/users', '/assets/index.html'):
+            response = client.get(path)
+            assert response.status_code == 200
+            label = 'v' + __version__ + (' [dev]' if dev else '')
+            assert f'id="build-info">{label}</span>' in response.text
+            assert ('[dev]' in response.text) is dev
+            assert 'Local offline report' not in response.text
+
+
+def test_download_closes_stream_when_grant_consumption_fails(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Release the archive body when admission fails before streaming begins."""
+    create_user(client)
+    report, data, _, _ = upload(client, tmp_path)
+    rid = report['run']['id']
+    headers = grant(client, 'download', rid=rid)
+    body = io.BytesIO(data)
+
+    def open_archive(self: MemoryStore, key: str) -> StoredBody:
+        """Keep a strong reference so garbage collection cannot hide a leaked body."""
+        assert key.endswith('/archive.tar.gz')
+        return body
+
+    def fail_consume(self: Database, token: str) -> None:
+        """Model a SQLite write failure after the archive has been opened."""
+        raise sqlite3.OperationalError('database is locked')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(MemoryStore, 'open', open_archive)
+        patch.setattr(Database, 'consume', fail_consume)
+        response = client.get('/api/v1/runs/' + rid + '/archive', headers=headers)
+    assert response.status_code == 503
+    assert body.closed
+    assert client.get('/api/v1/runs/' + rid + '/archive', headers=headers).content == data

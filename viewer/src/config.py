@@ -64,6 +64,9 @@ class Config:
     login_attempts: int = 10
     login_window_seconds: int = 300
     password_checks: int = 1
+    recovery_retry_seconds: int = 5
+    recovery_attempts: int = 3
+    shutdown_seconds: int = 15
     limits: Limits = field(default_factory=Limits)
 
     def __post_init__(self) -> None:
@@ -122,7 +125,15 @@ class Config:
             object.__setattr__(self, 'public_origin', self.public_origin.rstrip('/'))
             if origin.scheme == 'http' and origin.hostname not in ('localhost', '127.0.0.1', '::1'):
                 raise ViewerError('invalid_config', 'Browser authentication requires HTTPS except on loopback.')
-        for value in (self.session_ttl_seconds, self.login_attempts, self.login_window_seconds, self.password_checks):
+        for value in (
+            self.session_ttl_seconds,
+            self.login_attempts,
+            self.login_window_seconds,
+            self.password_checks,
+            self.recovery_retry_seconds,
+            self.recovery_attempts,
+            self.shutdown_seconds,
+        ):
             if type(value) is not int or value < 1:
                 raise ViewerError('invalid_config', 'Authentication limits must be positive.')
 

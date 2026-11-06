@@ -70,7 +70,10 @@ def test_parallel_projection_preserves_links_and_subdirectories(tmp_path: Path) 
         assert (projected / 'helpers/tool').read_text() == 'helper'
 
 
-def test_failed_projection_is_discarded_before_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('error', [OSError(errno.ENOSPC, 'full'), KeyboardInterrupt('full'), SystemExit('full')])
+def test_failed_projection_is_discarded_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
     """A failed copy must not publish partially prepared mount sources."""
     source = tmp_path / 'bin'
     source.mkdir()
@@ -79,13 +82,13 @@ def test_failed_projection_is_discarded_before_retry(tmp_path: Path, monkeypatch
     attempted: list[Path] = []
 
     def fail(src: str, dst: str) -> str:
-        """Simulate ENOSPC while copying a host executable."""
+        """Interrupt copying with the selected resource or process-control failure."""
         attempted.append(Path(dst))
-        raise OSError(errno.ENOSPC, 'full')
+        raise error
 
     with BinProjection() as projection:
         monkeypatch.setattr(module.shutil, 'copy2', fail)
-        with pytest.raises(OSError, match='full'):
+        with pytest.raises(type(error), match='full'):
             projection.mounts('/venv', (source,))
         assert attempted and not attempted[0].parent.exists()
         monkeypatch.setattr(module.shutil, 'copy2', original)

@@ -71,6 +71,7 @@ def credential_environment(env: dict[str, str], timeout_seconds: float, stop: Ev
         start_new_session=True,
     )
     deadline = time.monotonic() + timeout_seconds
+    completed = False
     try:
         while True:
             if stop is not None and stop.is_set():
@@ -83,20 +84,21 @@ def credential_environment(env: dict[str, str], timeout_seconds: float, stop: Ev
                 break
             except subprocess.TimeoutExpired:
                 continue
-    except BaseException:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            process.communicate(timeout=2)
-        except subprocess.TimeoutExpired:
+        completed = True
+    finally:
+        if not completed:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            process.communicate()
-        raise
+            try:
+                process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
     if process.returncode not in (0, 1):
         raise RuntimeError('Cannot read host Git credential settings; check your global Git configuration.')
     settings: list[tuple[str, str]] = [('credential.helper', '')]

@@ -54,6 +54,8 @@ def test_interrupted_owner_delete_recovers_without_foreign_trigger(
     monkeypatch.setattr(svc.store, 'delete', fail)
     assert client.delete(url, headers=headers).status_code == 503
     assert svc.db.operations()
+    with svc.maintenance.condition:
+        assert svc.maintenance.condition.wait_for(lambda: svc.maintenance.state['status'] == 'retrying', 5)
     # Reuse sessions so no generic GET/login can trigger storage recovery.
     client.cookies.clear()
     client.cookies.update(foreign_cookies)
@@ -66,7 +68,9 @@ def test_interrupted_owner_delete_recovers_without_foreign_trigger(
     assert len(calls) == before and svc.db.operations()
     monkeypatch.setattr(svc.store, 'delete', original)
     client.cookies.update(owner_cookies)
-    assert client.delete(url, headers=headers).status_code == 200
+    with svc.maintenance.condition:
+        assert svc.maintenance.condition.wait_for(lambda: svc.maintenance.state['status'] == 'succeeded', 10)
+    assert client.get('/api/v1/runs/' + rid).status_code == 404
     assert rid not in svc.runs and not svc.db.operations()
     assert any(k.endswith('/archive.tar.gz') for k in svc.store.list('trash/'))
 

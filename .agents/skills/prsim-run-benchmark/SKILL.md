@@ -44,6 +44,14 @@ ignored. Intact selected native seals allow host-only scoring with the same nati
 UUID/timings and no new model call. Recovering a score does not finish interrupted
 native work; a required native retry consumes a new sequence.
 
+After a hard stop, resume preserves native UUIDs, sequences and existing files.
+It adopts valid seal/outcome files before marking absent facts in a separate
+interruption.json. The observation time is not the execution finish time. Old
+incomplete history is repaired even when all selected tasks are completed, without
+calling the model again. State upgrades to v3 when the observation is committed;
+unknown historical usage stays unknown. Referenced missing/corrupt files remain
+errors and must not be replaced with placeholders.
+
 On `provider_quota_exhausted`, report the stopped run and provider reset hint.
 The hint does not authorize automatic waiting or another invocation. Resume only
 within the user's authorized scope after quota is available; this error does not
@@ -57,7 +65,11 @@ Read `report.json`, `run.log` and the selected attempt’s live `agent.log`.
 Native JSON is `events.jsonl`; stderr/non-JSON is `runtime.log`.
 Check receipts/coverage, not exit code alone. Return run path, actual counts,
 independent execution/change/scoring states and final/all native/API cost coverage.
-Generate HTML or publish only when explicitly requested. OAuth cleanup needs its
+Generate HTML or publish only when explicitly requested. `make visualize RUN=...`
+writes one portable report.html using the same run-page renderer as viewer. It
+opens through file:// without a server or API requests; setup, metric settings,
+input opencode.json and full-file views are embedded. Display defaults match viewer;
+server-specific limits and account/publication controls are not local run data. OAuth cleanup needs its
 own authorization and stopped users of the profile.
 
 The frozen 2026H1 baskets are in `benchmark/examples/baskets/pandas/` and

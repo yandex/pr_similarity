@@ -1,6 +1,7 @@
 PYTHON ?= python3
 VENV_PYTHON ?= .venv/bin/python
 CONFIG ?= config.local.json
+DEV ?= 0
 PACKAGE_INDEX_URL ?= https://pypi.org/simple
 URL ?=
 LOGIN ?=
@@ -11,6 +12,7 @@ ORDER_JSON ?=
 export PRSIM_VIEWER_SETUP_PYTHON = $(value PYTHON)
 export PRSIM_VIEWER_PYTHON = $(value VENV_PYTHON)
 export PRSIM_VIEWER_CONFIG = $(value CONFIG)
+export PRSIM_VIEWER_DEV = $(value DEV)
 export PRSIM_VIEWER_INDEX = $(value PACKAGE_INDEX_URL)
 export PRSIM_VIEWER_URL = $(value URL)
 export PRSIM_VIEWER_LOGIN = $(value LOGIN)
@@ -18,7 +20,7 @@ export PRSIM_VIEWER_ROLE = $(value ROLE)
 export PRSIM_VIEWER_RUN_ID = $(value RUN_ID)
 export PRSIM_VIEWER_ORDER_JSON = $(value ORDER_JSON)
 _COMMAND_LINE_VARIABLES := $(foreach name,$(.VARIABLES),$(if $(filter command line,$(origin $(name))),$(name)))
-unexport $(_COMMAND_LINE_VARIABLES) PYTHON VENV_PYTHON CONFIG PACKAGE_INDEX_URL URL LOGIN ROLE RUN_ID ORDER_JSON
+unexport $(_COMMAND_LINE_VARIABLES) PYTHON VENV_PYTHON CONFIG DEV PACKAGE_INDEX_URL URL LOGIN ROLE RUN_ID ORDER_JSON
 
 .PHONY: help setup browser-setup test serve start stop status logs admin-profile-create admin-role-set admin-profile-password-set admin-user-create admin-user-enable admin-user-disable admin-password-set admin-basket-order admin-run-delete admin-refresh
 
@@ -82,6 +84,7 @@ help:
 	  '  make admin-refresh' \
 	  '' \
 	  'Variables:' \
+	  '  DEV=0|1                   Show [dev] beside the version (default: 0; start/serve)' \
 	  '  CONFIG=<path>             JSON config (default: config.local.json)' \
 	  '  PYTHON=<interpreter>      Setup interpreter (default: python3; must be >=3.12)' \
 	  '  VENV_PYTHON=<path>        Runtime interpreter (default: .venv/bin/python)' \

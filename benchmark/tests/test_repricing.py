@@ -2,13 +2,15 @@
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 import yaml
 from benchmark.errors import BenchmarkError
 from benchmark.models import Report
-from benchmark.models.evidence import ArtifactReceipt, OperationReceipt, OperationResult
+from benchmark.models.evidence import ArtifactReceipt, OperationReceipt, OperationResult, OperationSelection
 from benchmark.persistence import run_store
 from benchmark.persistence.artifact_refs import read_reference
 from benchmark.persistence.run_store import RunStore
@@ -166,7 +168,7 @@ def test_partial_pricing_keeps_positive_known_subtotal(tmp_path: Path, monkeypat
 
     def mixed(self: executor._Attempt) -> None:
         """Change one private native request model before its immutable capture."""
-        with sqlite3.connect(self.private / 'home/data/opencode/opencode.db') as database:
+        with closing(sqlite3.connect(self.private / 'home/data/opencode/opencode.db')) as database, database:
             value = json.loads(database.execute('select data from message where id=?', ('msg-detached',)).fetchone()[0])
             value['modelID'] = 'unpriced'
             database.execute('update message set data=? where id=?', (json.dumps(value), 'msg-detached'))
@@ -194,7 +196,7 @@ def test_abandoned_complete_operation_is_not_adopted_on_reopen(tmp_path: Path, m
     state = (directory / '_meta/state.json').read_bytes()
     original = RunStore.accept_operation
 
-    def reject(self: RunStore, selection: dict) -> dict:
+    def reject(self: RunStore, selection: OperationSelection) -> NoReturn:
         """Stop immediately before authoritative selection to leave a complete orphan."""
         raise BenchmarkError('fixture_commit_failed', 'Fixture stopped before operation commit.')
 
@@ -222,7 +224,7 @@ def test_pricing_state_commit_survives_derived_report_failure(tmp_path: Path, mo
     directory, path = make_run(tmp_path, monkeypatch)
     original = run_store.write_json
 
-    def fail_report(target: Path, value: dict, **kwargs: object) -> None:
+    def fail_report(target: Path, value: object, **kwargs: object) -> None:
         """Reject only the report write that follows authoritative operation selection."""
         if target == directory / 'report.json' and RunStore.open(directory).last_operation('reprice') is not None:
             raise BenchmarkError('artifact_write_failed', 'Fixture projection failed after state commit.')

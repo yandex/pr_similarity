@@ -6,6 +6,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -318,6 +319,7 @@ class GitRepository:
                 self._error_message(args[0], 'cannot start Git; check the executable.'), details=details
             ) from exc
         deadline = time.monotonic() + self.timeout_seconds
+        completed = False
         try:
             high_water = initial_bytes
             while True:
@@ -337,15 +339,17 @@ class GitRepository:
                     break
                 except subprocess.TimeoutExpired:
                     input_bytes = None
-        except BaseException as exc:
-            _stdout, stderr = self._terminate(process)
-            details = self._diagnostic(args, process.returncode, stderr, started)
-            if is_fetch:
-                accounted_high_water = initial_bytes + self._received_bytes - received_before
-                self._sample_transfer(accounted_high_water)
-            if isinstance(exc, GitInfrastructureError):
-                exc.details = details
-            raise
+            completed = True
+        finally:
+            if not completed:
+                exc = sys.exception()
+                _stdout, stderr = self._terminate(process)
+                details = self._diagnostic(args, process.returncode, stderr, started)
+                if is_fetch:
+                    accounted_high_water = initial_bytes + self._received_bytes - received_before
+                    self._sample_transfer(accounted_high_water)
+                if isinstance(exc, GitInfrastructureError):
+                    exc.details = details
         if args[:2] == ('merge-base', '--all') and process.returncode == 1 and not stdout and not stderr:
             # Unrelated commits have no merge base; Git reports this with exit 1.
             return stdout

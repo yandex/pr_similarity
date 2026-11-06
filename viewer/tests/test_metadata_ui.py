@@ -20,13 +20,18 @@ def test_setup_prefixes_keep_generated_model_effort_and_origin(
     expect(row.locator('td').nth(3)).to_have_text('openai/Alpha [high]')
     assert row.locator('td').count() == 12
     assert row.locator('td').nth(4).locator('.tag').all_text_contents() == labels
-    assert 'config_identity.json' in (row.locator('td').nth(3).get_attribute('title') or '')
+    row.locator('td').nth(3).locator('.tag').focus()
+    expect(page.locator('.unified-popover')).to_contain_text('Alpha')
+    expect(page.locator('.unified-popover')).to_contain_text('high')
+    page.keyboard.press('Escape')
     assert 'model:custom' in page.locator('#filter-setup option').all_text_contents()
     assert 'custom' not in page.locator('#filter-model option').all_text_contents()
     row.get_by_role('link', name='Agent A', exact=True).click()
-    page.get_by_role('button', name='See Run Config for Agent A', exact=True).click()
+    page.get_by_role('button', name='opencode.json', exact=True).click()
     expect(page.locator('#config-dialog')).to_be_visible()
     content = page.locator('#config-content pre').inner_text()
     assert 'reasoningEffort' in content and 'high' in content
     assert 'config_identity.json' not in content and 'inference' not in content
-    expect(page.locator('.benchmark-metadata')).to_contain_text('Agent timeout')
+    page.keyboard.press('Escape')
+    page.get_by_text('Run setup', exact=True).click()
+    expect(page.locator('.mock-context')).to_contain_text('Agent timeout')

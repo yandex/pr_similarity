@@ -149,20 +149,26 @@ def test_partial_usage_is_visible_in_browser(
     report, _ = archive_fixture(path, configure=partial_usage)
     svc.publish(validate_archive(path, tmp_path / 'partial-browser', Limits()), 'alice', 'partial-browser')
     page.goto(origin + '/run?run_id=' + report['run']['id'])
-    cost = page.locator('.stat').filter(has_text='Cost, USD')
-    expect(cost).to_contain_text('9.900000 (partial)')
-    title = cost.get_attribute('title')
-    assert title is not None
-    assert '99/100 requests measured' in title
+    cost = page.locator('.stat[data-metric="Cost"]')
+    expect(cost).to_contain_text('$9.90')
+    expect(cost.locator('.usage-status')).to_have_text('Partial')
+    expect(cost).to_contain_text('99 / 100 requests measured')
     summary = page.locator('.task-metrics')
-    expect(summary).to_contain_text('1,584 (partial)')
+    expect(summary).to_contain_text('1.6K')
+    tokens = summary.locator('[data-metric="tokens"] button')
+    tokens.click()
+    expect(page.locator('.unified-popover:visible')).to_contain_text('99 / 100 requests measured')
+    expect(page.locator('.unified-popover:visible')).to_contain_text('Partial = known subtotal')
+    page.keyboard.press('Escape')
     page.locator('.task summary .title').click()
-    expect(page.locator('.task-body')).to_contain_text('9.900000 (partial)')
-    expect(page.locator('.task-body')).to_contain_text('0 (partial)')
+    expect(page.locator('.condition')).to_be_visible()
+    page.get_by_text('Run Metric Settings', exact=True).click()
     page.locator('#statuses input[value="OK"]').uncheck()
     expect(cost).to_contain_text('—')
     page.locator('#statuses input[value="OK"]').check()
-    expect(cost).to_contain_text('9.900000 (partial)')
+    expect(cost).to_contain_text('$9.90')
+    expect(cost.locator('.usage-status')).to_have_text('Partial')
+    assert not errors
 
 
 @pytest.mark.parametrize('zero_cost', [False, True])
@@ -192,18 +198,19 @@ def test_partial_local_html_matches_viewer_projection(tmp_path: Path, zero_cost:
     benchmark = Path(__file__).parents[2] / 'benchmark'
     output = tmp_path / 'report.html'
     script = '''
+"""Render partial request measurements with the standalone benchmark renderer."""
+
 import json
 import sys
 from decimal import Decimal
-import json
-import subprocess
 from pathlib import Path
-from typing import NoReturn
+
 from benchmark.models.report import Report
 from benchmark.presentation.measurements import Measurement
+from benchmark.presentation.run_page import render
 from benchmark.presentation.task_measurements import TaskMeasurements
-from benchmark.presentation.visualize import _page, _task
 from benchmark.presentation.visualize_data import display_metrics
+
 report = Report.model_validate(json.loads(Path(sys.argv[1]).read_text()))
 values = json.loads(Path(sys.argv[2]).read_text())
 measurements = {}
@@ -211,10 +218,12 @@ for key, value in values.items():
     value['cost']['subtotal'] = Decimal(value['cost']['subtotal'])
     measurements[key] = TaskMeasurements(
         tokens={name: Measurement(**data) for name, data in value['tokens'].items()},
-        cost=Measurement(**value['cost']), cost_source=value['cost_source'])
-rows = [_task(task, index) for index, task in enumerate(report.tasks)]
+        cost=Measurement(**value['cost']),
+        cost_source=value['cost_source'],
+    )
 data = {'measurements': display_metrics(report, measurements)}
-Path(sys.argv[3]).write_bytes(_page('Partial', '', rows, report, data))
+metadata = {'name': 'Fixture', 'description': '', 'task_source': {'source': None, 'context': None}}
+Path(sys.argv[3]).write_bytes(render(report, metadata, data))
 '''
     subprocess.run(
         [
@@ -235,23 +244,23 @@ Path(sys.argv[3]).write_bytes(_page('Partial', '', rows, report, data))
         try:
             page = browser.new_page()
             page.goto(output.as_uri())
-            cost = page.locator('.stat').filter(has_text='Cost, USD')
-            expect(cost).to_contain_text(('0.000000' if zero_cost else '9.900000') + ' (partial)')
-            title = cost.get_attribute('title')
-            assert title is not None
-            assert '99/100 requests measured' in title
-            if zero_cost:
-                assert 'not verified free usage or measured subscription API cost' in title
-            expect(page.locator('.task-metrics')).to_contain_text('1584 (partial)')
-            page.locator('.task summary').click()
-            expect(page.locator('.task-tokens')).to_contain_text('cache_write: 0 (partial)')
-            expect(page.locator('.task-cost')).to_contain_text(
-                ('0.00000000' if zero_cost else '9.90000000') + ' (partial)'
-            )
-            page.locator('#selection input[value="OK"]').uncheck()
+            cost = page.locator('.stat[data-metric="Cost"]')
+            expected = '$0.00' if zero_cost else '$9.90'
+            expect(cost).to_contain_text(expected)
+            expect(cost.locator('.usage-status')).to_have_text('Partial')
+            expect(cost).to_contain_text('99 / 100 requests measured')
+            summary = page.locator('.task-metrics')
+            expect(summary).to_contain_text('1.6K')
+            summary.locator('[data-metric="tokens"] button').click()
+            expect(page.locator('.unified-popover:visible')).to_contain_text('99 / 100 requests measured')
+            expect(page.locator('.unified-popover:visible')).to_contain_text('Partial = known subtotal')
+            page.keyboard.press('Escape')
+            page.get_by_text('Run Metric Settings', exact=True).click()
+            page.locator('#statuses input[value="OK"]').uncheck()
             expect(cost).to_contain_text('—')
-            page.locator('#selection input[value="OK"]').check()
-            expect(cost).to_contain_text(('0.000000' if zero_cost else '9.900000') + ' (partial)')
+            page.locator('#statuses input[value="OK"]').check()
+            expect(cost).to_contain_text(expected)
+            expect(cost.locator('.usage-status')).to_have_text('Partial')
         finally:
             browser.close()
     svc.db.close()

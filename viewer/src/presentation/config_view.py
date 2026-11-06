@@ -1,9 +1,12 @@
 """One safe native OpenCode document, separately from harness metadata."""
 
+from typing import cast
+
 from viewer.errors import ViewerError
+from viewer.models.report import Report
 from viewer.presentation import run_projection
 from viewer.presentation.native_config import native_projection as native_projection
-from viewer.service import ViewerService
+from viewer.service import CatalogueEntry, ViewerService
 from viewer.util import digest, json_bytes, parse_json
 from viewer.validation.contracts import require
 
@@ -21,6 +24,7 @@ def public_config(
         source = report.agent_input.config
         result = {
             'projection_version': 2,
+            'setup_summary': setup_summary(service, row, report),
             'run_id': rid,
             'report_sha256': report_sha,
             'publication_sha256': row['marker']['archive_sha256'],
@@ -45,3 +49,32 @@ def public_config(
         if len(json_bytes(value)) > service.config.limits.config_display_bytes:
             return {**result, 'reason': 'display_limit'}
         return {**result, 'supported': True, 'config': value}
+
+
+DEFAULT_TASK_INSTRUCTIONS = (
+    'Solve the provided programming task by editing source files in this workspace.\n'
+    'Do not use version control commands or change version control metadata.\n'
+    'Do not search for, download, or copy the original pull request or its solution.\n'
+    'You may use the network to consult documentation or prepare dependencies.\n'
+    'Leave all source changes on disk. New nonignored source files are included.\n'
+)
+
+
+def setup_summary(service: ViewerService, row: CatalogueEntry, report: Report) -> dict:
+    """Describe setup choices without exposing environment values or private instructions."""
+    identity = parse_json(
+        service.store.get(row['prefix'] + 'data/config_identity.json', service.config.limits.json_bytes)
+    )
+    require(
+        isinstance(identity, dict) and digest(json_bytes(identity)) == report.config.identity_sha256,
+        'stored_digest_mismatch',
+    )
+    identity = cast(dict, identity)
+    default = identity.get('instructions', {}).get('sha256') == digest(DEFAULT_TASK_INSTRUCTIONS.encode())
+    return {
+        'auth_mode': identity.get('auth_mode'),
+        'setup_script': identity.get('setup') is not None,
+        'instructions_default': default,
+        'instructions_text': DEFAULT_TASK_INSTRUCTIONS if default else None,
+        'env_count': len(identity['env']) if isinstance(identity.get('env'), dict) else None,
+    }

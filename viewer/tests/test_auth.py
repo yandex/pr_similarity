@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -50,7 +51,7 @@ def test_v1_migration_keeps_accounts_and_rejects_newer_database(tmp_path: Path) 
     runtime = tmp_path / 'runtime'
     runtime.mkdir()
     encoded = password_hash('secret')
-    with sqlite3.connect(runtime / 'viewer.sqlite') as db:
+    with closing(sqlite3.connect(runtime / 'viewer.sqlite')) as db, db:
         db.execute('CREATE TABLE users(login TEXT PRIMARY KEY,password TEXT NOT NULL,enabled INTEGER NOT NULL)')
         db.execute('INSERT INTO users VALUES (?,?,1)', ('Alice', encoded))
         db.execute('PRAGMA user_version=1')
@@ -60,11 +61,11 @@ def test_v1_migration_keeps_accounts_and_rejects_newer_database(tmp_path: Path) 
     assert db.connection.execute('SELECT password FROM users').fetchone()[0] == encoded
     assert list(runtime.glob('viewer-v1-backup-*.sqlite'))
     db.close()
-    with sqlite3.connect(runtime / 'viewer.sqlite') as future:
+    with closing(sqlite3.connect(runtime / 'viewer.sqlite')) as future, future:
         future.execute('PRAGMA user_version=3')
     with pytest.raises(ViewerError, match='newer'):
         Database(runtime)
-    with sqlite3.connect(runtime / 'viewer.sqlite') as future:
+    with closing(sqlite3.connect(runtime / 'viewer.sqlite')) as future, future:
         assert future.execute('PRAGMA user_version').fetchone()[0] == 3
 
 
@@ -387,7 +388,7 @@ def test_local_role_change_revokes_credentials_issued_during_verification(client
             attempting.set()
             other.set_role('operator', 'user')
             changed.set()
-        except Exception as error:
+        except (AssertionError, sqlite3.Error, ViewerError) as error:
             failures.append(error)
 
     thread = threading.Thread(target=demote)

@@ -109,6 +109,22 @@ def _raise_git_error(stderr: bytes, host_fetch: bool) -> None:
     )
 
 
+def _reap_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate the owned group even if only a credential helper retains its pipes."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate()
+
+
 def run_git(
     arguments: list[str],
     *,
@@ -120,7 +136,27 @@ def run_git(
     host_fetch: bool = False,
     monitor: Callable[[], None] | None = None,
 ) -> bytes:
-    """Reap an entire owned process group on timeout/cancellation."""
+    """Run Git and reap its process group if execution does not complete successfully.
+
+    Args:
+        arguments: Git subcommand and arguments, excluding the executable.
+        cwd: Working directory; None inherits the caller's directory.
+        timeout: Command timeout in seconds, also used for host credential discovery.
+        stop: Optional cancellation signal checked before and during execution.
+        accepted: Exit codes whose stdout is returned as a successful result.
+        input_bytes: Optional stdin bytes; None supplies an empty input stream.
+        host_fetch: Enable host credential-helper discovery for remote Git access.
+        monitor: Optional observer called while waiting and after completion;
+            its failures propagate after process-group cleanup.
+
+    Returns:
+        Captured standard output bytes for an accepted exit code.
+
+    Raises:
+        BenchmarkError: If credentials, process startup or Git fail, or execution
+            exceeds its timeout or is cancelled.
+
+    """
     if stop is not None and stop.is_set():
         raise BenchmarkError('operation_cancelled', 'Git preparation was cancelled.', exit_code=130)
     environment = git_environment()
@@ -159,6 +195,7 @@ def run_git(
         raise BenchmarkError(
             'git_unavailable', 'Cannot start Git; install it and check the configured paths.', exit_code=1
         ) from exc
+    completed = False
     deadline = time.monotonic() + timeout
     try:
         while True:
@@ -179,23 +216,11 @@ def run_git(
                 continue
         if process.returncode not in accepted:
             _raise_git_error(stderr, host_fetch)
+        completed = True
         return stdout
-    except BaseException:
-        # The leader can exit while a credential helper still owns its pipe.
-        # Reap the whole group even when poll() already reports the leader's exit.
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            process.communicate(timeout=2)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.communicate()
-        raise
+    finally:
+        if not completed:
+            _reap_process_group(process)
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ from benchmark.errors import BenchmarkError
 from benchmark.execution.cancellation import cancellable, check_cancelled
 from benchmark.execution.process import run_process
 from benchmark.execution.python_runtime import PythonRuntime
+from benchmark.json_types import JsonObject
 from benchmark.models.runtime import ProvisioningReceipt
 from benchmark.persistence.storage import bytes_sha256, file_lock, read_json, write_json
 from benchmark.vcs.git import git_environment
@@ -47,7 +48,7 @@ def select_asset() -> tuple[str, str]:
 
 async def _download(
     tag: str, asset_name: str, destination: Path, timeout: int, supplied: httpx.AsyncClient | None
-) -> dict:
+) -> JsonObject:
     """Download an official asset into private cache staging."""
     client = supplied or httpx.AsyncClient(
         follow_redirects=True, timeout=timeout, headers={'User-Agent': 'pr-similarity-os-benchmark'}

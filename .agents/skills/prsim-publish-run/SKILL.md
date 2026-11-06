@@ -8,20 +8,23 @@ description: Use when publishing a requested PR Similarity run to an HTTPS viewe
 Read root/benchmark AGENTS.md, the [publication guide](../../../benchmark/docs/publication.md#publish-to-a-leaderboard)
 and [viewer guide](../../../viewer/docs/leaderboard.md#use-the-leaderboard). Use benchmark's
 `.venv` and Make interface. Resolve the exact stopped run and HTTPS origin;
-validate current registry/state and complete native evidence first.
+validate current registry/state, selected results and every referenced artifact first.
 Preserve archived basket bytes and hashes. Follow the
 [saved-data compatibility note](../../../README.md#reading-data-from-earlier-releases).
 Check
 coverage and omissions as well as task identity: collector omissions are not
 failed agent attempts. Confirm the viewer uses the same current contracts.
 
-A completed run or successful final retry does not prove that its registered
-history is complete. After a quota-stop crash, a historical attempt with only a
-seal and failed host scoring remains incomplete even if a later attempt succeeded.
-The publication dry-run must reject that missing evidence; do not discard history
-or fabricate an outcome to make it pass. Report the completeness failure separately
-from quota availability and current task scores. See
-[quota-stopped results](../../../benchmark/docs/results.md#quota-stopped-runs).
+A completed final retry does not prove complete history. Resume first adopts valid
+saved native facts and records unfinished historical attempts in interruption.json.
+State v3 can publish that history when a later state-selected attempt satisfies the
+normal publication contract. Never discard attempts, renumber them or fabricate
+seal/outcome files. Missing committed artifacts, foreign references and damaged
+hashes remain errors; unknown historical usage stays incomplete in all-attempt costs.
+Older unfinished history needs an authorized resume before dry-run. Completed tasks
+are reused without model calls; unfinished tasks can still require new attempts.
+Upgrade the viewer before uploading state-v3 archives. See
+[publishing after an interruption](../../../benchmark/docs/publication.md#publish-after-an-interrupted-attempt).
 
 Diagnosis, config preparation and dry-run do not authorize upload. An explicit
 publication request authorizes that upload without repeated confirmation.

@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import sys
+import time
 import traceback
 from datetime import UTC, datetime
 from pathlib import Path
@@ -110,9 +111,11 @@ def friendly_error(error: BaseException) -> str:
 class _RedactedFormatter(logging.Formatter):
     """Keep configured environment credentials and credential-bearing URLs out of logs."""
 
+    converter = time.gmtime
+
     def __init__(self, secret_names: list[str]) -> None:
         """Capture known secrets in memory only, without saving their names or values."""
-        super().__init__('%(asctime)s %(levelname)s %(name)s: %(message)s')
+        super().__init__('%(asctime)sZ %(levelname)s %(name)s: %(message)s')
         self.secrets = [os.environ[name] for name in secret_names if os.environ.get(name)]
 
     def format(self, record: logging.LogRecord) -> str:

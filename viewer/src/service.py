@@ -6,71 +6,39 @@ import shutil
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import TypedDict, Unpack
 
+from viewer.catalogue import CatalogueBuilder, CatalogueSnapshot, ScanStore
 from viewer.config import Config
 from viewer.errors import StorageError, ViewerError
+from viewer.maintenance import Maintenance
 from viewer.models import Basket, Report
-from viewer.models.evidence import ArtifactReceipt
-from viewer.models.report import ReportAgent, ReportBasket, ReportInference, ReportRun
-from viewer.persistence.database import LOGIN, Actor, Database
+from viewer.persistence.database import Actor, Database
 from viewer.persistence.storage import Store, StoredBody
-from viewer.presentation.cost_summary import CostEvidenceError
 from viewer.presentation.inference import public_inference
 from viewer.presentation.metrics import (
     STATUSES,
     aggregate,
-    aggregate_snapshot,
     tag_groups,
 )
-from viewer.presentation.run_projection import basket_metadata, projection, wall_time
-from viewer.presentation.task_measurements import (
-    TaskMeasurements,
-    build_task_measurements,
-)
+from viewer.publication import CatalogueEntry, PublicationReader, StagedPublication
 from viewer.util import (
     JsonValue,
     digest,
     json_bytes,
     parse_json,
-    safe_path,
     utc_now,
-    utc_timestamp,
 )
 from viewer.validation.archive import ImportedRun
-from viewer.validation.basket import validate_basket, validate_basket_report
 from viewer.validation.contracts import (
     require,
     validate_report,
-    validate_selected_state,
 )
-
-
-@dataclass
-class CachedReport:
-    """Retain catalogue metadata without retaining task evidence."""
-
-    run: ReportRun
-    agent: ReportAgent
-    basket: ReportBasket
-    inference: ReportInference
-
-
-class CatalogueEntry(TypedDict):
-    """Describe the bounded cache assembled from validated stored documents."""
-
-    marker: dict
-    report: CachedReport
-    auth_mode: str | None
-    basket: dict
-    wall_time_seconds: float | None
-    benchmark: dict | None
-    prefix: str
-    aggregates: dict[int, dict]
-    measurements: dict[str, TaskMeasurements]
 
 
 class MetricSelection(TypedDict, total=False):
@@ -84,24 +52,160 @@ class MetricSelection(TypedDict, total=False):
 class ViewerService:
     """Own catalogue snapshots and durable publication operations."""
 
-    def __init__(self, config: Config, store: Store, db: Database) -> None:
-        """Initialize the resources and limits owned by this instance."""
+    def __init__(self, config: Config, store: Store, db: Database, *, initialize: bool = True) -> None:
+        """Prepare catalogue state, publication locks and maintenance recovery."""
         self.config, self.store, self.db = config, store, db
         self.lock = threading.RLock()
-        self.runs: dict[str, CatalogueEntry] = {}
-        self.metadata: dict[str, dict] = {}
-        self.order: list[str] = []
-        self.display: dict[str, dict] = {}
-        self.last_refresh = None
-        self.quarantined = {}
-        self._persisted_order = []
-        self._persisted_display = {}
+        self.db.lock = self.lock
+        self.write_lock = threading.RLock()
+        self._write_depth = 0
+        self._write_epoch = 0
+        self.maintenance = Maintenance(
+            self._recover_or_initialize,
+            config.recovery_retry_seconds,
+            config.recovery_attempts,
+            self.refresh_once,
+        )
+        self._background_started = False
+        self.snapshot = CatalogueSnapshot()
         self.staging = config.runtime / 'staging'
         self.staging.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with self.lock:
+        self.startup = {'status': 'starting', 'phase': 'recovery', 'error_code': None}
+        if initialize:
+            self.initialize()
+
+    def initialize(self) -> None:
+        """Recover and validate before exposing a ready catalogue."""
+        try:
+            with self.lock:
+                self.startup = {'status': 'starting', 'phase': 'recovery', 'error_code': None}
+                self.recover()
+                self.cleanup_staging()
+                self.startup = {'status': 'starting', 'phase': 'catalogue', 'error_code': None}
+                self.refresh()
+                self.startup = {'status': 'ready', 'phase': 'ready', 'error_code': None}
+        except Exception as error:
+            self.startup = {
+                **self.startup,
+                'status': 'failed',
+                'error_code': getattr(error, 'code', 'startup_failed'),
+            }
+            raise
+
+    def _recover_or_initialize(self) -> None:
+        """Retry startup validation or recover an already initialized service."""
+        if self.startup['status'] != 'ready':
+            self.initialize()
+        else:
             self.recover()
-            self.cleanup_staging()
-            self.refresh()
+
+    @property
+    def runs(self) -> dict[str, CatalogueEntry]:
+        """Return run entries from the current coherent snapshot."""
+        return self.snapshot.runs
+
+    @property
+    def metadata(self) -> dict[str, dict]:
+        """Return display metadata from the current snapshot."""
+        return self.snapshot.metadata
+
+    @property
+    def order(self) -> list[str]:
+        """Return active basket order from the current snapshot."""
+        return self.snapshot.order
+
+    @property
+    def display(self) -> dict[str, dict[str, bool]]:
+        """Return active basket visibility flags from the current snapshot."""
+        return self.snapshot.display
+
+    @property
+    def quarantined(self) -> dict[str, dict]:
+        """Return publications excluded during catalogue validation."""
+        return self.snapshot.quarantined
+
+    @property
+    def last_refresh(self) -> str | None:
+        """Return the timestamp of the last installed full scan."""
+        return self.snapshot.last_refresh
+
+    @property
+    def _persisted_order(self) -> list[str]:
+        """Return stored ordering including quarantined baskets."""
+        return self.snapshot.persisted_order
+
+    @property
+    def _persisted_display(self) -> dict[str, dict[str, bool]]:
+        """Return stored flags including quarantined baskets."""
+        return self.snapshot.persisted_display
+
+    def start_background(self) -> None:
+        """Start one worker, including deferred startup when used by the CLI."""
+        with self.lock:
+            self._background_started = True
+            if self.startup['status'] != 'ready' or self.db.operations():
+                self.maintenance.request_recovery()
+            self.maintenance.start()
+
+    def close(self, timeout: float | None = None) -> bool:
+        """Report whether workers stopped; callers must retain SQLite if not."""
+        budget = self.config.shutdown_seconds if timeout is None else timeout
+        deadline = time.monotonic() + budget
+        self.maintenance.close(timeout=budget)
+        acquired = self.write_lock.acquire(timeout=max(0, deadline - time.monotonic()))
+        if acquired:
+            self.write_lock.release()
+        readers_stopped = self.lock.acquire(timeout=max(0, deadline - time.monotonic()))
+        if readers_stopped:
+            self.lock.release()
+        workers_stopped = self.maintenance.close(timeout=max(0, deadline - time.monotonic()))
+        return acquired and readers_stopped and workers_stopped
+
+    @contextmanager
+    def _writer(self) -> Iterator[None]:
+        """Serialize writers while letting unrelated readers use the last snapshot."""
+        with self.write_lock:
+            with self.lock:
+                self._write_depth += 1
+                self._write_epoch += 1
+            try:
+                yield
+            finally:
+                with self.lock:
+                    self._write_depth -= 1
+
+    def check_write_admission(self) -> None:
+        """Reject writes during shutdown or pending journal recovery."""
+        with self.lock:
+            if self.maintenance.stopping:
+                raise ViewerError('service_stopping', 'Service is stopping.', 503)
+            if self.db.operations():
+                raise ViewerError('recovery_pending', 'Pending recovery; retry after it completes.', 503)
+
+    @contextmanager
+    def mutation(self) -> Iterator[None]:
+        """Admit one storage writer without retaining the shared catalogue lock."""
+        with self._writer():
+            self.check_write_admission()
+            try:
+                yield
+            finally:
+                with self.lock:
+                    if self._background_started and self.db.operations():
+                        self.maintenance.request_recovery()
+
+    def busy_runs(self) -> set[str]:
+        """Return only publication IDs whose files may currently be changing."""
+        return {
+            op['prefix'].rstrip('/').rsplit('/', 1)[-1]
+            for op in self.db.operations().values()
+            if op.get('prefix', '').startswith('runs/')
+        }
+
+    def _require_available(self, rid: str) -> None:
+        """Never mix a cached row with files from an unfinished publication."""
+        if rid in self.busy_runs():
+            raise ViewerError('run_updating', 'Run is being updated; retry after recovery.', 503)
 
     def _json(self, key: str, default: JsonValue = None) -> JsonValue:
         """Read a stored JSON document or copy the caller default when absent."""
@@ -119,253 +223,128 @@ class ViewerService:
         assert isinstance(value, dict)
         return value
 
-    def _validate_metadata(self, value: dict) -> None:
-        """Validate the persisted run display metadata."""
-        require(isinstance(value, dict), 'invalid_metadata')
-        for rid, row in value.items():
-            require(isinstance(rid, str) and isinstance(row, dict), 'invalid_metadata')
-            require(set(row) == {'display_name', 'tags', 'pinned', 'created_at'}, 'invalid_metadata')
-            self.validate_patch({k: row[k] for k in ('display_name', 'tags')})
-            require(type(row['pinned']) is bool, 'invalid_metadata')
-            utc_timestamp(row['created_at'])
+    def _builder(self) -> CatalogueBuilder:
+        """Copy SQLite ownership under the service lock; builders never retain it."""
+        with self.lock:
+            owners = {
+                row['run_id']: {'login': row['login'], 'basket_hash': row['basket_hash']}
+                for row in self.db.connection.execute('SELECT run_id,login,basket_hash FROM owners')
+            }
+            return CatalogueBuilder(self.config, ScanStore(self.store, self.maintenance.stop), owners)
 
     def _marker(self, key: str) -> CatalogueEntry:
-        """Validate a publication marker and its bound stored documents."""
-        marker = self._object(key, code='invalid_publication')
-        require(isinstance(marker, dict), 'invalid_publication')
-        assert isinstance(marker, dict)
-        expected = {
-            'version',
-            'owner',
-            'run_id',
-            'basket_sha256',
-            'report_sha256',
-            'archive_sha256',
-            'archive_size',
-            'published_at',
-            'operation_id',
-            'inventory',
-        }
-        require(
-            set(marker) == expected and type(marker['version']) is int and marker['version'] == 1, 'invalid_publication'
-        )
-        utc_timestamp(marker['published_at'])
-        require(isinstance(marker['owner'], str) and LOGIN.fullmatch(marker['owner']), 'invalid_publication')
-        try:
-            require(str(uuid.UUID(marker['run_id'])) == marker['run_id'])
-        except (ValueError, TypeError, AttributeError):
-            raise ViewerError('invalid_publication', 'Invalid stored run identity.') from None
-        prefix = 'runs/' + marker['owner'] + '/' + marker['run_id'] + '/'
-        require(key == prefix + 'publication.json', 'invalid_publication')
-        for name in ('basket_sha256', 'report_sha256', 'archive_sha256'):
-            require(
-                isinstance(marker[name], str)
-                and len(marker[name]) == 64
-                and all(c in '0123456789abcdef' for c in marker[name]),
-                'invalid_publication',
-            )
-        require(type(marker['archive_size']) is int and 0 <= marker['archive_size'] <= self.config.limits.archive_bytes)
-        require(isinstance(marker['inventory'], list) and len(marker['inventory']) <= self.config.limits.files)
-        for entry in marker['inventory']:
-            require(isinstance(entry, dict) and set(entry) == {'path', 'size_bytes', 'sha256'})
-            safe_path(entry['path'], self.config.limits.path_bytes)
-            require(type(entry['size_bytes']) is int and 0 <= entry['size_bytes'] <= self.config.limits.file_bytes)
-            require(
-                isinstance(entry['sha256'], str)
-                and len(entry['sha256']) == 64
-                and all(c in '0123456789abcdef' for c in entry['sha256'])
-            )
-        require(len({entry['path'] for entry in marker['inventory']}) == len(marker['inventory']))
-        report_bytes = self.store.get(prefix + 'data/report.json', self.config.limits.json_bytes)
-        basket_bytes = self.store.get(prefix + 'data/basket.json', self.config.limits.json_bytes)
-        require(
-            digest(report_bytes) == marker['report_sha256'] and digest(basket_bytes) == marker['basket_sha256'],
-            'stored_digest_mismatch',
-        )
-        report = validate_report(parse_json(report_bytes))
-        basket = validate_basket(parse_json(basket_bytes))
-        validate_basket_report(basket, report)
-        require(report.inference is not None, 'invalid_report')
-        try:
-            public_inference(report.inference)
-        except ValueError:
-            raise ViewerError('invalid_report', 'Unsupported or invalid inference contract.') from None
-        self._display_limits(report, basket)
-        require(report.run.id == marker['run_id'] and report.basket.sha256 == marker['basket_sha256'])
-        require([t.id for t in report.tasks] == [t.id for t in basket.tasks])
-        inventory = {entry['path']: ArtifactReceipt.model_validate(entry) for entry in marker['inventory']}
-
-        def read_evidence(path: str) -> bytes:
-            """Read only inventory-owned evidence through the configured size limit."""
-            require(path in inventory, 'invalid_publication')
-            return self.store.get(prefix + 'data/' + path, self.config.limits.json_bytes)
-
-        evidence = validate_selected_state(report, basket, inventory, read_evidence)
-        try:
-            measurements = build_task_measurements(evidence, report)
-        except CostEvidenceError as error:
-            raise ViewerError(error.code, error.message) from error
-        return {
-            'marker': {k: v for k, v in marker.items() if k != 'inventory'},
-            'report': CachedReport(report.run, report.agent, report.basket, report.inference),
-            'auth_mode': self._auth_mode(prefix, report),
-            'basket': {'meta': basket_metadata(basket)},
-            'wall_time_seconds': wall_time(report.run),
-            'benchmark': self._benchmark_metadata(prefix, report),
-            'prefix': prefix,
-            'aggregates': aggregate_snapshot(report.tasks, measurements),
-            'measurements': measurements,
-        }
-
-    def _auth_mode(self, prefix: str, report: Report) -> str | None:
-        """Read only a verified allowlisted access mode, without retaining private config."""
-        ref = report.config
-        if ref.identity_version != 1 or ref.identity_path != 'config_identity.json':
-            return None
-        try:
-            identity = self._json(prefix + 'data/config_identity.json')
-        except ViewerError as error:
-            if error.status == 413:
-                return None
-            raise
-        if identity is None:
-            return None
-        require(
-            isinstance(identity, dict) and digest(json_bytes(identity)) == ref.identity_sha256,
-            'stored_digest_mismatch',
-        )
-        assert isinstance(identity, dict)
-        mode = identity.get('auth_mode')
-        return mode if isinstance(mode, str) and mode in ('api_key', 'chatgpt_oauth') else None
-
-    def _benchmark_metadata(self, prefix: str, report: Report) -> dict | None:
-        """Cache only verified frozen harness controls, without retaining raw config."""
-        identity = self._json(prefix + 'data/config_identity.json')
-        require(
-            isinstance(identity, dict) and digest(json_bytes(identity)) == report.config.identity_sha256,
-            'stored_digest_mismatch',
-        )
-        assert isinstance(identity, dict)
-        try:
-            return projection(identity, self.config.limits)
-        except ValueError:
-            return None
+        """Validate one stored publication and its bound evidence."""
+        return PublicationReader(self.config, self.store)._marker(key)
 
     def _scan_publications(self) -> tuple[dict[str, CatalogueEntry], dict[str, dict], set[str]]:
-        """Read publication markers and quarantine invalid records without replacing caches."""
-        runs = {}
-        quarantined = {}
-        protected_hashes = set()
-        for key in self.store.list('runs/'):
-            if not key.endswith('/publication.json'):
-                continue
-            try:
-                row = self._marker(key)
-            except ViewerError as error:
-                if error.code not in (
-                    'invalid_report',
-                    'invalid_basket',
-                    'invalid_contract',
-                    'invalid_public_artifact',
-                ):
-                    raise
-                parts = key.split('/')
-                require(len(parts) == 4 and parts[0] == 'runs' and LOGIN.fullmatch(parts[1]), 'invalid_publication')
-                try:
-                    rid = str(uuid.UUID(parts[2]))
-                    require(rid == parts[2], 'invalid_publication')
-                except (ValueError, TypeError, AttributeError):
-                    raise ViewerError('invalid_publication', 'Invalid stored run identity.') from None
-                marker = self._object(key, code='invalid_publication')
-                require(isinstance(marker, dict), 'invalid_publication')
-                assert isinstance(marker, dict)
-                basket_hash = marker.get('basket_sha256')
-                if isinstance(basket_hash, str) and re.fullmatch(r'[0-9a-f]{64}', basket_hash):
-                    protected_hashes.add(basket_hash)
-                quarantined[rid] = {
-                    'code': error.code,
-                    'prefix': '/'.join(parts[:3]) + '/',
-                    'basket_hash': basket_hash,
-                }
-                continue
-            rid = row['marker']['run_id']
-            require(rid not in runs, 'duplicate_run')
-            owner = self.db.owner(rid)
-            require(
-                owner is None
-                or owner == {'login': row['marker']['owner'], 'basket_hash': row['marker']['basket_sha256']},
-                'owner_conflict',
-            )
-            runs[rid] = row
-        return runs, quarantined, protected_hashes
+        """Scan stored publications using copied ownership bindings."""
+        return self._builder()._scan_publications()
 
     def refresh(self, *, persist: bool = True, _recover: bool = True) -> dict[str, int]:
-        """Refresh the catalogue while retaining the previous snapshot on failure."""
-        with self.lock:
-            # Recover pending writes first; refresh never promotes their partial prefixes.
+        """Rebuild a complete catalogue synchronously for startup and offline callers."""
+        with self._writer():
             if _recover and self.db.operations():
                 self.recover()
-            runs, quarantined, protected_hashes = self._scan_publications()
-            metadata = self._object('settings/viewer-metadata.json', {}, code='invalid_metadata')
-            self._validate_metadata(metadata)
-            assert isinstance(metadata, dict)
-            metadata = {rid: row for rid, row in metadata.items() if rid in runs or rid in quarantined}
-            for rid, row in runs.items():
-                metadata.setdefault(
-                    rid,
-                    {
-                        'display_name': row['report'].agent.name,
-                        'tags': row['report'].run.tags,
-                        'pinned': False,
-                        'created_at': row['report'].run.created_at,
-                    },
-                )
-            self._validate_metadata(metadata)
-            order = self._json('settings/basket-order.json', [])
-            require(
-                isinstance(order, list) and all(isinstance(x, str) for x in order) and len(set(order)) == len(order),
-                'invalid_basket_order',
-            )
-            assert isinstance(order, list)
-            order = [item for item in order if isinstance(item, str)]
-            hashes = {row['marker']['basket_sha256'] for row in runs.values()}
-            stored_order = [h for h in order if h in hashes or h in protected_hashes]
-            order = [h for h in stored_order if h in hashes]
-            first = {
-                h: min(row['marker']['published_at'] for row in runs.values() if row['marker']['basket_sha256'] == h)
-                for h in hashes
-            }
-            order += sorted(hashes - set(order), key=lambda basket_hash: (first[basket_hash], basket_hash))
-            stored_display = self._object(
-                'settings/basket-display.json', {'version': 1, 'items': {}}, code='invalid_basket_display'
-            )
-            require(
-                isinstance(stored_display, dict)
-                and set(stored_display) == {'version', 'items'}
-                and type(stored_display['version']) is int
-                and stored_display['version'] == 1,
-                'invalid_basket_display',
-            )
-            assert isinstance(stored_display, dict)
-            self._validate_display(stored_display['items'])
-            display = {h: stored_display['items'].get(h, {'hidden': False, 'collapsed': False}) for h in order}
-            persisted_order = stored_order + [h for h in order if h not in stored_order]
-            persisted_display = {
-                h: stored_display['items'].get(h, {'hidden': False, 'collapsed': False}) for h in persisted_order
-            }
+            candidate = self._builder().build()
             if persist:
-                self.store.put('settings/viewer-metadata.json', json_bytes(metadata))
-                self.store.put('settings/basket-order.json', json_bytes(persisted_order))
-                self.store.put('settings/basket-display.json', json_bytes({'version': 1, 'items': persisted_display}))
-            for rid, row in runs.items():
+                self.store.put('settings/viewer-metadata.json', json_bytes(candidate.metadata))
+                self.store.put('settings/basket-order.json', json_bytes(candidate.persisted_order))
+                self.store.put(
+                    'settings/basket-display.json',
+                    json_bytes({'version': 1, 'items': candidate.persisted_display}),
+                )
+            self._install_snapshot(candidate)
+            return candidate.counts()
+
+    def _install_snapshot(self, candidate: CatalogueSnapshot) -> None:
+        """Reserve owners before replacing the only visible catalogue reference."""
+        with self.lock:
+            for rid, row in candidate.runs.items():
                 self.db.reserve_owner(rid, row['marker']['owner'], row['marker']['basket_sha256'])
-            self.runs, self.metadata, self.order = runs, metadata, order
-            self.display = deepcopy(display)
-            self.quarantined = quarantined
-            self.last_refresh = utc_now(self.db.clock())
-            self._persisted_order = list(persisted_order)
-            self._persisted_display = deepcopy(persisted_display)
-            return {'runs': len(runs), 'baskets': len(order), 'quarantined': len(quarantined)}
+            self.snapshot = replace(candidate, revision=self.snapshot.revision + 1)
+
+    def request_refresh(self) -> dict:
+        """Accept a refresh request, including an explicit retry of failed recovery."""
+        with self.lock:
+            if self.startup['status'] != 'ready' or self.db.operations():
+                self.maintenance.request_recovery()
+            return self.maintenance.request_refresh()
+
+    def refresh_once(self) -> bool:
+        """Build outside the service lock and reject snapshots invalidated by writes."""
+        with self.lock:
+            if self._write_depth or self.db.operations() or self.maintenance.stop.is_set():
+                return False
+            revision = (self.snapshot.revision, self._write_epoch)
+            builder = self._builder()
+            builder.store = ScanStore(self.store, self.maintenance.stop)
+        try:
+            candidate = builder.build()
+        except (ViewerError, OSError):
+            with self.lock:
+                if (
+                    self.maintenance.stop.is_set()
+                    or self._write_depth
+                    or self.db.operations()
+                    or revision != (self.snapshot.revision, self._write_epoch)
+                ):
+                    return False
+            raise
+        with self.lock:
+            if (
+                self.maintenance.stop.is_set()
+                or self._write_depth
+                or self.db.operations()
+                or revision != (self.snapshot.revision, self._write_epoch)
+            ):
+                return False
+            self._install_snapshot(candidate)
+            return True
+
+    def _prepare_operation(self, op: dict, row: CatalogueEntry | None = None) -> dict:
+        """Build a local catalogue change without exposing uncommitted state."""
+        runs = {rid: entry for rid, entry in self.runs.items() if entry['prefix'] != op['prefix']}
+        quarantined = {rid: entry for rid, entry in self.quarantined.items() if entry['prefix'] != op['prefix']}
+        if row is not None:
+            rid = row['marker']['run_id']
+            self.db.reserve_owner(rid, row['marker']['owner'], row['marker']['basket_sha256'])
+            runs[rid] = row
+        stored = self._object(
+            'settings/basket-display.json', {'version': 1, 'items': {}}, code='invalid_basket_display'
+        )
+        require(
+            set(stored) == {'version', 'items'} and type(stored['version']) is int and stored['version'] == 1,
+            'invalid_basket_display',
+        )
+        self._validate_display(stored['items'])
+        hashes = {entry['marker']['basket_sha256'] for entry in runs.values()}
+        order = [h for h in op['order'] if h in hashes]
+        persisted = {h: deepcopy(stored['items'].get(h, {'hidden': False, 'collapsed': False})) for h in op['order']}
+        return dict(
+            runs=runs,
+            metadata=deepcopy(op['metadata']),
+            order=order,
+            display={h: persisted[h] for h in order},
+            quarantined=quarantined,
+            _persisted_order=list(op['order']),
+            _persisted_display=persisted,
+        )
+
+    def _install_operation(self, state: dict) -> None:
+        """Expose one coherent prepared change after receipt persistence."""
+        with self.lock:
+            fields = {
+                name.removeprefix('_') if name.startswith('_persisted') else name: value
+                for name, value in state.items()
+            }
+            self.snapshot = replace(self.snapshot, **fields, revision=self.snapshot.revision + 1)
+
+    def _complete_operation(self, op_id: str, state: dict, publication: dict | None = None) -> None:
+        """Commit the durable result and visible version within one reader exclusion."""
+        op = publication or {}
+        with self.lock:
+            self.db.finish_operation(op_id, op.get('owner'), op.get('key'), op.get('fingerprint'), op.get('receipt'))
+            self._install_operation(state)
 
     def _preserved_order(self, order: list[str]) -> list[str]:
         """Retain quarantined baskets in durable order during valid owner operations."""
@@ -385,7 +364,7 @@ class ViewerService:
 
     def cleanup_staging(self) -> None:
         # Only our reserved upload/op directory names; never follow symlinks.
-        """Remove abandoned staging directories after their retention deadline."""
+        """Remove unreferenced owned staging directories without following symlinks."""
         referenced = {op.get('staging') for op in self.db.operations().values()}
         for child in self.staging.iterdir():
             owned = bool(re.fullmatch(r'upload-[a-z0-9_]{8}', child.name))
@@ -398,27 +377,107 @@ class ViewerService:
 
     def recover(self) -> None:
         """Replay pending durable operations before exposing the refreshed catalogue."""
-        deadline = time.monotonic() + self.config.limits.transfer_seconds
-        for op_id, value in self.db.operations().items():
-            self._execute(op_id, value, deadline=deadline)
+        with self._writer():
+            deadline = time.monotonic() + self.config.limits.transfer_seconds
+            for op_id, value in self.db.operations().items():
+                self._execute(op_id, value, deadline=deadline)
 
-    def _execute(self, op_id: str, op: dict, *, deadline: float | None = None) -> None:
+    def _execute_settings(self, op_id: str, op: dict, budget: Callable[[], None]) -> None:
+        """Persist layout settings before completing the journal and snapshot."""
+        budget()
+        self.store.put('settings/basket-order.json', json_bytes(op['order']))
+        budget()
+        self.store.put('settings/basket-display.json', json_bytes({'version': 1, 'items': op['display']}))
+        hashes = {entry['marker']['basket_sha256'] for entry in self.runs.values()}
+        order = [h for h in op['order'] if h in hashes]
+        state = dict(
+            order=order,
+            display={h: deepcopy(op['display'][h]) for h in order},
+            _persisted_order=list(op['order']),
+            _persisted_display=deepcopy(op['display']),
+        )
+        self._complete_operation(op_id, state)
+
+    def _rollback_publication(self, op_id: str, op: dict, budget: Callable[[], None]) -> None:
+        """Restore the backed-up publication when an incomplete upload loses staging."""
+        prefix = op['prefix']
+        for key in list(self.store.list(prefix)):
+            budget()
+            self.store.delete(key)
+        for old in op['old_keys']:
+            budget()
+            self.store.copy(op['trash'] + old[len(prefix) :], old)
+        self.store.put('settings/viewer-metadata.json', json_bytes(op['previous_metadata']))
+        self.store.put('settings/basket-order.json', json_bytes(op['previous_order']))
+        row = self._marker(prefix + 'publication.json') if self._json(prefix + 'publication.json') else None
+        state = self._prepare_operation({**op, 'metadata': op['previous_metadata'], 'order': op['previous_order']}, row)
+        self._complete_operation(op_id, state)
+
+    def _install_publication(
+        self,
+        op_id: str,
+        op: dict,
+        budget: Callable[[], None],
+        deadline: float | None,
+    ) -> None:
+        """Resume file installation and write the marker after all evidence is durable."""
+        prefix = op['prefix']
+        root = Path(op['staging'])
+        if not self.db.progress(op_id, 'archive'):
+            budget()
+            self.store.put_file(prefix + 'archive.tar.gz', root / 'archive.tar.gz', deadline=deadline)
+            self.db.set_progress(op_id, 'archive', 1)
+        start = self.db.progress(op_id, 'files')
+        for index, entry in enumerate(op['marker']['inventory'][start:], start + 1):
+            budget()
+            self.store.put_file(prefix + 'data/' + entry['path'], root / 'data' / entry['path'], deadline=deadline)
+            self.db.set_progress(op_id, 'files', index)
+        budget()
+        self.store.put(prefix + 'publication.json', json_bytes(op['marker']))
+
+    def _publication_source(self, op_id: str, op: dict) -> StagedPublication:
+        """Resolve each recovery input from durable transfer progress or the completed marker."""
+        published = op['phase'] == 'published'
+        return StagedPublication(
+            op,
+            self.store,
+            self.config.limits.path_bytes,
+            installed_files=len(op['marker']['inventory']) if published else self.db.progress(op_id, 'files'),
+            installed_archive=published or bool(self.db.progress(op_id, 'archive')),
+        )
+
+    def _execute(
+        self,
+        op_id: str,
+        op: dict,
+        *,
+        deadline: float | None = None,
+        prepared_row: CatalogueEntry | None = None,
+    ) -> None:
         """Complete an operation journal while preserving resumable progress."""
 
         def budget() -> None:
             """Reject work after the current transfer deadline."""
+            if self.maintenance.stop.is_set():
+                raise ViewerError('operation_cancelled', 'Operation interrupted by shutdown.', 503)
             if deadline is not None and time.monotonic() > deadline:
                 raise StorageError()
 
         if op['kind'] == 'settings':
-            budget()
-            self.store.put('settings/basket-order.json', json_bytes(op['order']))
-            budget()
-            self.store.put('settings/basket-display.json', json_bytes({'version': 1, 'items': op['display']}))
-            self.refresh(persist=False, _recover=False)
-            self.db.finish_operation(op_id)
+            self._execute_settings(op_id, op, budget)
             return
         prefix = op['prefix']
+        if op['kind'] == 'publish' and op['phase'] in ('backed_up', 'installing'):
+            current = self._json(prefix + 'publication.json')
+            if current and not isinstance(current, dict):
+                raise AttributeError(f"'{type(current).__name__}' object has no attribute 'get'")
+            if isinstance(current, dict) and current.get('operation_id') == op_id:
+                op['phase'] = 'published'
+                self.db.save_operation(op_id, op)
+        staged = self._publication_source(op_id, op) if op['kind'] == 'publish' else None
+        if staged is not None and prepared_row is None and staged.available():
+            staged.validate(budget)
+            prepared_row = PublicationReader(self.config, staged)._marker(prefix + 'publication.json')
         if op['phase'] == 'prepared':
             start = self.db.progress(op_id, 'copied')
             for index, key in enumerate(op['old_keys'][start:], start + 1):
@@ -427,28 +486,15 @@ class ViewerService:
                 self.db.set_progress(op_id, 'copied', index)
             op['phase'] = 'backed_up'
             self.db.save_operation(op_id, op)
-        if op['phase'] in ('backed_up', 'installing') and op['kind'] == 'publish':
-            current = self._json(prefix + 'publication.json')
-            if current and not isinstance(current, dict):
-                raise AttributeError(f"'{type(current).__name__}' object has no attribute 'get'")
-            if isinstance(current, dict) and current.get('operation_id') == op_id:
-                op['phase'] = 'published'
-                self.db.save_operation(op_id, op)
-            elif not (Path(op['staging']) / 'archive.tar.gz').is_file() or not (Path(op['staging']) / 'data').is_dir():
-                for key in list(self.store.list(prefix)):
-                    budget()
-                    self.store.delete(key)
-                for old in op['old_keys']:
-                    budget()
-                    self.store.copy(op['trash'] + old[len(prefix) :], old)
-                self.store.put('settings/viewer-metadata.json', json_bytes(op['previous_metadata']))
-                self.store.put('settings/basket-order.json', json_bytes(op['previous_order']))
-                self.refresh(persist=False, _recover=False)
-                self.db.finish_operation(op_id)
-                return
+        if op['phase'] in ('backed_up', 'installing') and staged is not None and not staged.available():
+            self._rollback_publication(op_id, op, budget)
+            return
         if op['phase'] == 'backed_up':
             # Remove the marker first; partial data cannot become a publication.
-            keys = [prefix + 'publication.json', *[key for key in op['old_keys'] if key != prefix + 'publication.json']]
+            keys = [
+                prefix + 'publication.json',
+                *[key for key in op['old_keys'] if key != prefix + 'publication.json'],
+            ]
             start = self.db.progress(op_id, 'removed')
             for index, key in enumerate(keys[start:], start + 1):
                 budget()
@@ -458,20 +504,7 @@ class ViewerService:
             self.db.save_operation(op_id, op)
         if op['phase'] == 'installing':
             if op['kind'] == 'publish':
-                root = Path(op['staging'])
-                if not self.db.progress(op_id, 'archive'):
-                    budget()
-                    self.store.put_file(prefix + 'archive.tar.gz', root / 'archive.tar.gz', deadline=deadline)
-                    self.db.set_progress(op_id, 'archive', 1)
-                start = self.db.progress(op_id, 'files')
-                for index, entry in enumerate(op['marker']['inventory'][start:], start + 1):
-                    budget()
-                    self.store.put_file(
-                        prefix + 'data/' + entry['path'], root / 'data' / entry['path'], deadline=deadline
-                    )
-                    self.db.set_progress(op_id, 'files', index)
-                budget()
-                self.store.put(prefix + 'publication.json', json_bytes(op['marker']))
+                self._install_publication(op_id, op, budget, deadline)
             op['phase'] = 'published'
             self.db.save_operation(op_id, op)
         if op['phase'] == 'published':
@@ -479,15 +512,19 @@ class ViewerService:
             self.store.put('settings/viewer-metadata.json', json_bytes(op['metadata']))
             budget()
             self.store.put('settings/basket-order.json', json_bytes(op['order']))
-            self.refresh(persist=False, _recover=False)
+            if op['kind'] == 'publish':
+                require(self._object(prefix + 'publication.json') == op['marker'], 'stored_digest_mismatch')
+                if prepared_row is None:
+                    prepared_row = self._marker(prefix + 'publication.json')
+            state = self._prepare_operation(op, prepared_row)
             # Empty baskets leave the active flags as well as the active order.
             budget()
             self.store.put(
                 'settings/basket-display.json',
-                json_bytes({'version': 1, 'items': self._preserved_display(self.display)}),
+                json_bytes({'version': 1, 'items': state['_persisted_display']}),
             )
             budget()
-            self.db.finish_operation(op_id, op.get('owner'), op.get('key'), op.get('fingerprint'), op.get('receipt'))
+            self._complete_operation(op_id, state, op)
             if op.get('staging'):
                 shutil.rmtree(op['staging'], ignore_errors=True)
 
@@ -642,15 +679,12 @@ class ViewerService:
             OSError: If local staging files cannot be created or accessed.
 
         """
-        with self.lock:
+        with self.mutation():
             require(imported.report.inference is not None, 'invalid_report')
             try:
                 public_inference(imported.report.inference)
             except ValueError:
                 raise ViewerError('invalid_report', 'Unsupported or invalid inference contract.') from None
-            if self.db.operations():
-                self.recover()
-                self.refresh()
             self._display_limits(imported.report, imported.basket)
             rid = imported.report.run.id
             basket = imported.report.basket.sha256
@@ -689,6 +723,9 @@ class ViewerService:
 
             op, receipt = self._stage_publication(imported, login, key, rid, basket, fingerprint, op_id, root)
             try:
+                prepared_row = PublicationReader(
+                    self.config, StagedPublication(op, self.store, self.config.limits.path_bytes)
+                )._marker(op['prefix'] + 'publication.json')
                 self.db.begin_publication(op_id, op, grant_token)
             except Exception:
                 try:
@@ -698,7 +735,7 @@ class ViewerService:
                 if not durable:
                     shutil.rmtree(root, ignore_errors=True)
                 raise
-            self._execute(op_id, op, deadline=deadline)
+            self._execute(op_id, op, deadline=deadline, prepared_row=prepared_row)
             return receipt
 
     def delete(self, rid: str, *, actor: Actor | None = None, publication: str | None = None) -> dict:
@@ -709,10 +746,7 @@ class ViewerService:
                 if actor['role'] != 'admin' and row['marker']['owner'] != actor['login']:
                     raise ViewerError('foreign_run', 'Only the owner or an administrator can delete this run.', 403)
                 require(publication is not None, 'invalid_query')
-                self.check_report(rid, publication=publication)
-            if self.db.operations():
-                self.recover()
-                self.refresh()
+        with self.mutation():
             if actor is not None:
                 if rid not in self.runs:
                     return {'run_id': rid, 'deleted': True}
@@ -746,72 +780,41 @@ class ViewerService:
             return {'run_id': rid, 'deleted': True}
 
     def validate_patch(self, patch: dict) -> None:
-        """Validate editable run metadata without changing publication evidence."""
-        limits = self.config.limits
-        require(
-            isinstance(patch, dict) and bool(patch) and not set(patch) - {'display_name', 'tags'}, 'invalid_metadata'
-        )
-        if 'display_name' in patch:
-            require(
-                isinstance(patch['display_name'], str)
-                and bool(patch['display_name'].strip())
-                and len(patch['display_name']) <= limits.name_chars,
-                'invalid_metadata',
-            )
-        if 'tags' in patch:
-            require(
-                isinstance(patch['tags'], list)
-                and len(patch['tags']) <= limits.tags
-                and all(
-                    isinstance(t, str)
-                    and bool(t.strip())
-                    and len(t) <= limits.tag_chars
-                    and all(ord(c) >= 32 and ord(c) != 127 for c in t)
-                    for t in patch['tags']
-                ),
-                'invalid_metadata',
-            )
+        """Validate owner-editable display metadata."""
+        CatalogueBuilder(self.config, self.store, {}).validate_patch(patch)
 
     def patch_metadata(self, rid: str, login: str, patch: dict) -> dict:
         """Apply an owner-authorized display metadata update."""
-        with self.lock:
+        with self.mutation():
             self.require_owner(rid, login)
             self.validate_patch(patch)
             metadata = deepcopy(self.metadata)
             metadata[rid].update(patch)
             self.store.put('settings/viewer-metadata.json', json_bytes(metadata))
-            self.metadata = metadata
+            self._install_operation({'metadata': metadata})
             return {'run_id': rid, **metadata[rid]}
 
     def set_pinned(self, rid: str, pinned: bool) -> dict:
         """Update the administrative pin flag for one run."""
-        with self.lock:
+        with self.mutation():
             self._require_run(rid)
             if type(pinned) is not bool:
                 raise ViewerError('invalid_pinned', 'pinned must be boolean.')
             metadata = deepcopy(self.metadata)
             metadata[rid]['pinned'] = pinned
             self.store.put('settings/viewer-metadata.json', json_bytes(metadata))
-            self.metadata = metadata
+            self._install_operation({'metadata': metadata})
             return {'run_id': rid, 'pinned': pinned}
 
     def set_order(self, order: list[str]) -> dict:
         """Persist the selected basket order."""
-        with self.lock:
+        with self.write_lock:
             self.set_settings(self.settings()['revision'], order, self.display)
             return {'items': list(order)}
 
     def _validate_display(self, display: dict) -> None:
-        """Validate public basket labels and presentation settings."""
-        require(isinstance(display, dict), 'invalid_basket_display')
-        for h, flags in display.items():
-            require(isinstance(h, str) and re.fullmatch(r'[0-9a-f]{64}', h) is not None, 'invalid_basket_display')
-            require(
-                isinstance(flags, dict)
-                and set(flags) == {'hidden', 'collapsed'}
-                and all(type(v) is bool for v in flags.values()),
-                'invalid_basket_display',
-            )
+        """Validate basket visibility settings before persistence."""
+        CatalogueBuilder(self.config, self.store, {})._validate_display(display)
 
     def settings(self) -> dict:
         """Return persisted layout and its optimistic concurrency revision."""
@@ -823,6 +826,11 @@ class ViewerService:
                     'name': next(
                         r['basket']['meta']['name'] for r in self.runs.values() if r['marker']['basket_sha256'] == h
                     ),
+                    'description': next(
+                        r['basket']['meta']['description']
+                        for r in self.runs.values()
+                        if r['marker']['basket_sha256'] == h
+                    ),
                     **self.display[h],
                 }
                 for h in self.order
@@ -831,10 +839,7 @@ class ViewerService:
 
     def set_settings(self, revision: str, order: list[str], display: dict) -> dict:
         """Update layout only when its expected revision still matches."""
-        with self.lock:
-            if self.db.operations():
-                self.recover()
-                self.refresh()
+        with self.mutation():
             if revision != self.settings()['revision']:
                 raise ViewerError('settings_changed', 'Settings changed; reload before saving.', 409)
             require(
@@ -869,12 +874,20 @@ class ViewerService:
             'baskets': len(self.order),
             'users': self.db.connection.execute('SELECT COUNT(*) FROM users').fetchone()[0],
             'last_refresh_at': self.last_refresh,
-            'refresh': 'idle',
+            'refresh': (
+                'running'
+                if self.maintenance.refresh_status()['status'] in ('pending', 'running', 'retrying', 'waiting_recovery')
+                else 'idle'
+            ),
+            'refresh_job': self.maintenance.refresh_status(),
+            'recovery': self.maintenance.status(),
+            'startup': dict(self.startup),
             'quarantined_runs': len(self.quarantined),
         }
 
     def full_report(self, rid: str) -> Report:
         """Load and validate the complete stored report for one run."""
+        self._require_available(rid)
         row = self._require_run(rid)
         content = self.store.get(row['prefix'] + 'data/report.json', self.config.limits.json_bytes)
         require(digest(content) == row['marker']['report_sha256'], 'stored_digest_mismatch')
@@ -883,10 +896,14 @@ class ViewerService:
 
     def check_report(self, rid: str, expected: str | None = None, publication: str | None = None) -> str:
         """Verify requested report and publication identities before reading evidence."""
+        self._require_available(rid)
         row = self._require_run(rid)
         for value, key in ((expected, 'report_sha256'), (publication, 'archive_sha256')):
             if value is not None:
-                require(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value) is not None, 'invalid_query')
+                require(
+                    isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value) is not None,
+                    'invalid_query',
+                )
                 if value != row['marker'][key]:
                     raise ViewerError('run_changed', 'Run changed; reload the run before continuing.', 409)
         return row['marker']['report_sha256']
@@ -894,6 +911,7 @@ class ViewerService:
     def run(self, rid: str, **selection: Unpack[MetricSelection]) -> dict:
         """Build the public run projection using the requested aggregation selection."""
         with self.lock:
+            self._require_available(rid)
             row = self._require_run(rid)
             report = row['report']
             metadata = deepcopy(self.metadata[rid])
@@ -922,7 +940,8 @@ class ViewerService:
             }
 
     def download(self, rid: str, login: str) -> StoredBody:
-        """Return an authorized archive stream with bounded transfer lifetime."""
+        """Open an available archive stream after checking run ownership."""
         with self.lock:
+            self._require_available(rid)
             row = self.require_owner(rid, login)
             return self.store.open(row['prefix'] + 'archive.tar.gz')

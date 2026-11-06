@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
@@ -38,6 +39,7 @@ from benchmark.models.evidence import (
     Seal,
     Start,
 )
+from benchmark.models.interruption import Interruption
 from benchmark.models.report import (
     ReportAgentResolvedRuntime,
     ReportAttempt,
@@ -137,12 +139,15 @@ class AttemptSelection:
     outcome: ArtifactReference | None
     scoring: OperationSelection | None
     pricing: OperationSelection | None
+    interruption: ArtifactReference | None = None
 
 
 def _selected(task_id: str, row: StateTaskItem | StateTaskItemHistoryItem) -> AttemptSelection:
     """Associate a native owner with its task without altering persisted history."""
     assert row.attempt is not None
-    return AttemptSelection(task_id, row.attempt, row.start, row.seal, row.outcome, row.scoring, row.pricing)
+    return AttemptSelection(
+        task_id, row.attempt, row.start, row.seal, row.outcome, row.scoring, row.pricing, row.interruption
+    )
 
 
 def _attempts(task: StateTaskItem) -> list[AttemptSelection]:
@@ -281,7 +286,7 @@ class RunStore:
     def open(
         cls, directory: Path, *, lease: RunLease | None = None, allow_omitted_publish_payloads: bool = False
     ) -> 'RunStore':
-        """Reject incompatible pre-release layouts before any mutation or execution."""
+        """Validate the run registry and state before any mutation or execution."""
         if (directory / 'run.json').is_file() != (directory / '_meta/state.json').is_file():
             raise BenchmarkError(
                 'incomplete_run_state',
@@ -301,8 +306,9 @@ class RunStore:
         raw_state = parse_json(content)
         validate_document('run', raw_registry)
         validate_document('state', raw_state)
-        registry, state = _parse_model(Run, raw_registry, 'registry_task_mismatch'), _parse_model(
-            State, raw_state, 'invalid_state'
+        registry, state = (
+            _parse_model(Run, raw_registry, 'registry_task_mismatch'),
+            _parse_model(State, raw_state, 'invalid_state'),
         )
         store = cls(
             directory,
@@ -333,7 +339,7 @@ class RunStore:
         for value, family in ((self.registry, 'run'), (self.state, 'state')):
             if value.schema_family != 'pr_similarity_os.' + family or type(value.schema_version) is not int:
                 raise BenchmarkError('unsupported_run_format', 'Run registry/state has an incompatible schema.')
-            if value.schema_version != 2:
+            if value.schema_version not in ((2, 3) if family == 'state' else (2,)):
                 raise BenchmarkError('unsupported_run_format', 'Run registry/state has an unsupported schema version.')
         if self.state.run_id != self.registry.id:
             raise BenchmarkError('state_owner_mismatch', 'State and immutable registry belong to different runs.')
@@ -444,7 +450,8 @@ class RunStore:
             if row.attempt is None and row.processing_status != 'pending':
                 raise BenchmarkError('invalid_state', 'Only pending tasks can have no reserved native attempt.')
             if row.attempt is None and any(
-                value is not None for value in (row.start, row.seal, row.outcome, row.scoring, row.pricing)
+                value is not None
+                for value in (row.start, row.seal, row.outcome, row.scoring, row.pricing, row.interruption)
             ):
                 raise BenchmarkError('attempt_owner_mismatch', 'Selected facts require a registered native attempt.')
             attempts = _attempts(row)
@@ -467,6 +474,8 @@ class RunStore:
             )
         seen.add(attempt.id)
         self._validate_start(selection)
+        if selection.interruption is not None:
+            self._validate_interruption(selection)
         if selection.outcome is not None:
             if selection.seal is None:
                 raise BenchmarkError('attempt_seal_missing', 'Final outcome requires its explicitly selected seal.')
@@ -1098,6 +1107,8 @@ class RunStore:
     ) -> None:
         """Consume a reserved sequence while preserving all earlier native owners."""
         if selected.attempt is not None:
+            if selected.outcome is None and selected.interruption is None:
+                selected.interruption = self._interruption_receipt(_selected(selected.id, selected))
             selected.history.append(
                 StateTaskItemHistoryItem(
                     attempt=copy.deepcopy(selected.attempt),
@@ -1108,15 +1119,21 @@ class RunStore:
                     pricing=copy.deepcopy(selected.pricing),
                 )
             )
+        if selected.interruption is not None:
+            selected.history[-1].interruption = copy.deepcopy(selected.interruption)
         selected.attempt = copy.deepcopy(attempt)
         selected.next_sequence, selected.retry_index = attempt.sequence + 1, attempt.retry_index
         selected.processing_status = status
         selected.progress = ReportTaskProgress(phase='preparing', updated_at=utc_now())
         selected.start, selected.seal, selected.outcome = start, None, None
+        if selected.interruption is not None:
+            selected.interruption = None
         selected.scoring, selected.pricing = None, None
 
     def _publish_selection(self, state: State) -> Report:
         """Validate a copied selection before replacing the authoritative state."""
+        if any(item.interruption is not None for row in state.tasks for item in _attempts(row)):
+            state.schema_version = 3
         proposed = RunStore(self.directory, self.registry, state)
         proposed._facts_cache = self._facts_cache
         proposed.validate()
@@ -1227,6 +1244,99 @@ class RunStore:
             proposed = RunStore(self.directory, self.registry, state)
             proposed._facts_cache = self._facts_cache
             return self._commit(proposed.snapshot(), selected_state=state)
+
+    def _validate_interruption(self, selection: AttemptSelection) -> None:
+        """Verify recovery ownership without turning missing execution into a native result."""
+        receipt = selection.interruption
+        assert receipt is not None
+        value = read_reference(self.directory, receipt, Interruption)
+        prefix = self.attempt_directory(selection.id, selection.attempt.sequence)
+        missing = ['seal', 'outcome'] if selection.seal is None else ['outcome']
+        if (
+            self.state.schema_version != 3
+            or receipt.path != (prefix / 'interruption.json').as_posix()
+            or value.run_id != self.registry.id
+            or value.task_id != selection.id
+            or value.attempt_id != selection.attempt.id
+            or value.start != selection.start
+            or value.seal != selection.seal
+            or value.missing != missing
+            or selection.outcome is not None
+            or (selection.seal is None and selection.attempt.finished_at is not None)
+        ):
+            raise BenchmarkError(
+                'interruption_owner_mismatch', 'Interruption differs from its registered native owner.'
+            )
+        try:
+            observed = datetime.fromisoformat(value.observed_at.replace('Z', '+00:00'))
+            if observed.tzinfo is None:
+                raise ValueError
+        except ValueError:
+            raise BenchmarkError(
+                'invalid_interruption', 'Recovery observation requires a timestamp with timezone.'
+            ) from None
+        for kind in missing:
+            if artifact_path(self.directory, (prefix / (kind + '.json')).as_posix()).exists():
+                raise BenchmarkError('interruption_fact_conflict', 'A fact marked missing exists at its native path.')
+
+    def _interruption_receipt(self, selection: AttemptSelection) -> ArtifactReference:
+        """Create or adopt the same recovery fact after a crash before the state commit."""
+        assert selection.start is not None and selection.outcome is None
+        relative = (self.attempt_directory(selection.id, selection.attempt.sequence) / 'interruption.json').as_posix()
+        path = artifact_path(self.directory, relative)
+        if not path.exists():
+            write_json(
+                path,
+                Interruption(
+                    schema_family='pr_similarity_os.interruption',
+                    schema_version=1,
+                    run_id=self.registry.id,
+                    task_id=selection.id,
+                    attempt_id=selection.attempt.id,
+                    start=selection.start,
+                    seal=selection.seal,
+                    observed_at=utc_now(),
+                    status='interrupted',
+                    missing=['seal', 'outcome'] if selection.seal is None else ['outcome'],
+                ),
+            )
+        return reference(self.directory, relative)
+
+    def recover_interruptions(self) -> None:
+        """Repair old history and unsealed current owners under the run writer lease."""
+        with self._writer():
+            state = copy.deepcopy(self.state)
+            changed = False
+            for selected in state.tasks:
+                for owner in [*selected.history, selected]:
+                    if owner.attempt is None or owner.interruption is not None:
+                        continue
+                    if owner is not selected:
+                        attempt_sequence = owner.attempt.sequence
+                        for kind in ('seal', 'outcome'):
+                            relative = (
+                                self.attempt_directory(selected.id, attempt_sequence) / (kind + '.json')
+                            ).as_posix()
+                            if getattr(owner, kind) is None and artifact_path(self.directory, relative).exists():
+                                receipt = reference(self.directory, relative)
+                                fact = read_reference(self.directory, receipt, Seal if kind == 'seal' else Outcome)
+                                setattr(owner, kind, receipt)
+                                owner.attempt = copy.deepcopy(fact.task.final_attempt)
+                                changed = True
+            # Validate adopted native bytes before recording any recovery observation.
+            RunStore(self.directory, self.registry, state).validate()
+            for selected in state.tasks:
+                for owner in [*selected.history, selected]:
+                    if owner.attempt is None or owner.interruption is not None:
+                        continue
+                    if owner.outcome is not None or (owner is selected and owner.seal is not None):
+                        continue
+                    owner.interruption = self._interruption_receipt(_selected(selected.id, owner))
+                    if owner is selected:
+                        selected.processing_status = 'interrupted'
+                    changed = True
+            if changed:
+                self._publish_selection(state)
 
     def _validate_start(self, selection: AttemptSelection) -> None:
         """Require a persisted start receipt for every reserved native owner."""

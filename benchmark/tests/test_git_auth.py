@@ -176,3 +176,32 @@ def test_operator_trace_overrides_do_not_persist_auth(monkeypatch: pytest.Monkey
     environment = isolated_environment()
     assert not any(key.startswith('GIT_TRACE') for key in environment)
     assert 'GIT_CURL_VERBOSE' not in environment
+
+
+@pytest.mark.parametrize('operation', ['credential', 'git'])
+@pytest.mark.parametrize('error_type', [KeyboardInterrupt, SystemExit])
+def test_process_control_failure_reaps_git_child(
+    monkeypatch: pytest.MonkeyPatch, operation: str, error_type: type[BaseException]
+) -> None:
+    """Preserve process-control exceptions while reaping each owned Git process."""
+    original = subprocess.Popen.communicate
+    identifiers: list[int] = []
+
+    def interrupted(
+        self: subprocess.Popen[bytes], input: bytes | None = None, timeout: float | None = None
+    ) -> tuple[bytes, bytes]:
+        """Interrupt the first read, allowing cleanup to drain and reap the child."""
+        if not identifiers:
+            identifiers.append(self.pid)
+            raise error_type('fixture interruption')
+        return original(self, input=input, timeout=timeout)
+
+    monkeypatch.setattr(subprocess.Popen, 'communicate', interrupted)
+    with pytest.raises(error_type, match='fixture interruption'):
+        if operation == 'credential':
+            credential_environment(isolated_environment(), 10)
+        else:
+            module.run_git(['--version'])
+    assert len(identifiers) == 1
+    with pytest.raises(ProcessLookupError):
+        os.kill(identifiers[0], 0)

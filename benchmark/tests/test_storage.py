@@ -3,6 +3,7 @@
 import json
 import multiprocessing
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from multiprocessing.connection import Connection
 from pathlib import Path
 
@@ -39,7 +40,6 @@ def test_wait_forever_process_release(tmp_path: Path, monkeypatch: pytest.Monkey
     cancel = threading.Event()
     entered = threading.Event()
     blocked = threading.Event()
-    errors = []
     native = storage.fcntl.flock
 
     def flock(fd: int, operation: int) -> None:
@@ -54,18 +54,15 @@ def test_wait_forever_process_release(tmp_path: Path, monkeypatch: pytest.Monkey
 
     def waiter() -> None:
         """Acquire the lock in a thread and report failures to the parent test."""
-        try:
-            with storage.file_lock(path, wait_forever=True, cancel=cancel):
-                entered.set()
-        except Exception as exc:
-            errors.append(exc)
+        with storage.file_lock(path, wait_forever=True, cancel=cancel):
+            entered.set()
 
-    worker = threading.Thread(target=waiter)
+    executor = ThreadPoolExecutor(max_workers=1)
     try:
         assert parent.poll(10)
         assert parent.recv() == 'ready'
         inode = path.stat().st_ino
-        worker.start()
+        worker = executor.submit(waiter)
         assert blocked.wait(5)
         assert not entered.is_set()
         with storage.file_lock(tmp_path / 'other.lock'):
@@ -75,18 +72,15 @@ def test_wait_forever_process_release(tmp_path: Path, monkeypatch: pytest.Monkey
         else:
             parent.send('release')
         owner.join(10)
-        worker.join(10)
-        assert not worker.is_alive()
-        assert not errors
+        worker.result(timeout=10)
         assert entered.is_set()
         assert path.stat().st_ino == inode
     finally:
         cancel.set()
-        if worker.ident is not None:
-            worker.join(10)
         if owner.is_alive():
             owner.kill()
         owner.join(10)
+        executor.shutdown(wait=True, cancel_futures=True)
         parent.close()
         child.close()
 
@@ -195,16 +189,16 @@ def test_atomic_failure_keeps_old_document(tmp_path: Path, monkeypatch: pytest.M
 
 def test_lock_conflict_and_independent_runs(tmp_path: Path) -> None:
     """Verify lock conflict and independent runs."""
-    a, b = tmp_path / 'a', tmp_path / 'b'
-    a.mkdir()
-    b.mkdir()
-    with run_lock(a):
-        with pytest.raises(BenchmarkError) as caught, run_lock(a):
+    first_run, second_run = tmp_path / 'a', tmp_path / 'b'
+    first_run.mkdir()
+    second_run.mkdir()
+    with run_lock(first_run):
+        with pytest.raises(BenchmarkError) as caught, run_lock(first_run):
             raise AssertionError('must not enter second writer')
         assert caught.value.code == 'run_locked'
-        with run_lock(b):
+        with run_lock(second_run):
             pass
-    with run_lock(a):
+    with run_lock(first_run):
         pass
 
 

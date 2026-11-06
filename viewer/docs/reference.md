@@ -105,9 +105,17 @@ Overwrite first saves the old data to one fixed trash prefix, then installs the
 new publication. It requires the same owner and basket hash. UI metadata and
 basket order remain intact. DELETE uses the same move mechanism, drops the UI
 metadata and removes an empty basket. No metadata dump is added to trash.
-The journal recovers interrupted writes before startup/refresh; if staging is
-lost before publication, the previous publication is restored from complete trash.
+The journal recovers interrupted writes at startup and through a supervised
+background worker. Files recorded as transferred are validated in storage and
+remain usable after their staging copies are lost. Files still awaiting transfer
+require their staged copies; if those are missing, recovery restores the previous
+publication from complete trash. Corrupt recovery inputs leave the journal pending
+until the stored or staged bytes can be verified.
 Original archive bytes and receipt hashes are unaffected by UI edits.
+Publication prepares its catalogue entry before exposing it, saves the receipt
+and completes the journal in one SQLite transaction, then updates the catalogue.
+Publish, delete and rollback update only the affected run; layout writes do not
+scan publication evidence. A lost response can be retried with the same key.
 
 Settings controls basket order, initial collapse and hiding from home. Hidden
 baskets and their runs are excluded from `GET /baskets`, including all filter
@@ -122,9 +130,53 @@ basket settings. The operation envelope is consumable by the pre-layout viewer
 on rollback, which preserves order/metadata and ignores display flags.
 
 Settings also shows cached counts and last refresh time from `GET /admin/stats`.
-Refresh is synchronous; the shared lock can delay public reads during S3 I/O.
-The UI disables duplicate refresh and offers explicit retry. Failed refresh keeps
+Refresh returns current counts and a `refresh_job` with a process-scoped request ID.
+HTTP 200 acknowledges the queued request, not completion. Poll `GET /admin/stats`
+and inspect `refresh_job` for progress and errors; `completed_id` identifies the
+last successfully completed request. IDs belong to one server process and must
+not be reused after restart.
+A single worker scans in the background; reads retain the current catalogue.
+Writes invalidate an in-flight result and retain the need for another pass.
+Repeated requests coalesce into a subsequent pass. Failed refresh keeps
 the last successful in-memory catalogue. Counts do not scan S3 for bucket size.
+
+### Background work and availability
+
+Public reads do not execute journal recovery. New mutations return
+`503 recovery_pending` while a durable operation remains pending. Evidence reads
+for that run return `503 run_updating`; unrelated catalogue reads remain valid.
+Recovery retries temporary failures with configured bounds; administrative stats
+include the recovery state and a safe error code.
+
+Background scans never write S3/settings. Recovery has priority over refresh.
+`recovery_retry_seconds` and `recovery_attempts` bound temporary-failure retries
+for both maintenance tasks. Admin refresh explicitly retries blocked recovery.
+A process restart cancels previous process-scoped requests and performs startup
+validation independently. `refresh_job.completed_id` identifies the highest
+request completed successfully; older requests in that process are covered too.
+
+Settings and `GET /admin/stats` expose `refresh_job` states: idle, pending,
+running, retrying, waiting_recovery, succeeded, failed and cancelled. Safe error
+codes and start/finish times describe the last attempt; `last_success_at` retains
+the last success even after failure. The legacy `refresh` field remains a string
+(`running` or `idle`). Use Refresh caches to retry, Reload settings to inspect
+progress. Shutdown stops new mutations and waits before closing SQLite; a timeout
+requires process termination without releasing the runtime lock to a second writer.
+
+The CLI separates process liveness (`/healthz`) from readiness (`/readyz`).
+Startup phases are recovery and catalogue; failed startup exposes only a safe
+error code and retries temporary errors through the maintenance worker.
+After failure an administrator can use `/admin/refresh` to retry startup.
+Accounts and receipts remain in the same SQLite database. Embedded callers can
+use `create_app(..., deferred_startup=True)` for the same lifecycle; its default
+synchronous construction preserves existing embedding behavior.
+
+Storage writers are serialized separately from catalogue reads. During an
+interrupted or active overwrite/delete, the affected run returns `503 run_updating`
+and is omitted from public run lists until completion; unrelated runs remain
+readable. SQLite transactions and catalogue replacement retain short shared
+locks. File transfers no longer hold the catalogue lock. Recovery uses the same
+writer boundary, and shutdown leaves interrupted operations in the journal.
 
 Use [the standard S3 lifecycle example](../ops/trash-lifecycle.example.json),
 substituting your common prefix. Configure object expiration **90 days** after insertion for `<prefix>/trash/`
@@ -176,7 +228,7 @@ run-detail groups retain their seven-tag preview.
 | Admin | GET `/admin/stats` | cached basket/run/user counts and last refresh |
 | Admin | PUT `/admin/baskets/order` | `{"items":["<hash>",...]}`; complete active set |
 | Admin | DELETE `/admin/runs/{run_id}` | move to trash; remove UI metadata |
-| Admin | POST `/admin/refresh` | reread S3/settings; empty body or `{}` |
+| Admin | POST `/admin/refresh` | request background scan; current counts and job ID; empty body or `{}` |
 
 User grants are one-use Bearer tokens with TTL 60 seconds at admission. Publish
 validation failure/409 does not consume the grant. The benchmark's existing
@@ -273,7 +325,7 @@ PR/MR links accept HTTP(S) without userinfo and use `noopener noreferrer`.
 
 ### Public run config, limits and archive validation
 
-See Run Config opens the frozen native `agent/opencode.json`, once per run.
+The opencode.json button opens the frozen native `agent/opencode.json`, once per run.
 Model/options, ordered permissions, skills, instructions and supported integrations
 keep their native structure. Paths to declared resources are relative to the
 archive's `agent/` directory. Runtime, timeout, setup timeout, retries and diff
@@ -288,6 +340,31 @@ projection instead of silently changing the displayed config. Environment
 references remain references. The full input remains in owner/admin archives.
 The display bound is `limits.config_display_bytes=65536`; it depends on actual
 native input size, not on the number of tasks or attempts.
+
+### Full-file and task-change views
+
+`GET /runs/{run_id}/tasks/{task_id}/files/{file_id}?view=full` returns
+`human_file` and `agent_file` instead of unified diffs. Each contains ordered
+`lines` with `kind` (`context`, `added`, `removed`), literal `text`, and nullable
+`base_line`/`result_line` numbers, plus `state`, `truncated` and
+`ends_with_newline`. Source and rendered rows obey `diff_bytes` and `diff_lines`.
+The default endpoint still returns `human_diff` and `agent_diff`.
+
+`GET /runs/{run_id}/tasks/{task_id}?view=changes` returns `human` and `agent`
+raw-line totals: `added`, `removed`, `files`, `measured_files` and `status`.
+Files over display limits are excluded from the line subtotal, producing
+`partial` or `unavailable`; changed-file counts remain known. Computation runs
+outside the catalogue lock and checks report/publication identity before and
+after source reads. Both views accept the existing expected-identity parameters.
+
+The config response includes `setup_summary`, derived from the hash-bound
+configuration identity without exposing environment values.
+The config button displays the verified input `opencode.json`.
+
+
+Admin basket-layout reads include each basket's description alongside its name.
+The layout revision and save contract are unchanged.
+
 
 ### Configurable limits
 
@@ -329,6 +406,9 @@ parser and schema checks without adding a separate model nesting limit.
 - `src/web/`: HTTP routes, authentication and middleware.
 - `src/persistence/`: SQLite state and object-store access.
 - `src/service.py`: publication and catalogue coordination.
+- `src/publication.py`: shared validation of staged and stored evidence.
+- `src/catalogue.py`: read-only catalogue construction and coherent versions.
+- `src/maintenance.py`: recovery, refresh scheduling and shutdown.
 - `src/cli.py`: command-line entry points and local lifecycle.
 
 The Python modules are internal implementation details. HTTP endpoints, CLI
