@@ -12,9 +12,9 @@ import pytest
 PROMPT = 'Virtual environment already exists. Reinstall dependencies? [Y/n] '
 
 
-def _project(tmp_path: Path, *, existing: bool, usable: bool = True) -> tuple[Path, Path]:
+def _project(tmp_path: Path, *, existing: bool, usable: bool = True, module: str = 'viewer') -> tuple[Path, Path]:
     """Create an isolated Make project and a recording interpreter that never uses the network."""
-    shutil.copy2(Path(__file__).parents[1] / 'Makefile', tmp_path / 'Makefile')
+    shutil.copy2(Path(__file__).parents[2] / module / 'Makefile', tmp_path / 'Makefile')
     interpreter = tmp_path / 'setup-python'
     interpreter.write_text('#!' + sys.executable + '\n' + '''
 """Record setup interpreter calls and emulate installation outcomes."""
@@ -27,7 +27,7 @@ from pathlib import Path
 
 arguments = sys.argv[1:]
 with Path(os.environ['SETUP_CALL_LOG']).open('a') as stream:
-    stream.write(json.dumps({'argv': arguments, 'index': os.getenv('PIP_INDEX_URL')}) + '\\n')
+    stream.write(json.dumps({'argv': arguments, 'index': os.getenv('PIP_INDEX_URL'), 'warnings': os.getenv('PYTHONWARNINGS')}) + '\\n')
 if arguments[:2] == ['-m', 'venv']:
     if os.environ.get('SETUP_VENV_FALLBACK') and '--without-pip' not in arguments:
         sys.exit(1)
@@ -37,6 +37,7 @@ if arguments[:2] == ['-m', 'venv']:
 if arguments == ['-m', 'pip', '--version'] and os.environ.get('SETUP_BOOTSTRAP'):
     sys.exit(1)
 if os.environ.get('SETUP_FAIL_LOCK') and arguments[-2:] == ['-r', 'requirements-build.lock']:
+    print('Dependency install failed', file=sys.stderr)
     sys.exit(7)
 ''')
     interpreter.chmod(0o755)
@@ -50,7 +51,14 @@ if os.environ.get('SETUP_FAIL_LOCK') and arguments[-2:] == ['-r', 'requirements-
 
 
 def _setup(
-    tmp_path: Path, interpreter: Path, log: Path, answer: str, *, variables: tuple[str, ...] = (), **environment: str
+    tmp_path: Path,
+    interpreter: Path,
+    log: Path,
+    answer: str,
+    *,
+    variables: tuple[str, ...] = (),
+    index: str | None = 'https://packages.example/simple',
+    **environment: str,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
     """Run only the copied Make recipe and return the fake interpreter calls."""
     result = subprocess.run(
@@ -58,7 +66,7 @@ def _setup(
             'make',
             'setup',
             'PYTHON=' + str(interpreter),
-            'PACKAGE_INDEX_URL=https://packages.example/simple',
+            *(['PACKAGE_INDEX_URL=' + index] if index is not None else []),
             *variables,
         ],
         cwd=tmp_path,
@@ -82,11 +90,19 @@ def test_existing_setup_requires_affirmative_answer(tmp_path: Path, answer: str)
     assert (tmp_path / '.venv/preserved').read_text() == 'existing environment'
     assert not any(call['argv'][:2] == ['-m', 'venv'] for call in calls)
     installs = [call for call in calls if call['argv'][:3] == ['-m', 'pip', 'install']]
-    assert installs[0]['argv'] == ['-m', 'pip', 'install', '--upgrade', 'pip']
-    assert installs[1]['argv'] == ['-m', 'pip', 'install', '--require-hashes', '-r', 'requirements-build.lock']
-    assert installs[2]['argv'] == ['-m', 'pip', 'install', '-r', 'requirements.lock']
-    assert installs[3]['argv'] == ['-m', 'pip', 'install', '--no-build-isolation', '--no-deps', '-e', '.']
-    assert all(call['index'] == 'https://packages.example/simple' for call in installs[:3])
+    assert installs[0]['argv'] == ['-m', 'pip', 'install', '--quiet', '--upgrade', 'pip']
+    assert installs[1]['argv'] == [
+        '-m',
+        'pip',
+        'install',
+        '--quiet',
+        '--require-hashes',
+        '-r',
+        'requirements-build.lock',
+    ]
+    assert installs[2]['argv'] == ['-m', 'pip', 'install', '--quiet', '-r', 'requirements.lock']
+    assert installs[3]['argv'] == ['-m', 'pip', 'install', '--quiet', '--no-build-isolation', '--no-deps', '-e', '.']
+    assert all(call['index'] == 'https://packages.example/simple' for call in installs)
 
 
 @pytest.mark.parametrize('usable', [False, True])
@@ -109,7 +125,7 @@ def test_fresh_setup_needs_no_input_and_keeps_bootstrap_fallback(tmp_path: Path)
     assert calls[0]['argv'] == ['-m', 'venv', '.venv']
     assert calls[1]['argv'] == ['-m', 'venv', '--without-pip', '.venv']
     bootstrap = next(call for call in calls if '--python' in call['argv'])
-    assert bootstrap['argv'] == ['-m', 'pip', '--python', '.venv', 'install', 'pip']
+    assert bootstrap['argv'] == ['-m', 'pip', '--python', '.venv', 'install', '--quiet', 'pip']
     assert bootstrap['index'] == 'https://packages.example/simple'
 
 
@@ -154,5 +170,69 @@ def test_setup_package_index_remains_literal_shell_text(tmp_path: Path) -> None:
     index = f'https://packages.example/$(shell touch {marker})'
     result, calls = _setup(tmp_path, interpreter, log, '\n', variables=('PACKAGE_INDEX_URL=' + index,))
     assert result.returncode == 0 and not marker.exists()
-    upgrades = [call for call in calls if call['argv'] == ['-m', 'pip', 'install', '--upgrade', 'pip']]
+    upgrades = [call for call in calls if call['argv'] == ['-m', 'pip', 'install', '--quiet', '--upgrade', 'pip']]
     assert len(upgrades) == 1 and upgrades[0]['index'] == index
+
+
+@pytest.mark.parametrize('module', ['benchmark', 'viewer', 'basket_collector'])
+def test_setup_reports_progress_and_paths_with_quiet_installs(tmp_path: Path, module: str) -> None:
+    """Every installer is quiet while setup exposes progress and reusable paths."""
+    interpreter, log = _project(tmp_path, existing=False, module=module)
+    result, calls = _setup(tmp_path, interpreter, log, '', SETUP_BOOTSTRAP='1')
+    assert result.returncode == 0, result.stderr
+    installs = [call for call in calls if call['argv'][:2] == ['-m', 'pip'] and 'install' in call['argv']]
+    assert installs and all('--quiet' in call['argv'] for call in installs)
+    if module != 'basket_collector':
+        assert all(call['index'] == 'https://packages.example/simple' for call in installs)
+    stages = [line for line in result.stdout.splitlines() if line.startswith('[')]
+    assert stages == [
+        '[1/4] Preparing virtual environment',
+        '[2/4] Preparing pip',
+        '[3/4] Installing dependencies',
+        '[4/4] Installing project',
+    ]
+    assert f'Virtual environment: {tmp_path}/.venv' in result.stdout
+    assert f'Python: {tmp_path}/.venv/bin/python' in result.stdout
+
+
+@pytest.mark.parametrize('module', ['benchmark', 'viewer'])
+def test_setup_keeps_install_errors_visible(tmp_path: Path, module: str) -> None:
+    """Quiet output must retain diagnostics and stop before reporting success."""
+    interpreter, log = _project(tmp_path, existing=False, module=module)
+    result, calls = _setup(tmp_path, interpreter, log, '', SETUP_FAIL_LOCK='1')
+    assert result.returncode != 0
+    assert 'Dependency install failed' in result.stderr
+    assert 'Virtual environment:' not in result.stdout
+    assert calls[-1]['argv'][-2:] == ['-r', 'requirements-build.lock']
+
+
+@pytest.mark.parametrize('module', ['benchmark', 'viewer', 'basket_collector'])
+def test_setup_filters_only_editable_install_notice(tmp_path: Path, module: str) -> None:
+    """Preserve caller warning settings and scope the informational filter to project installation."""
+    interpreter, log = _project(tmp_path, existing=False, module=module)
+    result, calls = _setup(tmp_path, interpreter, log, '', PYTHONWARNINGS='default')
+    assert result.returncode == 0, result.stderr
+    editable = [call for call in calls if '-e' in call['argv']]
+    assert len(editable) == 1
+    assert editable[0]['warnings'] == (
+        'default,ignore:Editable installation.:UserWarning:setuptools.command.editable_wheel'
+    )
+    assert all(call['warnings'] == 'default' for call in calls if '-e' not in call['argv'])
+
+
+@pytest.mark.parametrize('module', ['benchmark', 'viewer'])
+def test_setup_default_index_overrides_inherited_pip_index(tmp_path: Path, module: str) -> None:
+    """All pip installs use the Make default even when pip inherits another index."""
+    interpreter, log = _project(tmp_path, existing=False, module=module)
+    result, calls = _setup(
+        tmp_path,
+        interpreter,
+        log,
+        '',
+        index=None,
+        PIP_INDEX_URL='https://packages.example/simple',
+        SETUP_BOOTSTRAP='1',
+    )
+    assert result.returncode == 0, result.stderr
+    installs = [call for call in calls if call['argv'][:2] == ['-m', 'pip'] and 'install' in call['argv']]
+    assert installs and all(call['index'] == 'https://pypi.org/simple' for call in installs)

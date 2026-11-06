@@ -23,6 +23,7 @@ def test_wheel_includes_schemas_and_instruction_resource(tmp_path: Path) -> None
             '-m',
             'pip',
             'wheel',
+            '--verbose',
             '--no-build-isolation',
             '--no-deps',
             '--wheel-dir',
@@ -33,6 +34,7 @@ def test_wheel_includes_schemas_and_instruction_resource(tmp_path: Path) -> None
         text=True,
         check=True,
     )
+    assert 'Package would be ignored' not in result.stdout + result.stderr
     assert 'Successfully built' in result.stdout
     wheel = next(tmp_path.glob('*.whl'))
     installed = tmp_path / 'installed'

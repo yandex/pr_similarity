@@ -18,12 +18,13 @@ def test_wheel_installed_without_source(tmp_path: Path) -> None:
     for name in ('pyproject.toml', 'README.md'):
         shutil.copy2(root / name, project / name)
     shutil.copytree(root / 'src', project / 'src', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-    subprocess.run(
+    built = subprocess.run(
         [sys.executable, '-m', 'build', '--wheel', '--no-isolation', '--outdir', str(tmp_path / 'dist')],
         cwd=project,
         check=True,
         capture_output=True,
     )
+    assert b'Package would be ignored' not in built.stdout + built.stderr
     wheel = next((tmp_path / 'dist').glob('*.whl'))
     expected = {
         'viewer/' + path.relative_to(project / 'src').as_posix()

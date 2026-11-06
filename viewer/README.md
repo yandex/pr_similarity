@@ -19,6 +19,9 @@ make start
 make admin-profile-create LOGIN=admin
 ```
 
+`make setup` prints installation progress and the environment and Python paths.
+Package installation is quiet; warnings and errors remain visible.
+
 Enter the administrator password when prompted, then open **http://127.0.0.1:8000**.
 Log in to create users and manage baskets. The mock configuration stores data
 locally and starts with an empty catalogue.

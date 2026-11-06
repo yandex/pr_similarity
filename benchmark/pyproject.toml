@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-similarity-os-benchmark"
-version = "0.3.4"
+version = "0.3.4.1"
 description = "Benchmark OpenCode against frozen GitHub pull request tasks."
 readme = "README.md"
 license = "Apache-2.0"
@@ -23,6 +23,7 @@ dependencies = [
 dev = ["pytest>=8,<9", "setuptools>=75,<100", "wheel>=0.44,<1"]
 
 [tool.setuptools]
+include-package-data = false
 packages = ["benchmark", "benchmark.models", "benchmark.metrics", "benchmark.runtime", "benchmark.execution", "benchmark.persistence", "benchmark.publication", "benchmark.presentation", "benchmark.validation", "benchmark.vcs", "benchmark.pricing"]
 package-dir = {"benchmark" = "src"}
 

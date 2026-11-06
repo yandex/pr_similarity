@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-similarity-os-viewer"
-version = "0.3.4"
+version = "0.3.4.1"
 description = "Standalone anonymous viewer and owner API for PR Similarity benchmark runs."
 readme = "README.md"
 license = "Apache-2.0"
@@ -19,6 +19,7 @@ test = ["pytest>=8,<10", "httpx>=0.28,<1", "build>=1,<2", "playwright>=1.55,<2"]
 prsim-viewer = "viewer.cli:main"
 
 [tool.setuptools]
+include-package-data = false
 packages = ["viewer", "viewer.models", "viewer.validation", "viewer.presentation", "viewer.web", "viewer.persistence"]
 package-dir = {viewer = "src"}
 

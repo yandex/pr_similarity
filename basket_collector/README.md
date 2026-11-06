@@ -19,6 +19,10 @@ make setup PYTHON=python3.12
 make env
 ```
 
+`make setup` prints installation progress and the environment and Python paths.
+Package installation is quiet; warnings and errors remain visible.
+Keep `build/`: the editable installation uses files from this directory.
+
 Add `GITHUB_TOKEN` and `OPENAI_API_KEY` to the generated `.env`. In
 [examples/github-llm-diff.yaml](examples/github-llm-diff.yaml), set
 `dataset.maintainers` to your login, then run:

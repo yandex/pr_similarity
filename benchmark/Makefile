@@ -18,16 +18,24 @@ setup:
 			esac; \
 		done; \
 	fi; \
+	printf '%s\n' '[1/4] Preparing virtual environment'; \
 	if [ ! -x "$${PRSIM_BM_VENV_PYTHON}" ]; then \
 		"$${PRSIM_BM_SETUP_PYTHON}" -m venv .venv || "$${PRSIM_BM_SETUP_PYTHON}" -m venv --without-pip .venv; \
 	fi; \
 	"$${PRSIM_BM_VENV_PYTHON}" -c 'import sys; assert sys.version_info[:2] == (3, 12), "Python 3.12 required"'; \
-	if ! "$${PRSIM_BM_VENV_PYTHON}" -m pip --version >/dev/null 2>&1; then "$${PRSIM_BM_SETUP_PYTHON}" -m pip --python .venv install --quiet --no-input pip; fi; \
-	PIP_INDEX_URL="$${PRSIM_BM_PACKAGE_INDEX_URL}" "$${PRSIM_BM_VENV_PYTHON}" -m pip install --upgrade pip; \
-	PIP_INDEX_URL="$${PRSIM_BM_PACKAGE_INDEX_URL}" "$${PRSIM_BM_VENV_PYTHON}" -m pip install --require-hashes -r requirements-build.lock; \
-	PIP_INDEX_URL="$${PRSIM_BM_PACKAGE_INDEX_URL}" "$${PRSIM_BM_VENV_PYTHON}" -m pip install --no-build-isolation --require-hashes -r requirements.lock; \
-	"$${PRSIM_BM_VENV_PYTHON}" -m pip install --no-build-isolation --no-deps --config-settings editable_mode=strict -e .; \
-	"$${PRSIM_BM_VENV_PYTHON}" -m benchmark.execution.python_runtime
+	printf '%s\n' '[2/4] Preparing pip'; \
+	if ! "$${PRSIM_BM_VENV_PYTHON}" -m pip --version >/dev/null 2>&1; then PIP_INDEX_URL="$${PRSIM_BM_PACKAGE_INDEX_URL}" "$${PRSIM_BM_SETUP_PYTHON}" -m pip --python .venv install --quiet --no-input pip; fi; \
+	PIP_INDEX_URL="$${PRSIM_BM_PACKAGE_INDEX_URL}" "$${PRSIM_BM_VENV_PYTHON}" -m pip install --quiet --upgrade pip; \
+	printf '%s\n' '[3/4] Installing dependencies'; \
+	PIP_INDEX_URL="$${PRSIM_BM_PACKAGE_INDEX_URL}" "$${PRSIM_BM_VENV_PYTHON}" -m pip install --quiet --require-hashes -r requirements-build.lock; \
+	PIP_INDEX_URL="$${PRSIM_BM_PACKAGE_INDEX_URL}" "$${PRSIM_BM_VENV_PYTHON}" -m pip install --quiet --no-build-isolation --require-hashes -r requirements.lock; \
+	printf '%s\n' '[4/4] Installing project'; \
+	PYTHONWARNINGS="$${PYTHONWARNINGS:+$${PYTHONWARNINGS},}ignore:Editable installation.:UserWarning:setuptools.command.editable_wheel" PIP_INDEX_URL="$${PRSIM_BM_PACKAGE_INDEX_URL}" "$${PRSIM_BM_VENV_PYTHON}" -m pip install --quiet --no-build-isolation --no-deps --config-settings editable_mode=strict -e .; \
+	"$${PRSIM_BM_VENV_PYTHON}" -m benchmark.execution.python_runtime; \
+	printf '%s\n' 'Editable install uses build/; keep this directory while using the environment.'; \
+	setup_python="$${PRSIM_BM_VENV_PYTHON}"; \
+	case "$$setup_python" in /*) ;; *) setup_python="$$PWD/$$setup_python" ;; esac; \
+	printf 'Virtual environment: %s\nPython: %s\n' "$$(dirname "$$(dirname "$$setup_python")")" "$$setup_python"
 
 env:
 	@if [ -e .env ] || [ -L .env ]; then printf '%s\n' '.env already exists'; else install -m 600 .env.example .env; printf '%s\n' 'Created .env; fill in the needed tokens locally'; fi

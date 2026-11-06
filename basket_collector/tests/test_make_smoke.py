@@ -246,6 +246,7 @@ def test_installed_wheel_runs_basket_stages(
             '-m',
             'pip',
             'wheel',
+            '--verbose',
             '--no-index',
             '--no-build-isolation',
             '--no-deps',
@@ -259,6 +260,7 @@ def test_installed_wheel_runs_basket_stages(
         check=False,
     )
     assert built.returncode == 0, built.stdout + built.stderr
+    assert 'Package would be ignored' not in built.stdout + built.stderr
     wheels = list(wheel_dir.glob('*.whl'))
     assert len(wheels) == 1
     _assert_wheel_layout(wheels[0])
