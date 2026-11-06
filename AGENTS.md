@@ -35,6 +35,7 @@ documentation and skills portable, with deployment-neutral examples and paths.
   For runtime changes, run the owning README's tests/smoke as applicable.
 
 Operator workflows live in `.agents/skills/`: `prsim-build-basket`,
-`prsim-run-benchmark`, `prsim-analyze-run`, `prsim-publish-run`. Their details
+`prsim-run-benchmark`, `prsim-analyze-run`, `prsim-publish-run`,
+`prsim-cheating-audit`. Their details
 point to module READMEs and their linked guides. These are repository skills, not automatic additions
 to the benchmarked agent's configuration.

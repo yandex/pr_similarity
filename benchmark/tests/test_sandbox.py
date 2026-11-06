@@ -164,11 +164,18 @@ def test_alternatives_restores_library_loading(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(
         Path, 'exists', lambda path: True if path == Path('/etc/alternatives') else original_exists(path)
     )
-    code = '''import ctypes, errno, os
+    code = '''
+"""Verify library loading and readonly alternatives inside the sandbox."""
+
+import ctypes
+import errno
+import os
+
 ctypes.CDLL('/usr/lib/locale/libblas.so.3')
 assert not os.path.exists('/etc/passwd')
 try:
-    open('/etc/alternatives/write-probe', 'w').close()
+    with open('/etc/alternatives/write-probe', 'w'):
+        pass
 except OSError as error:
     assert error.errno == errno.EROFS, error
 else:

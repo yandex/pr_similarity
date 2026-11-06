@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import sysconfig
 import time
+from contextlib import closing
 from pathlib import Path
 
 
@@ -19,7 +20,7 @@ def usage() -> None:
     """Create an actual private native database including a field that must be sanitized."""
     database = Path(os.environ['XDG_DATA_HOME']) / 'opencode/opencode.db'
     database.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute('pragma journal_mode=WAL')
         connection.execute('create table session(id text primary key,parent_id text,agent text)')
         connection.execute('create table message(id text primary key,session_id text,data text)')

@@ -106,7 +106,10 @@ class OperationStore:
         report = self.read_artifact(receipt.input_report, Report)
         _require(
             type(inputs.schema_version) is int
-            and inputs.schema_version == self.registry.schema_version
+            and (
+                inputs.schema_version == self.registry.schema_version
+                or (inputs.schema_version == 3 and self.registry.schema_version == 2)
+            )
             and inputs.run_id == self.registry.id
             and inputs.registry_sha256 == self.inventory['run.json'].sha256
             and type(inputs.revision) is int

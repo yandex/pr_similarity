@@ -1,4 +1,4 @@
-"""Typed state-v2 artifacts after authoritative JSON Schema validation."""
+"""Typed state artifacts for supported schema versions after JSON Schema validation."""
 
 from typing import ClassVar, Literal
 
@@ -7,7 +7,7 @@ from .legacy import LegacyMetric
 
 
 class StateError(WireModel):
-    """Represent the StateError object in the state-v2 wire contract."""
+    """Represent the StateError object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/$defs/error'
     code: str
@@ -15,7 +15,7 @@ class StateError(WireModel):
 
 
 class StateRun(WireModel):
-    """Represent the StateRun object in the state-v2 wire contract."""
+    """Represent the StateRun object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/run'
     status: Literal[
@@ -32,7 +32,7 @@ class StateRun(WireModel):
 
 
 class StateResolvedRuntime(WireModel):
-    """Represent the StateResolvedRuntime object in the state-v2 wire contract."""
+    """Represent the StateResolvedRuntime object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/resolved_runtime/anyOf/0'
     version: str
@@ -44,7 +44,7 @@ class StateResolvedRuntime(WireModel):
 
 
 class StateMetric(WireModel):
-    """Represent the StateMetric object in the state-v2 wire contract."""
+    """Represent the StateMetric object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/metric'
     name: Literal['mlp']
@@ -53,7 +53,7 @@ class StateMetric(WireModel):
 
 
 class StateAttempt(WireModel):
-    """Represent the StateAttempt object in the state-v2 wire contract."""
+    """Represent the StateAttempt object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/$defs/attempt'
     id: str
@@ -65,7 +65,7 @@ class StateAttempt(WireModel):
 
 
 class StateTaskItemOutcome(WireModel):
-    """Represent the StateTaskItemOutcome object in the state-v2 wire contract."""
+    """Represent the StateTaskItemOutcome object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/tasks/items/properties/outcome'
     path: str
@@ -83,7 +83,7 @@ StateTaskItemScoringReceipt = StateTaskItemOutcome
 
 
 class StateTaskItemScoring(WireModel):
-    """Represent the StateTaskItemScoring object in the state-v2 wire contract."""
+    """Represent the StateTaskItemScoring object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/tasks/items/properties/scoring'
     id: str
@@ -100,7 +100,7 @@ StateTaskItemPricingReceipt = StateTaskItemOutcome
 
 
 class StateTaskItemPricing(WireModel):
-    """Represent the StateTaskItemPricing object in the state-v2 wire contract."""
+    """Represent the StateTaskItemPricing object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/tasks/items/properties/pricing'
     id: str
@@ -111,7 +111,7 @@ class StateTaskItemPricing(WireModel):
 
 
 class StateTaskItemProgress(WireModel):
-    """Represent the StateTaskItemProgress object in the state-v2 wire contract."""
+    """Represent the StateTaskItemProgress object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/tasks/items/properties/progress'
     phase: str
@@ -134,7 +134,7 @@ StateTaskItemHistoryItemScoringReceipt = StateTaskItemOutcome
 
 
 class StateTaskItemHistoryItemScoring(WireModel):
-    """Represent the StateTaskItemHistoryItemScoring object in the state-v2 wire contract."""
+    """Represent the StateTaskItemHistoryItemScoring object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/tasks/items/properties/history/items/properties/scoring'
     id: str
@@ -151,7 +151,7 @@ StateTaskItemHistoryItemPricingReceipt = StateTaskItemOutcome
 
 
 class StateTaskItemHistoryItemPricing(WireModel):
-    """Represent the StateTaskItemHistoryItemPricing object in the state-v2 wire contract."""
+    """Represent the StateTaskItemHistoryItemPricing object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/tasks/items/properties/history/items/properties/pricing'
     id: str
@@ -162,9 +162,10 @@ class StateTaskItemHistoryItemPricing(WireModel):
 
 
 class StateTaskItemHistoryItem(WireModel):
-    """Represent the StateTaskItemHistoryItem object in the state-v2 wire contract."""
+    """Represent the StateTaskItemHistoryItem object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/tasks/items/properties/history/items'
+    interruption: StateTaskItemOutcome | None = None
     attempt: StateAttempt
     start: StateTaskItemHistoryItemStart | None
     seal: StateTaskItemHistoryItemSeal | None
@@ -177,12 +178,13 @@ StateTaskItemStart = StateTaskItemOutcome
 
 
 class StateTaskItem(WireModel):
-    """Represent the StateTaskItem object in the state-v2 wire contract."""
+    """Represent the StateTaskItem object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/tasks/items'
     id: str
     ordinal: int | float
     processing_status: Literal['pending', 'running', 'completed', 'retry_pending', 'interrupted']
+    interruption: StateTaskItemOutcome | None = None
     attempt: StateAttempt | None
     next_sequence: int | float
     retry_index: int | float
@@ -203,7 +205,7 @@ StateSelectedOperationsRescoreReceipt = StateTaskItemOutcome
 
 
 class StateSelectedOperationsRescore(WireModel):
-    """Represent the StateSelectedOperationsRescore object in the state-v2 wire contract."""
+    """Represent the StateSelectedOperationsRescore object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/selected_operations/properties/rescore'
     id: str
@@ -220,7 +222,7 @@ StateSelectedOperationsRepriceReceipt = StateTaskItemOutcome
 
 
 class StateSelectedOperationsReprice(WireModel):
-    """Represent the StateSelectedOperationsReprice object in the state-v2 wire contract."""
+    """Represent the StateSelectedOperationsReprice object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/selected_operations/properties/reprice'
     id: str
@@ -231,7 +233,7 @@ class StateSelectedOperationsReprice(WireModel):
 
 
 class StateSelectedOperations(WireModel):
-    """Represent the StateSelectedOperations object in the state-v2 wire contract."""
+    """Represent the StateSelectedOperations object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/selected_operations'
     rescore: StateSelectedOperationsRescore | None
@@ -242,7 +244,7 @@ StatePendingPublishRequest = StateTaskItemOutcome
 
 
 class StatePendingPublish(WireModel):
-    """Represent the StatePendingPublish object in the state-v2 wire contract."""
+    """Represent the StatePendingPublish object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/pending_publish'
     id: str
@@ -256,7 +258,7 @@ StateLastPublishReceipt = StateTaskItemOutcome
 
 
 class StateLastPublish(WireModel):
-    """Represent the StateLastPublish object in the state-v2 wire contract."""
+    """Represent the StateLastPublish object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/last_publish'
     id: str
@@ -265,7 +267,7 @@ class StateLastPublish(WireModel):
 
 
 class State(WireModel):
-    """Represent the State object in the state-v2 wire contract."""
+    """Represent the State object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#'
     schema_family: Literal['pr_similarity_os.state']

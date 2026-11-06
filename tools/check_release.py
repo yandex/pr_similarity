@@ -5,7 +5,9 @@ import hashlib
 import json
 import stat
 import tomllib
+from importlib import import_module
 from pathlib import Path
+from typing import TypedDict
 
 MODULES = ('basket_collector', 'benchmark', 'viewer')
 ROOT_FILES = (
@@ -18,7 +20,12 @@ ROOT_FILES = (
     'NOTICES',
     '.gitignore',
 )
-SKILLS = ('prsim-build-basket', 'prsim-run-benchmark', 'prsim-analyze-run', 'prsim-publish-run')
+SKILLS = ('prsim-build-basket', 'prsim-run-benchmark', 'prsim-analyze-run', 'prsim-publish-run', 'prsim-cheating-audit')
+SKILL_RESOURCES = (
+    'prsim-cheating-audit/references/evidence.md',
+    'prsim-cheating-audit/references/channels.md',
+    'prsim-cheating-audit/references/verdict.md',
+)
 MODULE_FILES = (
     'README.md',
     'AGENTS.md',
@@ -34,6 +41,15 @@ SOURCE_DIRS = ('src', 'tests', 'examples', 'prompts', 'ops', 'docs')
 TRANSIENT_DIRS = frozenset({'.venv', '__pycache__', '.pytest_cache', '.ruff_cache', 'build', 'dist', '*.egg-info'})
 PRIVATE_NAMES = frozenset({'.env', 'auth.json', 'output', 'runtime', 'cache', 'cache.lock', 'runs', 'artifacts'})
 MANIFEST = 'release-manifest.json'
+
+
+class FileRecord(TypedDict):
+    """Describe one inventoried source file and its verified filesystem attributes."""
+
+    path: str
+    size_bytes: int
+    sha256: str
+    executable: bool
 
 
 def private_path(path: str) -> bool:
@@ -72,7 +88,13 @@ def source_inventory(root: Path) -> list[str]:
         raise ValueError('Expected the PR Similarity repository root.')
     selected = list(ROOT_FILES)
     selected += ['.agents/skills/' + skill + '/SKILL.md' for skill in SKILLS]
-    selected += ['tools/check_release.py', 'tools/prepare_release.py', 'tools/tests/test_release_export.py']
+    selected += ['.agents/skills/' + resource for resource in SKILL_RESOURCES]
+    selected += [
+        'tools/check_release.py',
+        'tools/prepare_release.py',
+        'tools/sync_run_page.py',
+        'tools/tests/test_release_export.py',
+    ]
     for module in MODULES:
         for name in MODULE_FILES:
             path = root / module / name
@@ -101,7 +123,7 @@ def source_inventory(root: Path) -> list[str]:
     return result
 
 
-def file_record(root: Path, relative: str) -> dict:
+def file_record(root: Path, relative: str) -> FileRecord:
     """Record a regular file's relative path, byte size, SHA-256 and executable bit.
 
     Raises:
@@ -119,7 +141,7 @@ def file_record(root: Path, relative: str) -> dict:
     }
 
 
-def check_release(root: Path) -> dict:
+def check_release(root: Path) -> dict[str, str | int]:
     """Check manifest coverage, legal files, module metadata and mirrored contracts."""
     root = root.resolve()
     manifest_path = regular_file(root, MANIFEST)
@@ -154,6 +176,7 @@ def check_release(root: Path) -> dict:
         ('run', 'run', 2),
         ('report', 'report', 2),
         ('state', 'state', 2),
+        ('state', 'state', 3),
         ('manifest', 'archive', 2),
         ('usage', 'usage', 1),
         ('basket', 'basket', 1),
@@ -168,6 +191,8 @@ def check_release(root: Path) -> dict:
         root / 'benchmark/src/schemas/benchmark-basket-v3.schema.json'
     ).read_bytes():
         raise ValueError('Collector/benchmark basket schema differs.')
+    synchronizer = import_module('.sync_run_page', __package__) if __package__ else import_module('sync_run_page')
+    synchronizer.sync(root, check=True)
     vendor = root / 'benchmark/examples/skills/test-driven-development'
     upstream = json.loads((vendor / 'UPSTREAM.json').read_bytes())
     for entry in upstream['files']:

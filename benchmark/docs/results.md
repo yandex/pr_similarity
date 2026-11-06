@@ -2,8 +2,67 @@
 
 # Find your results
 
-For human inspection, open the **printed run directory in your IDE**, then read
-**`report.json`**.
+Open the run directory printed by the benchmark. Read `report.json`, or create
+an offline browser report from `benchmark/`:
+
+```bash
+make visualize RUN=./output/RUN_ID
+```
+
+Replace `RUN_ID` with the complete printed directory name and open `report.html`.
+File dialogs start in **Diff** mode. **Diff / Full file** switches both human and
+agent panels; the selection lasts until page reload. Both modes work offline.
+Regenerate older HTML files to include the latest display features.
+
+> [!NOTE]
+> Similarity scores measure agreement with human changes, not whether the solution
+> passes tests. Read execution status and scored coverage alongside the score.
+
+### Read task states, scores and retry history
+
+| Field | Meaning |
+|---|---|
+| `ordinal`, `directory`, `progress` | Stable navigation and current observed phase |
+| `processing_status` | Coordinator state; completed is not a correct-solution claim |
+| `setup.status`, `execution.status` | Native preparation and process outcome, independently |
+| `infrastructure_error` | Native preparation/provider/capture failure, if present |
+| `changes.status` | Captured diff is nonempty, empty or unknown |
+| `scoring.status`, `Mf_mlp`, `LCf_mlp` | Availability, mean file similarity and LOC-weighted similarity |
+| `telemetry` | Saved final-attempt usage; unknown values remain null |
+| `costs.final_attempts`, `costs.all_attempts` | Separate native/API estimates, known subtotal and coverage |
+
+Timeouts and native/provider errors can retain valid source and scores. MLP is
+agreement with human edits on `[0, 1]`, not a test pass rate. Compare identical
+baskets and model/effort/setup, and report scored coverage. Setup, executable-bit
+changes, earlier retries and unavailable scores require their own interpretation.
+
+## Read incomplete usage in local HTML
+
+Run `make visualize RUN=/path/to/run` to regenerate an autonomous HTML report.
+Cost and token values include known completed requests within incomplete final
+attempts. The `Partial` badge means the displayed number is a known subtotal, not a
+complete total; hover for complete/partial/unavailable task counts and measured
+request coverage. A measured zero stays zero, while unavailable data is a dash.
+Each category has independent coverage. Unknown request coverage in historical
+evidence is not inferred from the number of tasks.
+
+The default status selection includes `OK`, `no-op` and `timeout`, excluding
+`fail`. Changing it recomputes the selected summaries; Wall Time is unchanged.
+Earlier attempts are excluded from these cards. Their spend remains available
+in the saved report's `costs.all_attempts` scope. Task sorting uses the displayed
+token value and retains its partial label.
+
+A selected saved reprice takes precedence over native cost, including a partial
+or unavailable result. No current prices, new model calls or extrapolation are
+used. Generating the HTML verifies selected artifact references and leaves the
+original report, state, usage and pricing bytes unchanged. Existing HTML files
+must be regenerated to show the additional detail; the new display projection
+is embedded in HTML rather than added to saved benchmark JSON artifacts.
+## Detailed inspection
+
+<details>
+<summary>Artifact layout, logs and source-file comparisons</summary>
+
 Every task has a stable `ordinal` and `directory`; the number matches the task
 folder prefix and live progress row. Final attempt, scoring and pricing refs
 come from `_meta/state.json`. The report is its readable projection; an older
@@ -26,6 +85,7 @@ output/<time>-<agent>-<suffix>/
 ├── tasks/003-<repository>-pr-<number>-<suffix>/
 │   └── attempts/002/
 │       ├── start.json, seal.json, outcome.json   reservation, native capture and result
+│       ├── interruption.json                    optional recovery observation for missing native facts
 │       ├── agent.log                            live timestamped human transcript
 │       ├── events.jsonl, runtime.log            native JSON; stderr/non-JSON diagnostics
 │       ├── stream_receipt.json                  raw-stream completeness and warnings
@@ -80,7 +140,12 @@ collisions. `index.json` preserves the full original path and exact refs. Very
 long stems are shortened with a stable digest to respect filename limits.
 Run-relative refs survive moving the whole run. The disposable source checkout/private HOME is not retained or archived.
 
+</details>
+
 ### List selected task states and live locations
+
+<details>
+<summary>Print selected task states and log paths</summary>
 
 Run from `benchmark/`, replacing the run-directory placeholder:
 
@@ -103,29 +168,14 @@ PYCODE
 ```
 
 Read-only JSON/log/editor inspection needs no viewer, server, plugin or writer
-lock. It does not create an invocation or new DEBUG folder. The HTML command
-remain optional, explicit presentations; running an agent creates no Markdown or
+lock. It does not create an invocation or new DEBUG folder. HTML generation
+is optional; running an agent creates no Markdown or
 HTML report automatically.
 
+</details>
 
-
-### Read task states, scores and retry history
-
-| Field | Meaning |
-|---|---|
-| `ordinal`, `directory`, `progress` | Stable navigation and current observed phase |
-| `processing_status` | Coordinator state; completed is not a correct-solution claim |
-| `setup.status`, `execution.status` | Native preparation and process outcome, independently |
-| `infrastructure_error` | Native preparation/provider/capture failure, if present |
-| `changes.status` | Captured diff is nonempty, empty or unknown |
-| `scoring.status`, `Mf_mlp`, `LCf_mlp` | Availability, mean file similarity and LOC-weighted similarity |
-| `telemetry` | Saved final-attempt usage; unknown values remain null |
-| `costs.final_attempts`, `costs.all_attempts` | Separate native/API estimates, known subtotal and coverage |
-
-Timeouts and native/provider errors can retain valid source and scores. MLP is
-agreement with human edits on `[0, 1]`, not a test pass rate. Compare identical
-baskets and model/effort/setup, and report scored coverage. Setup, executable-bit
-changes, earlier retries and unavailable scores require their own interpretation.
+<details>
+<summary>Native facts, rescoring and retry history</summary>
 
 `seal.json` closes native execution, diff, source and usage before host scoring.
 Initial `outcome.json` stays immutable. Rescore and host-only recovery create
@@ -139,7 +189,12 @@ Sanitized SQLite is accounting rather than a transcript. Effective config and
 copied skills prove availability/configuration, not a skill invocation, MCP call
 or provider behavior. Follow raw events/human logs for those claims.
 
+</details>
+
 ### Quota-stopped runs
+
+<details>
+<summary>Quota stops and incomplete historical attempts</summary>
 
 A ChatGPT OAuth quota stop records `run.error.code=provider_quota_exhausted`.
 The triggering attempts retain their actual native error and captured changes;
@@ -149,30 +204,10 @@ siblings stay `interrupted`, and previously completed results remain selected.
 Unavailable metrics or usage remain unknown, not zero. Resume with the original
 basket after quota is available; see [resume and quota-stop](reference.md#resume-retries-progress-and-logging).
 
-If a crash prevented an outcome from being saved and host scoring recovery also
-fails, that historical attempt remains incomplete. A fresh attempt can still run;
-publication continues to reject incomplete evidence instead of inventing an outcome.
+If a crash prevented an outcome from being saved, resume first recovers available
+native facts and host scoring. Unfinished historical attempts receive a separate
+interruption observation. Publication accepts that history when the later selected
+attempt satisfies the publication contract; committed missing or damaged files
+remain errors. Unknown historical usage remains explicit in all-attempt costs.
 
-
-## Read incomplete usage in local HTML
-
-Run `make visualize RUN=/path/to/run` to regenerate an autonomous HTML report.
-Cost and token values include known completed requests within incomplete final
-attempts. `(partial)` means the displayed number is a known subtotal, not a
-complete total; hover for complete/partial/unavailable task counts and measured
-request coverage. A measured zero stays zero, while unavailable data is a dash.
-Each category has independent coverage. Unknown request coverage in historical
-evidence is not inferred from the number of tasks.
-
-The default status selection includes `OK`, `no-op` and `timeout`, excluding
-`fail`. Changing it recomputes the selected summaries; Wall Time is unchanged.
-Earlier attempts are excluded from these cards. Their spend remains available
-in the saved report's `costs.all_attempts` scope. Task sorting uses the displayed
-token value and retains its partial label.
-
-A selected saved reprice takes precedence over native cost, including a partial
-or unavailable result. No current prices, new model calls or extrapolation are
-used. Generating the HTML verifies selected artifact references and leaves the
-original report, state, usage and pricing bytes unchanged. Existing HTML files
-must be regenerated to show the additional detail; the new display projection
-is embedded in HTML rather than added to saved benchmark JSON artifacts.
+</details>

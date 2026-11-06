@@ -1,6 +1,9 @@
 """Console thresholds, diagnostics and redaction are independently verified."""
 
 import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -112,3 +115,40 @@ def test_history_rejection_warning_is_safe_and_identifies_merge_request(
     assert ('missing_commit=' + BASE in console) is not malformed
     assert 'synthetic-history-secret' not in console + saved
     assert 'SENSITIVE_BODY' not in console + saved and 'user:password' not in console + saved
+
+
+def test_file_timestamps_are_utc_in_non_utc_process(tmp_path: Path) -> None:
+    """Persist unambiguous UTC timestamps regardless of the process timezone."""
+    script = '''
+"""Emit a fixed timestamp under the process timezone for a UTC assertion."""
+
+import logging
+import sys
+from pathlib import Path
+
+from basket_collector.runtime.logs import InvocationLogs
+
+
+def probe() -> None:
+    """Write one fixed record and expose its rendered timestamp."""
+    logs = InvocationLogs(Path(sys.argv[1]))
+    try:
+        record = logging.LogRecord('basket_collector', logging.INFO, '', 0, 'clock probe', (), None)
+        record.created = 0
+        record.msecs = 0
+        logs.handler.handle(record)
+    finally:
+        logs.close()
+    print(logs.path.read_text())
+
+
+probe()
+'''
+    result = subprocess.run(
+        [sys.executable, '-c', script, str(tmp_path)],
+        env={**os.environ, 'TZ': 'Etc/GMT-3'},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.startswith('1970-01-01 00:00:00,000Z INFO basket_collector: clock probe')

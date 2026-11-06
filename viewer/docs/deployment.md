@@ -104,6 +104,11 @@ sudo systemctl stop prsim-viewer
 sudo systemctl start prsim-viewer
 ```
 
+Background recovery and catalogue refresh failures log the error code, attempt
+number, exception type and frame locations (file name, line and function) in the
+service journal. These diagnostics omit exception messages, source lines and
+local variables. The status API reports the safe error code without frame details.
+
 `enable` starts the unit after reboot. During a maintenance window, also verify
 status, login and the saved run after a host reboot. Create the first administrator
 locally, at the hidden password prompt, as the runtime owner:
@@ -123,8 +128,10 @@ reloads the running listener. Restart after rotating static S3 credentials too.
 ### Deployment acceptance
 
 From a client that trusts the certificate, check
-`curl --fail https://viewer.example.org:8443/healthz`, then sign in through the
-browser. Create a publisher account through **Users**. From an installed benchmark
+`curl --fail https://viewer.example.org:8443/healthz` for process liveness and
+`curl --fail https://viewer.example.org:8443/readyz` for readiness. The latter
+returns 503 while recovery or catalogue validation is running; wait for 200
+before signing in through the browser. Create a publisher account through **Users**. From an installed benchmark
 and an actual completed run, exercise storage and publication:
 
 ```sh

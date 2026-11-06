@@ -2,35 +2,21 @@
 
 # Configure your agent
 
-There are two layers: the outer YAML configures this harness, while
-`agent.config.opencode_json` is native OpenCode configuration. The harness
-validates its own fields and secret bindings; native fields must still be
-accepted by the pinned runtime. Check the attempt's effective-config reference for the merged config actually
-discovered by OpenCode, stored under `agent/effective/`.
+Start from [examples/full.yaml](../examples/full.yaml) for the OAuth baseline,
+or [examples/openai-api-key.yaml](../examples/openai-api-key.yaml) for API access.
+Keep a private copy under `examples/` so relative paths continue to resolve:
 
-| Setting | Purpose |
-|---|---|
-| `agent.name`, `agent.runtime` | Agent label and exact OpenCode version |
-| `agent.auth` | API-key mode or ChatGPT OAuth with a private profile |
-| `agent.config.opencode_json.model` | Native `provider/model` ID |
-| `agent.config.opencode_json.provider` | Endpoint, SDK and model options, including reasoning effort |
-| `agent.config.opencode_json.permission` | Native permissions; examples allow unattended execution |
-| `agent.config.opencode_json.skills.paths` | Local skill folders to copy into the sandbox |
-| `agent.config.opencode_json.instructions` | Additional rules/instructions to copy into the sandbox |
-| `agent.config.opencode_json.mcp` | Native local/remote MCP connections |
-| `agent.setup.script`, `timeout_seconds` | Bash setup file and its separate time budget |
-| `agent.timeout_seconds` | Agent time budget after setup |
-| `git.timeout_seconds` | Timeout per Git command; shared-cache waiting lasts until acquisition or cancellation |
-| `agent.credentials` | Sandbox variable name → host secret variable name |
-| `agent.env` | Nonsensitive environment values forwarded to setup and agent |
-| `agent.diff_excludes` | Source paths omitted from captured agent changes |
-| `agent.instructions_file` | Replacement task-prompt prefix; null keeps the benchmark instructions |
+```bash
+cp examples/full.yaml examples/my-agent.yaml
+```
 
-Tasks sharing a repository serialize Git-cache preparation. Waiting for that
-lock has no deadline and does not consume retries. Ctrl+C cancels the wait;
-individual Git commands still use `git.timeout_seconds`. Run-directory locks
-continue to reject a second writer immediately. Installation and OAuth lock
-policies are unchanged.
+Edit the model and options in that copy, then pass `CONFIG=examples/my-agent.yaml`
+to benchmark commands. The outer YAML configures the harness;
+`agent.config.opencode_json` configures OpenCode itself.
+
+> [!NOTE]
+> Select tasks with `DATASET`, independently of the agent configuration.
+> Preserve the original frozen inputs when resuming a run.
 
 Configure user labels in the same YAML:
 
@@ -176,3 +162,40 @@ base. Exclusions do not hide files from the agent or restrict reads.
 For a baseline, keep `setup: null`, `instructions_file: null`, no added native
 skills/instructions/MCP, and `diff_excludes: []`. Hold model, effort and retry
 policy constant when comparing it with an integration.
+
+## Configuration reference
+
+<details>
+<summary>Field ownership, effective config and locking</summary>
+
+There are two layers: the outer YAML configures this harness, while
+`agent.config.opencode_json` is native OpenCode configuration. The harness
+validates its own fields and secret bindings; native fields must still be
+accepted by the pinned runtime. Check the attempt's effective-config reference for the merged config actually
+discovered by OpenCode, stored under `agent/effective/`.
+
+| Setting | Purpose |
+|---|---|
+| `agent.name`, `agent.runtime` | Agent label and exact OpenCode version |
+| `agent.auth` | API-key mode or ChatGPT OAuth with a private profile |
+| `agent.config.opencode_json.model` | Native `provider/model` ID |
+| `agent.config.opencode_json.provider` | Endpoint, SDK and model options, including reasoning effort |
+| `agent.config.opencode_json.permission` | Native permissions; examples allow unattended execution |
+| `agent.config.opencode_json.skills.paths` | Local skill folders to copy into the sandbox |
+| `agent.config.opencode_json.instructions` | Additional rules/instructions to copy into the sandbox |
+| `agent.config.opencode_json.mcp` | Native local/remote MCP connections |
+| `agent.setup.script`, `timeout_seconds` | Bash setup file and its separate time budget |
+| `agent.timeout_seconds` | Agent time budget after setup |
+| `git.timeout_seconds` | Timeout per Git command; shared-cache waiting lasts until acquisition or cancellation |
+| `agent.credentials` | Sandbox variable name → host secret variable name |
+| `agent.env` | Nonsensitive environment values forwarded to setup and agent |
+| `agent.diff_excludes` | Source paths omitted from captured agent changes |
+| `agent.instructions_file` | Replacement task-prompt prefix; null keeps the benchmark instructions |
+
+Tasks sharing a repository serialize Git-cache preparation. Waiting for that
+lock has no deadline and does not consume retries. Ctrl+C cancels the wait;
+individual Git commands still use `git.timeout_seconds`. Run-directory locks
+continue to reject a second writer immediately. Installation and OAuth lock
+policies are unchanged.
+
+</details>

@@ -1,16 +1,18 @@
 """One owned asyncio loop and HTTP pool behind synchronous source API calls."""
 
 import asyncio
+import sys
 import threading
 import time
 import weakref
 from collections.abc import AsyncIterator, Callable
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from http.cookiejar import Cookie, DefaultCookiePolicy
 from typing import Any, TypedDict, Unpack
 
 import httpx
+from basket_collector.providers.remote import RemoteInterrupted
 
 
 class RequestOptions(TypedDict, total=False):
@@ -60,11 +62,13 @@ class _State:
 
     timeout: float
     transport: httpx.AsyncBaseTransport | None
-    lock: Any = field(default_factory=threading.RLock)
+    lock: threading.RLock = field(default_factory=threading.RLock)
     ready: threading.Event = field(default_factory=threading.Event)
     stopped: threading.Event = field(default_factory=threading.Event)
     loop: asyncio.AbstractEventLoop | None = None
     thread: threading.Thread | None = None
+    executor: ThreadPoolExecutor | None = None
+    worker: Future[None] | None = None
     client: httpx.AsyncClient | None = None
     tasks: set[asyncio.Task[httpx.Response]] = field(default_factory=set)
     closing_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
@@ -140,52 +144,87 @@ async def _cleanup(state: _State) -> None:
 
 
 def _loop_main(state: _State) -> None:
-    """Own the loop independently of the runtime object's garbage collection."""
-    try:
-        loop = asyncio.new_event_loop()
-    except BaseException as error:
-        state.startup_error = error
-        state.ready.set()
-        state.stopped.set()
-        return
-    state.loop = loop
-    asyncio.set_event_loop(loop)
+    """Own the loop; the executor retains failures after signaling the caller."""
+    state.thread = threading.current_thread()
+    started = False
     try:
         try:
-            loop.run_until_complete(_open(state))
-        except BaseException as error:
-            state.startup_error = error
+            state.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(state.loop)
+            state.loop.run_until_complete(_open(state))
+            started = True
         finally:
+            if not started:
+                state.startup_error = sys.exception()
             state.ready.set()
-        if state.startup_error is None and not state.closed:
-            loop.run_forever()
+        if not state.closed:
+            state.loop.run_forever()
     finally:
         try:
-            loop.run_until_complete(_cleanup(state))
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            # Python 3.12 accepts timeout; abstract-loop stubs omit this keyword.
-            loop.run_until_complete(loop.shutdown_default_executor(timeout=1))  # pyright: ignore[reportCallIssue]
-        except BaseException as error:
-            state.cleanup_error = error
+            _finish_loop(state)
         finally:
-            loop.close()
-            state.stopped.set()
+            if state.executor is not None:
+                state.executor.shutdown(wait=False)
+
+
+def _finish_loop(state: _State) -> None:
+    """Record cleanup failures while unwinding and always release loop waiters."""
+    loop = state.loop
+    if loop is None:
+        state.stopped.set()
+        return
+    completed = False
+    try:
+        loop.run_until_complete(_cleanup(state))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        # Python 3.12 accepts timeout; abstract-loop stubs omit this keyword.
+        loop.run_until_complete(loop.shutdown_default_executor(timeout=1))  # pyright: ignore[reportCallIssue]
+        completed = True
+    finally:
+        if not completed:
+            state.cleanup_error = sys.exception()
+        loop.close()
+        state.stopped.set()
+
+
+def _finalize(state: _State) -> None:
+    """Request loop shutdown without waiting inside a garbage-collection callback."""
+    state.closed = True
+    loop = state.loop
+    if loop is not None and not loop.is_closed():
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except RuntimeError:
+            if not loop.is_closed():
+                raise
 
 
 def _close(state: _State) -> None:
-    """Close once and join the owned thread, including startup failures."""
+    """Close once and join the owned executor thread, including startup failures."""
     with state.lock:
         state.closed = True
-        thread, loop = state.thread, state.loop
-        if thread is None:
+        thread, loop, executor, worker = state.thread, state.loop, state.executor, state.worker
+        if executor is None or worker is None:
             return
         if thread is threading.current_thread():
             raise RuntimeError('HTTP runtime cannot close from its owning loop')
         if loop is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(loop.stop)
-    thread.join(state.timeout + 1)
-    if thread.is_alive():
-        raise RuntimeError('HTTP runtime cleanup exceeded its deadline')
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                if not loop.is_closed():
+                    raise
+        executor.shutdown(wait=False)
+    deadline = time.monotonic() + state.timeout + 1
+    try:
+        worker.exception(timeout=max(0, deadline - time.monotonic()))
+    except TimeoutError as error:
+        raise RuntimeError('HTTP runtime cleanup exceeded its deadline') from error
+    thread = state.thread
+    if thread is not None:
+        thread.join(max(0, deadline - time.monotonic()))
+        if thread.is_alive():
+            raise RuntimeError('HTTP runtime cleanup exceeded its deadline')
     if state.cleanup_error is not None:
         raise RuntimeError('HTTP runtime resource cleanup failed') from state.cleanup_error
 
@@ -235,13 +274,12 @@ async def _launch(
         """Expose the result only after response stream cleanup has completed."""
         state.tasks.discard(completed)
         try:
-            result = completed.result()
-        except asyncio.CancelledError:
-            job.result.set_exception(RuntimeError('HTTP runtime request was cancelled'))
-        except BaseException as error:
-            job.result.set_exception(error)
-        else:
-            job.result.set_result(result)
+            if completed.cancelled():
+                job.result.set_exception(RuntimeError('HTTP runtime request was cancelled'))
+            elif (error := completed.exception()) is not None:
+                job.result.set_exception(error)
+            else:
+                job.result.set_result(completed.result())
         finally:
             job.reaped.set()
 
@@ -256,7 +294,7 @@ class HTTPRuntime:
     def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None, shutdown_timeout: float = 5) -> None:
         """Configure resource ownership without opening a socket or starting a thread."""
         self._state = _State(shutdown_timeout, transport)
-        self._finalizer = weakref.finalize(self, _close, self._state)
+        self._finalizer = weakref.finalize(self, _finalize, self._state)
 
     @property
     def is_alive(self) -> bool:
@@ -272,9 +310,9 @@ class HTTPRuntime:
                 raise RuntimeError('HTTP runtime is closed')
             if state.thread is threading.current_thread():
                 raise RuntimeError('HTTP request cannot wait on its owning loop')
-            if state.thread is None:
-                state.thread = threading.Thread(target=_loop_main, args=(state,), name='basket-source-http')
-                state.thread.start()
+            if state.worker is None:
+                state.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='basket-source-http')
+                state.worker = state.executor.submit(_loop_main, state)
         while not state.ready.is_set():
             check_stop()
             remaining = deadline - time.monotonic()
@@ -306,6 +344,7 @@ class HTTPRuntime:
             launch = asyncio.run_coroutine_threadsafe(
                 _launch(self._state, job, method, url, deadline, check_stop, kwargs), loop
             )
+        completed = False
         try:
             while not job.reaped.is_set():
                 if launch.done():
@@ -315,30 +354,41 @@ class HTTPRuntime:
                 if remaining <= 0:
                     raise TimeoutError('HTTP request exceeded its overall deadline')
                 job.reaped.wait(min(0.1, remaining))
-            return job.result.result()
-        except BaseException:
-            completed_before_cancel = job.reaped.is_set() and job.result.exception() is None
-            job.cancelled.set()
-
-            def cancel() -> None:
-                """Cancel the actual task rather than only its proxy future."""
-                if (
-                    job.task is not None
-                    and not job.task.done()
-                    and not job.task.cancelling()
-                    and job.task not in self._state.closing_tasks
-                ):
-                    job.task.cancel()
-
-            if not loop.is_closed():
-                loop.call_soon_threadsafe(cancel)
-            if not job.reaped.wait(self._state.timeout + 1):
-                self.close()
-                raise RuntimeError('HTTP request cancellation did not finish')
-            if completed_before_cancel:
+            response = job.result.result()
+            completed = True
+            return response
+        except (InterruptedError, RemoteInterrupted, TimeoutError):
+            if job.reaped.is_set() and job.result.exception() is None:
                 # Preserve a complete response that won the race with stop intent.
                 return job.result.result()
             raise
+        finally:
+            if not completed:
+                self._cancel_job(job, loop)
+
+    def _cancel_job(self, job: _Job, loop: asyncio.AbstractEventLoop) -> None:
+        """Reap the owned request during failure unwinding, including process control."""
+        job.cancelled.set()
+
+        def cancel() -> None:
+            """Cancel the actual task rather than only its proxy future."""
+            if (
+                job.task is not None
+                and not job.task.done()
+                and not job.task.cancelling()
+                and job.task not in self._state.closing_tasks
+            ):
+                job.task.cancel()
+
+        if not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(cancel)
+            except RuntimeError:
+                if not loop.is_closed():
+                    raise
+        if not job.reaped.wait(self._state.timeout + 1):
+            self.close()
+            raise RuntimeError('HTTP request cancellation did not finish')
 
     def close(self) -> None:
         """Close the session on its loop and wait for owned resources to disappear."""

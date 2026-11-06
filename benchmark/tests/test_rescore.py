@@ -110,7 +110,7 @@ def test_selected_state_survives_report_failure_and_rebuilds_exactly(
     directory, _config, _dataset = stopped_run(tmp_path, monkeypatch)
     original = run_store.write_json
 
-    def fail_report(path: Path, value: dict, **kwargs: object) -> None:
+    def fail_report(path: Path, value: object, **kwargs: object) -> None:
         """Fail the derived projection after accepting the rescore operation in state."""
         if path == directory / 'report.json' and RunStore.open(directory).last_operation('rescore') is not None:
             raise BenchmarkError('artifact_write_failed', 'Fixture report interruption.')

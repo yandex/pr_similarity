@@ -23,6 +23,7 @@ from benchmark.metrics.rescore import rescore
 from benchmark.models import Report, State
 from benchmark.models.base import WireModel
 from benchmark.models.evidence import Seal, Start
+from benchmark.models.report import ReportTask
 from benchmark.models.runtime import ProvisioningReceipt
 from benchmark.persistence.run_store import RunStore
 from benchmark.persistence.storage import (
@@ -542,3 +543,45 @@ def test_sigkill_recovers_only_state_owned_native_facts(
         assert State.model_validate(read_json(directory / '_meta/state.json')).tasks[0].history[0].seal is None
     else:
         assert native_cost.amount == '0.5' and native_cost.coverage.total_attempts == 1
+
+    if boundary == 'native' and basket_version == 3:
+        _verify_old_history_repair(directory, inputs, row, config, monkeypatch)
+
+    archive = create_archive(directory, tmp_path / 'recovered.tar.gz')
+    verify_archive(archive.path)
+    _export(directory, archive.path)
+
+
+def _verify_old_history_repair(
+    directory: Path, inputs: Workflow, row: ReportTask, config: RunConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repair pre-marker history while preserving the selected attempt and scores."""
+    # Emulate a completed pre-fix run: history has no recovery marker yet.
+    saved = read_json(directory / '_meta/state.json')
+    tasks = saved['tasks']
+    assert isinstance(tasks, list) and isinstance(tasks[0], dict)
+    history = tasks[0]['history']
+    assert isinstance(history, list) and isinstance(history[0], dict)
+    marker = history[0].pop('interruption')
+    assert isinstance(marker, dict) and isinstance(marker['path'], str)
+    marker_path = marker['path']
+    tasks[0].pop('interruption', None)
+    saved['schema_version'] = 2
+    (directory / marker_path).unlink()
+    write_json(directory / '_meta/state.json', saved)
+    RunStore.open(directory).rebuild()
+
+    def forbidden_repair(*_args: object, **_kwargs: object) -> NoReturn:
+        """Completed selected work must not call a model to repair old history."""
+        raise AssertionError('history repair must not provision a runtime')
+
+    monkeypatch.setattr(coordinator, 'provision_opencode', forbidden_repair)
+    assert run(config, inputs.dataset, resume=directory, progress='off')[0] == 0
+    repaired = RunStore.open(directory)
+    assert repaired.state.tasks[0].attempt == row.final_attempt
+    assert repaired.state.tasks[0].history[0].interruption is not None
+    assert len(list(directory.glob('tasks/*/attempts/*/start.json'))) == 2
+    assert repaired.snapshot().tasks[0].scoring == row.scoring
+    assert rescore(directory, level='ERROR') == 0
+    # Unknown historic usage remains a repricing gap, with a valid selected operation.
+    assert reprice(directory, inputs.pricing, level='ERROR') == 1

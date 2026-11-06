@@ -141,6 +141,9 @@ def _validate_selections(store: RunStore, missing: list[ArchiveManifestMissingAr
             attempt = item.attempt
             assert attempt is not None
             prefix = store.attempt_directory(selected.id, attempt.sequence).as_posix()
+            if item is not selected and item.interruption is not None:
+                # RunStore already validated every retained receipt and the recovery owner.
+                continue
             for kind in ('start', 'seal'):
                 receipt = item.start if kind == 'start' else item.seal
                 expected = prefix + '/' + kind + '.json'

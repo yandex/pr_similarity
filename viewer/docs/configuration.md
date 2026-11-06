@@ -41,6 +41,18 @@ credential chain; do not add credentials to JSON.
 | `login_window_seconds` | Failed-login window (seconds) |
 | `password_checks` | Maximum admitted concurrent password checks |
 
+## Background work and shutdown
+
+Recovery and background refresh retries use `recovery_retry_seconds` (default 5) between attempts and
+`recovery_attempts` (default 3) per request. Both must be positive integers.
+
+`shutdown_seconds` (default 15, positive integer) bounds HTTP request draining
+and the subsequent maintenance shutdown separately. `make stop` waits up to
+`2 * shutdown_seconds + 5` seconds, including process-exit overhead.
+The CLI terminates the process on timeout while retaining the runtime lock;
+interrupted journal operations recover on the next startup. Embedded hosts must
+terminate their process if application shutdown fails, without reusing its runtime.
+
 ## Resource limits
 
 All fields below belong inside `limits`. Values are positive integers;

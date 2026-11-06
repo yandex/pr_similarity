@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -39,17 +40,29 @@ def test_wheel_installed_without_source(tmp_path: Path) -> None:
         check=True,
         capture_output=True,
     )
-    code = (
-        'import sys;sys.path.insert(0,sys.argv[1]);from viewer.validation.contracts i'
-        'mport validator;from viewer.presentation.metrics import aggregate;import viewe'
-        'r;from pathlib import Path;assert Path(viewer.__file__).resolve() == '
-        '(Path(sys.argv[1])/"viewer"/"__init__.py").resolve();assert validator("report"'
-        ');assert aggregate([])["score"] is None;from importlib.resources '
-        'import files;assert all(len(files("viewer").joinpath("static",nam'
-        'e).read_bytes())>100 for name in ("index.html","app.js","style.cs'
-        's"));print(viewer.__version__)'
-    )
-    code += ';assert validator("basket", 3)'
+    code = '''
+"""Verify contracts, resources and import origin of the isolated viewer wheel."""
+
+import sys
+from importlib import import_module
+from importlib.resources import files
+from pathlib import Path
+
+# This isolated subprocess resolves only the installed wheel under test.
+sys.path.insert(0, sys.argv[1])
+viewer = import_module('viewer')
+validator = import_module('viewer.validation.contracts').validator
+aggregate = import_module('viewer.presentation.metrics').aggregate
+assert viewer.__file__ is not None
+assert Path(viewer.__file__).resolve() == (Path(sys.argv[1]) / 'viewer' / '__init__.py').resolve()
+assert validator('report')
+assert aggregate([])['score'] is None
+assert all(
+    len(files('viewer').joinpath('static', name).read_bytes()) > 100 for name in ('index.html', 'app.js', 'style.css')
+)
+print(viewer.__version__)
+assert validator('basket', 3)
+'''
     result = subprocess.run(
         [sys.executable, '-I', '-c', code, str(tmp_path / 'installed')],
         cwd=tmp_path,
@@ -57,7 +70,7 @@ def test_wheel_installed_without_source(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert result.stdout.strip() == '0.3.3'
+    assert result.stdout.strip() == tomllib.loads((root / 'pyproject.toml').read_text())['project']['version']
 
 
 def test_frozen_contract_fixtures_match_recorded_hashes() -> None:

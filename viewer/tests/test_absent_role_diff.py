@@ -119,8 +119,9 @@ def test_browser_renders_empty_add_delete_with_real_null_refs(
     page.goto(origin + '/run?run_id=' + imported.report.run.id)
     page.locator('.task-toggle').click()
     page.locator('button.file').click()
-    expect(page.locator('.diff-grid')).to_be_visible()
-    assert page.locator('.diff-panel h4').all_text_contents() == ['Human diff', 'Agent diff']
+    page.get_by_role('button', name='Full file', exact=True).click()
+    expect(page.locator('.full-file')).to_have_count(2)
+    assert page.locator('.diff-panel h4').all_text_contents() == ['Human (+0 −0)', 'Agent (+0 −0)']
     for panel in page.locator('.diff-panel pre').all():
-        expect(panel).to_contain_text('[File ' + action + '; empty content]')
+        expect(panel).to_contain_text('Deleted empty file' if action == 'deleted' else 'Empty file')
     assert page.locator('.diff-error').count() == 0

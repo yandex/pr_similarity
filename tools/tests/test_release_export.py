@@ -7,8 +7,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.check_release import MANIFEST, MODULES, ROOT_FILES, SKILLS, check_release
+from tools.check_release import (
+    MANIFEST,
+    MODULES,
+    ROOT_FILES,
+    SKILL_RESOURCES,
+    SKILLS,
+    check_release,
+)
 from tools.prepare_release import prepare_release
+from tools.sync_run_page import ASSETS, sync
 
 
 class ReleaseExportTest(unittest.TestCase):
@@ -25,26 +33,55 @@ class ReleaseExportTest(unittest.TestCase):
             self.write(relative, 'public\n')
         for skill in SKILLS:
             self.write('.agents/skills/' + skill + '/SKILL.md', 'public skill\n')
-        for relative in ('tools/check_release.py', 'tools/prepare_release.py', 'tools/tests/test_release_export.py'):
+        for resource in SKILL_RESOURCES:
+            self.write('.agents/skills/' + resource, 'public skill reference\n')
+        for relative in (
+            'tools/check_release.py',
+            'tools/prepare_release.py',
+            'tools/sync_run_page.py',
+            'tools/tests/test_release_export.py',
+        ):
             self.write(relative, 'public tool\n')
         for module in MODULES:
-            self.write(module + '/pyproject.toml', '[project]\nversion="0.1.0"\nlicense="Apache-2.0"\n')
+            self.write(
+                module + '/pyproject.toml',
+                '[project]\nversion="0.1.0"\nlicense="Apache-2.0"\n',
+            )
             self.write(module + '/src/__init__.py', '')
             self.write(module + '/.env.example', 'TOKEN=\n')
         for family, consumer, version in (
             ('run', 'run', 2),
             ('report', 'report', 2),
             ('state', 'state', 2),
+            ('state', 'state', 3),
             ('manifest', 'archive', 2),
             ('usage', 'usage', 1),
             ('basket', 'basket', 1),
             ('basket', 'basket', 2),
             ('basket', 'basket', 3),
         ):
-            self.write(f'benchmark/src/schemas/benchmark-{family}-v{version}.schema.json', '{}\n')
+            self.write(
+                f'benchmark/src/schemas/benchmark-{family}-v{version}.schema.json',
+                '{}\n',
+            )
             self.write(f'viewer/src/schemas/{consumer}-v{version}.json', '{}\n')
+        for name in ASSETS:
+            self.write('viewer/src/static/' + name, 'public resource\n')
+        self.write('viewer/src/presentation/metrics.py', '# pure metric projection\n')
+        self.write('viewer/src/presentation/file_views.py', '# bounded file projection\n')
+        self.write(
+            'viewer/src/config.py',
+            'class Limits:\n'
+            '    diff_bytes: int = 8 << 20\n'
+            '    diff_lines: int = 20000\n'
+            '    config_display_bytes: int = 64 << 10\n',
+        )
+        sync(self.source, check=False)
         self.write('basket_collector/src/schemas/basket-v3.schema.json', '{}\n')
-        self.write('benchmark/examples/skills/test-driven-development/UPSTREAM.json', '{"files":[]}\n')
+        self.write(
+            'benchmark/examples/skills/test-driven-development/UPSTREAM.json',
+            '{"files":[]}\n',
+        )
         self.write('basket_collector/prompts/system.jinja2', 'public prompt\n')
         self.write('viewer/ops/trash-lifecycle.example.json', '{}\n')
         self.write('benchmark/docs/configuration.md', 'Public configuration guide.\n')
@@ -73,9 +110,23 @@ class ReleaseExportTest(unittest.TestCase):
         self.assertIn('viewer/ops/trash-lifecycle.example.json', paths)
         self.assertIn('benchmark/docs/configuration.md', paths)
         self.assertIn('benchmark/examples/full.yaml', paths)
-        self.assertEqual(sum(p.startswith('.agents/') for p in paths), 4)
+        self.assertEqual(sum(p.startswith('.agents/') for p in paths), len(SKILLS) + len(SKILL_RESOURCES))
+        for resource in SKILL_RESOURCES:
+            self.assertIn('.agents/skills/' + resource, paths)
         self.assertNotIn('benchmark/LICENSE', paths)
         self.assertFalse((first / '.env').exists())
+
+    def test_skill_references_are_allowlisted_and_links_are_rejected(self) -> None:
+        """Ship the referenced public guidance without exporting adjacent private audit notes."""
+        private = self.write('.agents/skills/prsim-cheating-audit/private-audit.md', 'private finding')
+        destination = self.root / 'skill-export'
+        prepare_release(self.source, destination)
+        self.assertFalse((destination / private.relative_to(self.source)).exists())
+        reference = self.source / '.agents/skills' / SKILL_RESOURCES[0]
+        reference.unlink()
+        reference.symlink_to(private)
+        with self.assertRaises(ValueError):
+            prepare_release(self.source, self.root / 'linked-reference')
 
     def test_runtime_source_package_does_not_admit_operator_runtime(self) -> None:
         """Keep the runtime source package but reject operator runtime directories."""
@@ -161,6 +212,46 @@ class ReleaseExportTest(unittest.TestCase):
         self.assertFalse(destination.exists())
         self.assertEqual(len(calls), 2)
         self.assertFalse(list(self.root.glob('.export-export-*')))
+
+    def test_interrupted_promotion_cleans_owned_output(self) -> None:
+        """Propagate process interruption after cleaning reserved output and staging."""
+        destination = self.root / 'interrupted'
+        with patch('tools.prepare_release.os.rename', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                prepare_release(self.source, destination)
+        self.assertFalse(destination.exists())
+        self.assertFalse(list(self.root.glob('.interrupted-export-*')))
+
+
+class RunPageMirrorTest(unittest.TestCase):
+    """Check packaged copies against their viewer-owned sources."""
+
+    def test_actual_renderer_and_projection_copies_match(self) -> None:
+        """Verify that the current checkout has synchronized resources."""
+        sync(Path(__file__).resolve().parents[2], check=True)
+
+    def test_drift_is_rejected(self) -> None:
+        """Reject renderer bytes changed after synchronization."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ASSETS:
+                target = root / 'viewer/src/static' / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('original')
+            for name in ('metrics.py', 'file_views.py'):
+                target = root / 'viewer/src/presentation' / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('# original')
+            (root / 'viewer/src/config.py').write_text(
+                'class Limits:\n'
+                '    diff_bytes: int = 8 << 20\n'
+                '    diff_lines: int = 20000\n'
+                '    config_display_bytes: int = 64 << 10\n'
+            )
+            sync(root, check=False)
+            (root / 'viewer/src/static/app.js').write_text('changed')
+            with self.assertRaisesRegex(ValueError, 'differs from viewer'):
+                sync(root, check=True)
 
 
 if __name__ == '__main__':

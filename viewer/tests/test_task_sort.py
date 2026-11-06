@@ -56,18 +56,24 @@ def test_null_last_raw_precision_zero_and_stable_ties(key: str) -> None:
 
 def test_unavailable_score_is_null_and_file_aggregation_changes_sort() -> None:
     """Verify unavailable score is null and file aggregation changes sort."""
-    a = task(score=0.2)
-    a.id = 'a'
-    a.scoring.LCf_mlp = 0.8
-    b = task(score=0.7)
-    b.id = 'b'
-    b.scoring.LCf_mlp = 0.3
-    q = TaskQuery(QueryParams('sort=score'))
-    assert [r['task_id'] for r in q.sorted([public_task(a, 'Mf'), public_task(b, 'Mf')])] == ['b', 'a']
-    assert [r['task_id'] for r in q.sorted([public_task(a, 'LCf'), public_task(b, 'LCf')])] == ['a', 'b']
-    a.scoring.status = 'unavailable'
-    a.scoring.Mf_mlp = 0.9
-    assert public_task(a, 'Mf')['score'] is None
+    first_task = task(score=0.2)
+    first_task.id = 'a'
+    first_task.scoring.LCf_mlp = 0.8
+    second_task = task(score=0.7)
+    second_task.id = 'b'
+    second_task.scoring.LCf_mlp = 0.3
+    query = TaskQuery(QueryParams('sort=score'))
+    assert [r['task_id'] for r in query.sorted([public_task(first_task, 'Mf'), public_task(second_task, 'Mf')])] == [
+        'b',
+        'a',
+    ]
+    assert [r['task_id'] for r in query.sorted([public_task(first_task, 'LCf'), public_task(second_task, 'LCf')])] == [
+        'a',
+        'b',
+    ]
+    first_task.scoring.status = 'unavailable'
+    first_task.scoring.Mf_mlp = 0.9
+    assert public_task(first_task, 'Mf')['score'] is None
 
 
 def prepare_tasks(count: int) -> PrepareCallback:

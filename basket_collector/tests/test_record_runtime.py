@@ -44,14 +44,16 @@ def test_external_operation_waits_for_durable_reservation() -> None:
     assert state['attempts']['record']['rounds'][0]['attempts'][0]['outcome'] == 'succeeded'
 
 
-def test_storage_failure_releases_all_workers_without_external_calls() -> None:
+@pytest.mark.parametrize('failure_type', [OSError, KeyboardInterrupt, SystemExit])
+def test_storage_failure_releases_all_workers_without_external_calls(failure_type: type[BaseException]) -> None:
     """A failed acknowledgement must not deadlock shutdown or authorize unrecorded calls."""
     stop = threading.Event()
     calls = []
+    failure = failure_type('fixture storage failed')
 
     def fail() -> None:
         """Inject a fatal disk failure at the reservation boundary."""
-        raise OSError('disk full')
+        raise failure
 
     runtime = RecordRuntime(RetryPolicy(max_retries=0), {}, stop, fail, classify, (Interrupted,))
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -62,9 +64,9 @@ def test_storage_failure_releases_all_workers_without_external_calls() -> None:
             runtime.poll()
             threading.Event().wait(0.001)
         for future in futures:
-            with pytest.raises((OSError, Interrupted)):
+            with pytest.raises((failure_type, Interrupted)):
                 future.result()
-    assert stop.is_set() and calls == [] and isinstance(runtime.failure, OSError)
+    assert stop.is_set() and calls == [] and runtime.failure is failure
 
 
 @pytest.mark.parametrize('retry_pending', [False, True])

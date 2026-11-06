@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.4
+
+- Refresh the viewer and offline HTML with clearer task metrics, setup details,
+  and a **Diff / Full file** selector for human and agent changes.
+- Improve catalogue and administration screens, including drag-and-drop basket ordering.
+- Preserve interrupted attempt history through resume and publication; show unknown
+  historical usage as incomplete instead of zero.
+- Improve publication recovery and background catalogue refresh. Administrative
+  refresh now queues work; check `/admin/stats` for completion.
+- Add a read-only run-integrity audit skill for VCS, network and filesystem evidence.
+
+> [!IMPORTANT]
+> Update benchmark and viewer together before publishing recovered runs.
+> See [saved-data compatibility](README.md#reading-data-from-earlier-releases).
+
 ## 0.3.3
 
 - Show known request-level token and cost subtotals inside incomplete final
@@ -121,5 +136,6 @@ with glibc and working bubblewrap user namespaces. Viewer requires Python 3.12
 or newer; its deployment is separate. OpenCode examples pin 1.18.33.
 
 Similarity measures agreement with human edits; it is not a test pass rate.
-Executable-bit-only changes are outside the v1 metric scope. Older prerelease
-run layouts are unsupported; automatic migration is not provided.
+Executable-bit-only changes are outside the v1 metric scope. Run layouts without
+the required registry and shared agent input are unsupported; automatic migration
+is not provided.

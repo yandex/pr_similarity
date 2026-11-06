@@ -88,6 +88,17 @@ recovery does not consume the reset budget for fresh native attempts. Repeated
 Ctrl+C only asks you to wait: termination deadlines remain controlled by the code,
 and saved artifacts are not cut short by another signal.
 
+After a hard stop, resume adopts valid saved seal/outcome files before deciding
+whether another native attempt is needed. If no native seal was saved, it records
+`attempts/NNN/interruption.json` with the exact start receipt, recovery time and
+missing facts. This observation does not invent an execution result or end time.
+The next attempt gets a new sequence; the original directory and UUID remain.
+
+Resume also repairs older incomplete history when the selected tasks are already
+finished, without calling the model again. A crash between writing the recovery
+observation and committing state is safe to resume again. Missing or damaged
+files already referenced by state remain errors and must be restored from backup.
+
 When resume must recover a saved score first, its initial plan leaves the
 number of new native attempts provisional. For example, scoring a cancelled
 attempt can be followed by a fresh attempt under the existing retry policy.
@@ -187,15 +198,26 @@ Visualize writes a self-contained `report.html` for one run, with the same
 metric and status semantics, dark palette, metric cards and expandable tasks as
 the viewer run page. Status selection changes aggregates while all task rows and
 their diagnostics remain available. Only text search filters the task list.
-Click a task title to expand it; its Original PR/MR link is inside the card.
-File buttons open embedded Human/Agent diffs. The report also embeds the safe
+Click a task title to expand it; its Open Human PR/MR button is inside the card.
+File buttons open Human/Agent unified diffs by default. Use Diff / Full file to
+switch views; the selected mode persists across files until page reload. Full-file
+views include highlighted additions and deletions, line counts and a change map
+beside each scrollbar. The report also embeds the safe
 OpenCode input, benchmark settings and task source, so copying the single HTML
 file preserves these interactions without API access. Source bytes are verified
 against the selected attempt before generating the diffs; the HTML can grow
 with the amount of diff data. Sorting and unknown measurements are preserved. By default it only saves the HTML file. Set `OPEN_BROWSER=1`
 to open it in the default browser. If opening fails, the command reports an error
 with the saved file path and returns a nonzero exit code; the HTML remains available.
-It preserves report.json. The comparison command is not available.
+It preserves saved run artifacts and also works when the derived report.json cache
+is missing or stale. The comparison command is not available.
+
+The page uses the packaged viewer renderer and its default display limits: 8 MiB
+and 20000 lines per file view, and 64 KiB for the input config. A hosted viewer
+can override these limits. Account, pin and publication deletion controls belong
+to the hosted viewer; local search and saved task diagnostics remain available
+in standalone HTML. Run setup, Run Metric Settings and token breakdowns start
+collapsed. Copy run ID copies to the clipboard; opencode.json opens the input config.
 
 Publish snapshots a stopped run under its writer lock. A flat tar.gz contains
 the registry/state, saved attempts, sanitized usage, inputs, logs and operation history.

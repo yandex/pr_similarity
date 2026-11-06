@@ -13,7 +13,7 @@ from pathlib import Path
 _checker = import_module('.check_release', __package__) if __package__ else import_module('check_release')
 
 
-def prepare_release(source: Path, destination: Path) -> dict:
+def prepare_release(source: Path, destination: Path) -> dict[str, str | int]:
     """Create a verified export without replacing an existing destination."""
     source = source.resolve()
     destination = destination.absolute()
@@ -25,6 +25,7 @@ def prepare_release(source: Path, destination: Path) -> dict:
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix='.' + destination.name + '-export-', dir=destination.parent))
     reserved = False
+    promoted = False
     try:
         for relative in selected:
             original = _checker.regular_file(source, relative)
@@ -46,15 +47,16 @@ def prepare_release(source: Path, destination: Path) -> dict:
         for path in staging.iterdir():
             os.rename(path, destination / path.name)
         staging.rmdir()
+        promoted = True
         return result
-    except BaseException:
-        # Only remove the directory reserved by this invocation, never a pre-existing destination.
-        if reserved:
-            shutil.rmtree(destination)
-        raise
     finally:
-        if staging.exists():
-            shutil.rmtree(staging)
+        try:
+            # Only remove output reserved here when promotion did not finish.
+            if reserved and not promoted:
+                shutil.rmtree(destination)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
 
 
 def main() -> int:

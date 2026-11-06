@@ -25,7 +25,7 @@ class BrowserAuth:
     """Manage browser sessions and CSRF challenges against the account database."""
 
     def __init__(self, db: Database, config: Config) -> None:
-        """Initialize the resources and limits owned by this instance."""
+        """Bind session storage and settings, and initialize the login-failure cache."""
         self.db, self.config = db, config
         self.failures = OrderedDict()
 

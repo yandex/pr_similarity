@@ -1,13 +1,13 @@
 """Public projections, catalogue filtering/sorting and bounded human/agent diffs."""
 
-import difflib
 from datetime import datetime
 from functools import cmp_to_key
 
 from starlette.datastructures import QueryParams
 from viewer.errors import ViewerError
 from viewer.models.report import ReportTask
-from viewer.presentation import run_projection
+from viewer.presentation import file_views, run_projection
+from viewer.presentation.file_views import change_counts, file_view
 from viewer.presentation.metrics import (
     DEFAULT_STATUSES,
     aggregate,
@@ -21,6 +21,7 @@ from viewer.validation.contracts import require
 
 basket_metadata = run_projection.basket_metadata
 wall_time = run_projection.wall_time
+full_file_lines = file_views.full_file_lines
 
 
 def _compare_values(left: str | float | datetime, right: str | float | datetime) -> int:
@@ -38,7 +39,7 @@ class Query:
     """Validate catalogue filters, pagination and aggregate selection."""
 
     def __init__(self, params: QueryParams, *, task_sort: bool = False) -> None:
-        """Initialize the resources and limits owned by this instance."""
+        """Parse and validate filters, pagination, sorting and metric aggregation."""
 
         def integer(name: str, default: int, minimum: int, maximum: int) -> int:
             """Validate one bounded integer while preserving missing-value semantics."""
@@ -180,7 +181,7 @@ class TaskQuery(Query):
     """Apply task-specific sorting with stable original ordering."""
 
     def __init__(self, params: QueryParams) -> None:
-        """Initialize the resources and limits owned by this instance."""
+        """Parse task filters and preserve ascending order for the original task sequence."""
         super().__init__(params, task_sort=True)
         if self.sort == 'task_order':
             self.direction = 'asc'
@@ -222,7 +223,7 @@ def catalogue(service: ViewerService, query: Query) -> dict:
     all_rows = [
         service.run(rid, **query.selection)
         for rid, row in service.runs.items()
-        if row['marker']['basket_sha256'] in visible
+        if row['marker']['basket_sha256'] in visible and rid not in service.busy_runs()
     ]
     selected = [row for row in all_rows if query.accepts(row)]
     items = []
@@ -271,7 +272,7 @@ def basket_runs(service: ViewerService, basket_hash: str, query: Query) -> dict:
     rows = [
         service.run(rid, **query.selection)
         for rid, v in service.runs.items()
-        if v['marker']['basket_sha256'] == basket_hash
+        if v['marker']['basket_sha256'] == basket_hash and rid not in service.busy_runs()
     ]
     return {**query.page(query.sorted([r for r in rows if query.accepts(r)])), 'selection': query.selection}
 
@@ -327,60 +328,27 @@ def public_files(task: ReportTask) -> list[dict]:
     ]
 
 
-def file_diff(service: ViewerService, rid: str, task_id: str, file_id: str) -> dict:
-    """Build the requested source-role diff from verified stored artifacts."""
+def file_diff(service: ViewerService, rid: str, task_id: str, file_id: str, full: bool = False) -> dict:
+    """Read verified stored roles and render the requested source view."""
     run, task = find_task(service, rid, task_id)
     row = next((f for f in task.scoring.files if digest(f.path.encode()) == file_id), None)
     if row is None:
         raise ViewerError('not_found', 'File not found.', 404)
-    cap = service.config.limits.diff_bytes
-    sources = {}
-    truncated = False
-    for role in ('base', 'human', 'ai'):
-        if getattr(row, role) is None:
-            sources[role] = []
-            continue
-        with service.store.open(run['prefix'] + 'data/' + getattr(row, role)) as stream:
-            data = stream.read(cap + 1)
-        truncated |= len(data) > cap
-        text = data[:cap].decode('utf-8', errors='replace')
-        lines = text.splitlines(keepends=True)
-        if len(lines) > service.config.limits.diff_lines:
-            lines = lines[: service.config.limits.diff_lines]
-            truncated = True
-        sources[role] = lines
 
-    def side(role: str) -> dict:
-        """Read one source role using its recorded existence and digest."""
-        chunks = []
-        length = 0
-        cut = truncated
-        for line in difflib.unified_diff(
-            sources['base'], sources[role], fromfile='base/' + row.path, tofile=role + '/' + row.path
-        ):
-            if not line.endswith('\n'):
-                line += '\n\\ No newline at end of file\n'
-            data = line.encode()
-            room = cap - length
-            if len(data) > room:
-                chunks.append(data[:room].decode(errors='ignore'))
-                cut = True
-                break
-            chunks.append(line)
-            length += len(data)
-        if not chunks and row.exists.base != getattr(row.exists, role):
-            chunks = ['[File ' + ('added' if getattr(row.exists, role) else 'deleted') + '; empty content]\n']
-        content = ''.join(chunks).encode()
-        if len(content) > cap:
-            content = content[:cap]
-            cut = True
-        return {'text': content.decode(errors='ignore'), 'truncated': cut}
+    def read_source(path: str, limit: int) -> bytes:
+        """Read a bounded source from the selected publication."""
+        with service.store.open(run['prefix'] + 'data/' + path) as stream:
+            return stream.read(limit)
 
-    return {
-        'file_id': file_id,
-        'path': row.path,
-        'score': row.mlp,
-        'exists': row.exists.to_wire(),
-        'human_diff': side('human'),
-        'agent_diff': side('ai'),
-    }
+    return file_view(row, read_source, service.config.limits.diff_bytes, service.config.limits.diff_lines, full)
+
+
+def task_changes(service: ViewerService, run: CatalogueEntry, task: ReportTask) -> dict:
+    """Read selected source roles for raw change statistics."""
+
+    def read_source(path: str, limit: int) -> bytes:
+        """Read a bounded source from the selected publication."""
+        with service.store.open(run['prefix'] + 'data/' + path) as stream:
+            return stream.read(limit)
+
+    return change_counts(task, read_source, service.config.limits.diff_bytes, service.config.limits.diff_lines)

@@ -723,7 +723,7 @@ def test_unexpected_worker_error_is_friendly_and_saved_at_debug(
     config, basket = config_and_basket(tmp_path)
 
     def broken(*args: object, **kwargs: object) -> None:
-        """Simulate a log stream that raises an I/O error on every write."""
+        """Raise an unexpected native worker failure before producing attempt evidence."""
         raise RuntimeError('fixture internal failure details')
 
     code, directory = run(config, basket, output=tmp_path / 'runs', attempt_function=broken, level='ERROR')

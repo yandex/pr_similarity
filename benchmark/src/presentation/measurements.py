@@ -105,6 +105,6 @@ def token_measurements(ledger: Usage) -> dict[str, Measurement]:
     return result
 
 
-def measurement_dict(value: DisplayMeasurement) -> dict:
+def measurement_dict(value: DisplayMeasurement) -> dict[str, int | float | str | None]:
     """Convert only final display decimals to JSON numbers, after exact summation."""
     return {key: float(item) if isinstance(item, Decimal) else item for key, item in asdict(value).items()}

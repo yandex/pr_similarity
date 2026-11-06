@@ -32,7 +32,7 @@ def _settings_hash(settings: Mapping[str, object]) -> str:
 
 
 def _selection(identity: str) -> dict[str, Any]:
-    """Bind a one-record fixture to an explicit v2 selection snapshot."""
+    """Bind a one-record fixture to an explicit selection snapshot."""
     data = {
         'schema_version': 3,
         'input_sha256': 'a' * 64,
@@ -560,7 +560,7 @@ def test_rejects_impossible_utc_timestamp(timestamp: str) -> None:
 
 @pytest.mark.parametrize('workspace', ['.', 'src', 'src/nested', 'новый каталог'])
 def test_basket_workspace_round_trip(workspace: str) -> None:
-    """Persist the explicit safe cwd in initial schema v1 without recomputing it."""
+    """Persist the explicit safe workspace without recomputing it."""
     payload = _basket()
     payload['tasks'][0]['workspace'] = workspace
     document = BasketDocument.model_validate(payload)

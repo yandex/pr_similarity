@@ -152,8 +152,8 @@ def test_missing_shared_input_is_not_a_new_run(tmp_path: Path) -> None:
     assert (store.directory / '_meta/state.json').is_file()
 
 
-def test_prerelease_registry_without_shared_input_is_explicitly_rejected(tmp_path: Path) -> None:
-    """Verify prerelease registry without shared input is explicitly rejected."""
+def test_registry_without_shared_input_is_explicitly_rejected(tmp_path: Path) -> None:
+    """Reject a registry without shared agent input while preserving saved state."""
     store = fresh_store(tmp_path)
     registry = read_json(store.directory / 'run.json')
     registry.pop('agent_input')

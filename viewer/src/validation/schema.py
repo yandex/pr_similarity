@@ -3,6 +3,7 @@
 from functools import lru_cache
 from importlib.resources import files
 from types import MappingProxyType
+from typing import cast
 
 from jsonschema import Draft202012Validator, FormatChecker, validators
 from jsonschema.exceptions import ValidationError
@@ -14,7 +15,7 @@ _TypeChecker = Draft202012Validator.TYPE_CHECKER.redefine('integer', lambda _che
 StrictValidator = validators.extend(Draft202012Validator, type_checker=_TypeChecker)
 
 
-SCHEMA_VERSIONS = MappingProxyType({'basket': 3, 'report': 2, 'run': 2, 'state': 2, 'archive': 2, 'usage': 1})
+SCHEMA_VERSIONS = MappingProxyType({'basket': 3, 'report': 2, 'run': 2, 'state': 3, 'archive': 2, 'usage': 1})
 
 
 @lru_cache(maxsize=8)
@@ -22,7 +23,9 @@ def validator(name: str, version: int | None = None) -> Draft202012Validator:
     """Load the package-owned schema for an explicit consumer contract."""
     expected = SCHEMA_VERSIONS.get(name)
     supported = (
-        (1, 2, 3) if name == 'basket' else ((1, 2) if name in ('report', 'run', 'state', 'archive') else (expected,))
+        (1, 2, 3)
+        if name in ('basket', 'state')
+        else ((1, 2) if name in ('report', 'run', 'state', 'archive') else (expected,))
     )
     if expected is None or (version is not None and version not in supported):
         raise ViewerError('unsupported_version', 'Unsupported document version; create a new run.')
@@ -48,7 +51,10 @@ def validate_document(name: str, value: object) -> None:
             version = candidate
         elif name in ('report', 'run', 'state', 'archive'):
             candidate = value.get('schema_version')
-            version = int(candidate) if type(candidate) in (int, float) and candidate in (1, 2) else 1
+            supported = (1, 2, 3) if name == 'state' else (1, 2)
+            version = (
+                int(cast(int | float, candidate)) if type(candidate) in (int, float) and candidate in supported else 1
+            )
         validator(name, version).validate(value)
     except ValidationError as error:
         names = _field_names(name, version)

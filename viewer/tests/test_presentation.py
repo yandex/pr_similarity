@@ -41,7 +41,7 @@ def row(
 
 def test_filter_or_inside_and_between_groups_and_exclusive_dates() -> None:
     """Verify filter or inside and between groups and exclusive dates."""
-    q = Query(
+    query = Query(
         QueryParams(
             (
                 'model=absent&model=B&effort=high&user=alice&q=SETUP:X&from=2026-1'
@@ -49,9 +49,9 @@ def test_filter_or_inside_and_between_groups_and_exclusive_dates() -> None:
             )
         )
     )
-    assert q.accepts(row())
-    assert not q.accepts(row(user='bob'))
-    assert not q.accepts(row(date='2026-10-05T10:00:01Z'))
+    assert query.accepts(row())
+    assert not query.accepts(row(user='bob'))
+    assert not query.accepts(row(date='2026-10-05T10:00:01Z'))
     assert not Query(QueryParams('effort=low')).accepts(row())
 
 

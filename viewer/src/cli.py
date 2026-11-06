@@ -131,7 +131,8 @@ def lifecycle(command: str, config: Config, config_path: Path) -> dict | None:
         if not isinstance(running.pid, int):
             raise TypeError(f'{type(running.pid).__name__!r} object cannot be interpreted as an integer')
         os.kill(running.pid, signal.SIGTERM)
-        deadline = time.monotonic() + 20
+        # Uvicorn drains HTTP first, then lifespan waits for service.close().
+        deadline = time.monotonic() + 2 * config.shutdown_seconds + 5
         while time.monotonic() < deadline and _identity(running.pid) == running.start_ticks:
             time.sleep(0.1)
         if _identity(running.pid) == running.start_ticks:
@@ -203,11 +204,19 @@ def administer(command: str, config: Config) -> JsonValue:
     base = '/api/v1/admin'
     if command == 'admin-user-create':
         return _request(
-            config, 'POST', base + '/users', {'login': login(), 'password': getpass.getpass('Password: ')}, True
+            config,
+            'POST',
+            base + '/users',
+            {'login': login(), 'password': getpass.getpass('Password: ')},
+            True,
         )
     if command in ('admin-user-enable', 'admin-user-disable'):
         return _request(
-            config, 'PATCH', base + '/users/' + quote(login(), safe=''), {'enabled': command.endswith('enable')}, True
+            config,
+            'PATCH',
+            base + '/users/' + quote(login(), safe=''),
+            {'enabled': command.endswith('enable')},
+            True,
         )
     if command == 'admin-password-set':
         return _request(
@@ -252,6 +261,9 @@ def main() -> int:
         return 2
     try:
         path = Path(os.environ.get('PRSIM_VIEWER_CONFIG', 'config.local.json'))
+        dev = os.environ.get('PRSIM_VIEWER_DEV', '0')
+        if command in ('serve', 'start') and dev not in ('0', '1'):
+            raise ViewerError('invalid_config', 'DEV must be 0 or 1.')
         config = Config.load(path)
         if command == 'serve':
             config.runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -261,16 +273,22 @@ def main() -> int:
                 except BlockingIOError:
                     raise ViewerError('already_running', 'A viewer process already owns this runtime.', 409) from None
                 _create_token(config)
-                uvicorn.run(
-                    create_app(config),
-                    host=config.host,
-                    port=config.port,
-                    ssl_certfile=config.tls_cert,
-                    ssl_keyfile=config.tls_key,
-                    workers=1,
-                    access_log=False,
-                    timeout_graceful_shutdown=15,
-                )
+                app = create_app(config, deferred_startup=True, dev=dev == '1')
+                try:
+                    uvicorn.run(
+                        app,
+                        host=config.host,
+                        port=config.port,
+                        ssl_certfile=config.tls_cert,
+                        ssl_keyfile=config.tls_key,
+                        workers=1,
+                        access_log=False,
+                        timeout_graceful_shutdown=config.shutdown_seconds,
+                    )
+                finally:
+                    if not app.state.service.close(timeout=0):
+                        # Exit while still owning service.lock; no old writer survives unlock.
+                        os._exit(1)
             return 0
         result = (
             lifecycle(command, config, path)

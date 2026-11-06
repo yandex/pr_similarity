@@ -73,7 +73,25 @@ def auth_snapshot(
     client: httpx.Client | None = None,
     cancel: threading.Event | None = None,
 ) -> str:
-    """Serialize refresh, reread on lock and persist rotation before validating TTL."""
+    """Serialize refresh and persist rotation before validating the token lifetime.
+
+    Args:
+        profile: Private profile directory containing data/opencode/auth.json.
+        minimum_valid_seconds: Required access-token lifetime in seconds.
+        refresh_timeout: HTTP refresh timeout; lock waiting allows twice this duration.
+        expiry_margin: Additional lifetime required beyond minimum_valid_seconds.
+        clock: Clock returning Unix time in seconds for expiry checks.
+        client: Borrowed HTTP client, left open; None creates an owned client.
+        cancel: Optional cancellation signal checked by lock waiting and after rotation.
+
+    Returns:
+        JSON credentials containing the access token without reusable refresh credentials.
+
+    Raises:
+        BenchmarkError: If limits, credentials, refresh, locking or persistence fail,
+            the token lifetime is insufficient, or cancellation is observed.
+
+    """
     if minimum_valid_seconds < 0 or refresh_timeout <= 0 or expiry_margin < 0:
         raise BenchmarkError('invalid_auth_limits', 'OAuth lifetime and timeout limits must be nonnegative.')
     profile = profile.expanduser().resolve()

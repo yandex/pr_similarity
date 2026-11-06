@@ -92,7 +92,7 @@ class SourceDescriptor:
             raise ViewerError('invalid_source', 'Basket Git ref hints must be a unique ordered list.')
         return cls(https_url(value['fetch_url']), tuple(fetch_ref(reference) for reference in references))
 
-    def as_mapping(self) -> dict:
+    def as_mapping(self) -> dict[str, str | list[str]]:
         """Keep the declared descriptor unchanged in saved report provenance."""
         return {'vcs': 'git', 'fetch_url': self.fetch_url, 'fetch_refs': list(self.fetch_refs)}
 

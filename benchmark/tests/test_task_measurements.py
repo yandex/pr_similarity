@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import subprocess
+from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def test_partial_usage_and_selected_price_match_public_viewer(tmp_path: Path, mo
 
     def unfinished(self: executor._Attempt) -> None:
         """Leave one registered native request unfinished before the producer seals it."""
-        with sqlite3.connect(self.private / 'home/data/opencode/opencode.db') as database:
+        with closing(sqlite3.connect(self.private / 'home/data/opencode/opencode.db')) as database, database:
             raw = database.execute('select data from part where id=?', ('part-detached',)).fetchone()[0]
             request = json.loads(raw)
             request.update(reason=None, cost=None)
@@ -59,8 +60,16 @@ def test_partial_usage_and_selected_price_match_public_viewer(tmp_path: Path, mo
     before = {path: path.read_bytes() for path in protected}
     payload = archive.read_bytes()
     html = visualize(directory).read_text()
-    embedded = json.loads(html.split('<script type="application/json" id="view-data">', 1)[1].split('</script>', 1)[0])
-    expected = embedded['measurements']['selections']['7']
+    embedded = json.loads(html.split('<script type="application/json" id="local-data">', 1)[1].split('</script>', 1)[0])
+    selected = embedded['aggregates']['7']
+    expected = {
+        'cost': {
+            key: value
+            for key, value in selected['cost'].items()
+            if key not in ('currency', 'sources', 'native_zero_tasks')
+        },
+        'tokens': selected['tokens'],
+    }
     assert expected['tokens']['total']['amount'] is None
     assert expected['tokens']['total']['known_subtotal'] == 48
     assert expected['tokens']['total']['known_requests'] == 3
@@ -77,14 +86,18 @@ def _public_viewer_projection(archive: Path, tmp_path: Path) -> dict:
     """Use the consumer's own interpreter and HTTP API, with no producer imports."""
     viewer = Path(__file__).resolve().parents[2] / 'viewer'
     script = '''
+"""Read request-level measurements through the independent viewer API."""
+
 import json
 import sys
 from pathlib import Path
+
 from starlette.testclient import TestClient
 from viewer.config import Config, Limits
 from viewer.persistence.storage import MemoryStore
 from viewer.validation.archive import validate_archive
 from viewer.web.api import create_app
+
 root = Path(sys.argv[2])
 archive = validate_archive(Path(sys.argv[1]), root / 'imported', Limits())
 token = root / 'admin-token'
@@ -101,8 +114,11 @@ with TestClient(app) as client:
     assert run.status_code == tasks.status_code == 200
     result = {}
     for kind, value in [('run', run.json()), ('task', tasks.json()['items'][0])]:
-        cost = {key: amount for key, amount in value['cost'].items()
-                if key not in ('currency', 'sources', 'native_zero_tasks')}
+        cost = {
+            key: amount
+            for key, amount in value['cost'].items()
+            if key not in ('currency', 'sources', 'native_zero_tasks')
+        }
         result[kind] = {'cost': cost, 'tokens': value['tokens']}
     print(json.dumps(result))
 '''

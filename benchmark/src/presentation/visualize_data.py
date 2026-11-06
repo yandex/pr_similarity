@@ -1,8 +1,9 @@
 """Embed validated, selected run evidence for report interactions without a server."""
 
-import difflib
 from decimal import Decimal
+from importlib.resources import files as package_files
 from pathlib import Path
+from typing import Any
 
 from benchmark.errors import BenchmarkError
 from benchmark.execution.agent_input import benchmark_settings
@@ -13,8 +14,10 @@ from benchmark.models.triplets import TripletIndex
 from benchmark.persistence.artifact_refs import read_reference, read_reference_json
 from benchmark.persistence.layout import artifact_path
 from benchmark.persistence.run_store import RunStore
-from benchmark.persistence.storage import read_json, sha256
+from benchmark.persistence.storage import bytes_sha256, canonical_bytes, document_bytes, read_json, sha256
 from benchmark.persistence.triplets import TripletBundle, read_triplets
+from benchmark.presentation.display_limits import CONFIG_DISPLAY_BYTES, DIFF_BYTES, DIFF_LINES
+from benchmark.presentation.file_views import change_counts, file_view
 from benchmark.presentation.measurements import (
     TOKEN_CATEGORIES,
     Measurement,
@@ -22,27 +25,12 @@ from benchmark.presentation.measurements import (
     measurement_dict,
 )
 from benchmark.presentation.native_config import native_projection
+from benchmark.presentation.run_metrics import aggregate, aggregate_snapshot, task_status
 from benchmark.presentation.task_measurements import (
     TaskMeasurements,
     build_task_measurements,
 )
 from benchmark.pricing.summary import CostEvidenceError
-from benchmark.vcs.workspace import FileState
-
-
-def source_diff(base: FileState, changed: FileState, path: str, role: str) -> str:
-    """Keep full unified text, missing final newlines, and empty-file existence changes."""
-    chunks = []
-    for line in difflib.unified_diff(
-        base.text.splitlines(keepends=True),
-        changed.text.splitlines(keepends=True),
-        fromfile='base/' + path,
-        tofile=role + '/' + path,
-    ):
-        chunks.append(line if line.endswith('\n') else line + '\n\\ No newline at end of file\n')
-    if not chunks and base.exists != changed.exists:
-        chunks = ['[File ' + ('added' if changed.exists else 'deleted') + '; empty content]\n']
-    return ''.join(chunks)
 
 
 def _sealed_bundle(store: RunStore, row: ReportTask, seal: Seal) -> TripletBundle:
@@ -65,32 +53,7 @@ def _sealed_bundle(store: RunStore, row: ReportTask, seal: Seal) -> TripletBundl
     return bundle
 
 
-def _task_diffs(store: RunStore, report: Report) -> JsonObject:
-    """Generate source-role diffs for the exact scored files in the selected attempts."""
-    result: JsonObject = {}
-    for index, (selected, row) in enumerate(zip(store.state.tasks, report.tasks, strict=True)):
-        if selected.id != row.id:
-            raise BenchmarkError('report_owner_mismatch', 'Task display differs from the selected run state.')
-        if not row.scoring.files:
-            continue
-        if selected.seal is None:
-            raise BenchmarkError('triplet_receipt_missing', 'Scored files require a native seal.')
-        seal = read_reference(store.directory, selected.seal, Seal)
-        bundle = _sealed_bundle(store, row, seal)
-        files: JsonObject = {}
-        for number, file in enumerate(row.scoring.files):
-            if file.path not in bundle.states:
-                raise BenchmarkError('invalid_triplets', 'Scored file is absent from the source manifest.')
-            state = bundle.states[file.path]
-            files[str(number)] = {
-                'human_diff': source_diff(state.base, state.human, file.path, 'human'),
-                'agent_diff': source_diff(state.base, state.ai, file.path, 'ai'),
-            }
-        result[str(index)] = files
-    return result
-
-
-def embedded_data(run_dir: Path, report: Report) -> JsonObject:
+def embedded_data(run_dir: Path, report: Report) -> dict[str, Any]:
     """Load portable config, harness metadata and diffs while the caller holds the run lock."""
     store = RunStore.open(run_dir)
     if store.snapshot() != report:
@@ -101,22 +64,69 @@ def embedded_data(run_dir: Path, report: Report) -> JsonObject:
     raw = read_reference_json(run_dir, report.agent_input.config)
     config: JsonObject = {'source': report.agent_input.config.to_wire(), 'supported': False, 'config': None}
     try:
-        config.update(supported=True, config=native_projection(raw))
+        projected = native_projection(raw)
+        if len(canonical_bytes(projected)) > CONFIG_DISPLAY_BYTES:
+            config.update(reason='display_limit')
+        else:
+            config.update(supported=True, config=projected)
     except ValueError as error:
         config['reason'] = str(error)
     try:
         measurements = build_task_measurements(store, report)
     except CostEvidenceError as error:
         raise BenchmarkError(error.code, error.message) from error
+    instructions = package_files('benchmark').joinpath('resources/task_instructions.txt').read_bytes()
+    default = identity.instructions.sha256 == bytes_sha256(instructions)
+    config['setup_summary'] = {
+        'auth_mode': identity.auth_mode,
+        'setup_script': identity.setup is not None,
+        'instructions_default': default,
+        'instructions_text': instructions.decode() if default else None,
+        'env_count': len(identity.env),
+    }
+    file_views = {}
+    file_diffs = {}
+    changes = {}
+    for row in report.tasks:
+        # read_triplets verifies the original source receipts before any presentation read.
+        selected = next(item for item in store.state.tasks if item.id == row.id)
+        if row.scoring.files:
+            if selected.seal is None:
+                raise BenchmarkError('triplet_receipt_missing', 'Scored files require native evidence.')
+            bundle = _sealed_bundle(store, row, read_reference(store.directory, selected.seal, Seal))
+            if any(file.path not in bundle.states for file in row.scoring.files):
+                raise BenchmarkError('invalid_triplets', 'Scored file is absent from the source manifest.')
+
+        def read_source(path: str, limit: int) -> bytes:
+            """Read a bounded prefix from an already verified source artifact."""
+            with artifact_path(store.directory, path, must_exist=True).open('rb') as stream:
+                return stream.read(limit)
+
+        file_views[row.id] = {
+            file.path: file_view(file, read_source, DIFF_BYTES, DIFF_LINES, full=True) for file in row.scoring.files
+        }
+        file_diffs[row.id] = {
+            file.path: file_view(file, read_source, DIFF_BYTES, DIFF_LINES) for file in row.scoring.files
+        }
+        changes[row.id] = change_counts(row, read_source, DIFF_BYTES, DIFF_LINES)
     return {
         'config': config,
+        'auth_mode': identity.auth_mode,
+        'report_sha256': bytes_sha256(document_bytes(report)),
+        'file_views': file_views,
+        'file_diffs': file_diffs,
+        'changes': changes,
+        'aggregates': aggregate_snapshot(report.tasks, measurements),
+        'task_metrics': {
+            row.id: {kind: aggregate([row], [task_status(row)], 'Mpr', kind, measurements) for kind in ('Mf', 'LCf')}
+            for row in report.tasks
+        },
         'benchmark': benchmark_settings(identity).to_wire(),
-        'diffs': _task_diffs(store, report),
         'measurements': display_metrics(report, measurements),
     }
 
 
-def display_metrics(report: Report, measurements: dict[str, TaskMeasurements] | None = None) -> dict:
+def display_metrics(report: Report, measurements: dict[str, TaskMeasurements] | None = None) -> dict[str, Any]:
     """Normalize each task and all status masks before embedding autonomous HTML."""
     if measurements is None:
         measurements = {}
@@ -140,7 +150,7 @@ def display_metrics(report: Report, measurements: dict[str, TaskMeasurements] | 
                 cost_source='reprice' if price else 'opencode',
             )
 
-    def projection(values: list[TaskMeasurements]) -> dict:
+    def projection(values: list[TaskMeasurements]) -> dict[str, Any]:
         """Sum currency in Python Decimal, never repeatedly in browser floats."""
         return {
             'cost': measurement_dict(combine_measurements([value.cost for value in values])),

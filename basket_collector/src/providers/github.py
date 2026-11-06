@@ -402,16 +402,16 @@ class GitHubClient:
         return quote(parts[0], safe='') + '/' + quote(parts[1], safe='')
 
     def repository(self, full_name: str) -> Repository:
-        """Read and validate the public repository identity and default branch.
+        """Read and validate the requested repository identity and default branch.
 
         Args:
             full_name: Requested owner/repository pair.
 
         Returns:
-            Public repository metadata with a credential-free clone URL.
+            Repository metadata with a credential-free HTTPS URL.
 
         Raises:
-            GitHubError: If GitHub returns a private or mismatched repository.
+            GitHubError: If GitHub returns a mismatched repository or invalid metadata.
 
         """
         data = _object(self._request('GET', f'/repos/{self._repo_path(full_name)}'), 'repository')

@@ -30,19 +30,38 @@ def _local_report_page(tmp_path: Path) -> Path:
     source.write_bytes(json_bytes(report.to_wire()))
     output = tmp_path / 'report.html'
     script = '''
+"""Render an offline report through the independent benchmark installation."""
+
 import sys
 from pathlib import Path
+
 from benchmark.models.report import Report
 from benchmark.persistence.storage import read_json
-from benchmark.presentation.visualize import _page, _task
+from benchmark.presentation.file_views import file_view
+from benchmark.presentation.run_page import render
+
 report = Report.model_validate(read_json(Path(sys.argv[1])))
-data = {'config': {'supported': True, 'config': {'model': 'fixture/model'},
-                   'source': {'path': 'agent/opencode.json', 'sha256': 'a' * 64}},
-        'diffs': {'0': {'0': {'human_diff': '--- base/file.py\\n+++ human/file.py\\n@@ -1 +1 @@\\n-old\\n+human\\n',
-                             'agent_diff': '--- base/file.py\\n+++ ai/file.py\\n@@ -1 +1 @@\\n-old\\n'
-                                           '+</script><script>window.__diffUnsafe=true</script>\\n'}}}}
-rows = [_task(row, index, has_diffs=index == 0) for index, row in enumerate(report.tasks)]
-Path(sys.argv[2]).write_bytes(_page('Run', '<button id="show-config">See Run Config</button>', rows, report, data))
+data = {
+    'config': {
+        'supported': True,
+        'config': {'model': 'fixture/model'},
+        'source': {'path': 'agent/opencode.json', 'sha256': 'a' * 64},
+    }
+}
+file = report.tasks[0].scoring.files[0]
+values = {
+    file.base: b'old\\n',
+    file.human: b'human\\n',
+    file.ai: b'</script><script>window.__diffUnsafe=true</script>\\n',
+}
+data['file_views'] = {
+    report.tasks[0].id: {file.path: file_view(file, lambda path, limit: values[path][:limit], 8 << 20, 20000, True)}
+}
+data['file_diffs'] = {
+    report.tasks[0].id: {file.path: file_view(file, lambda path, limit: values[path][:limit], 8 << 20, 20000)}
+}
+metadata = {'name': 'Fixture', 'description': '', 'task_source': {'source': None, 'context': None}}
+Path(sys.argv[2]).write_bytes(render(report, metadata, data))
 '''
     result = subprocess.run(
         [str(interpreter), '-c', script, str(source), str(output)],
@@ -66,37 +85,40 @@ def test_status_selection_keeps_all_local_tasks_and_diagnostics(tmp_path: Path) 
             errors: list[str] = []
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.goto(path.as_uri())
+            expect(page.locator('#build-info')).to_contain_text('Local offline report')
+            expect(page.locator('#build-info')).to_be_visible()
             rows = page.locator('.task:visible')
-            selected = page.locator('.stat').filter(has_text='Selected tasks').locator('strong')
-            score = page.locator('.stat').filter(has_text='Score').locator('strong')
-            expect(selected).to_have_text('1/2')
+            selected = page.locator('.stat[data-metric=Tasks] .selection-note')
+            score = page.locator('.stat[data-metric=Score] .summary-number')
+            expect(selected).to_have_text('1 / 2 selected for metrics')
             expect(score).to_have_text('0.800')
             expect(rows).to_have_count(2)
             failed = page.locator('.task').filter(has_text='Failed task')
-            failed.locator('summary').click()
+            page.get_by_text('Run Metric Settings', exact=True).click()
+            failed.locator('summary .title').click()
             diagnostic = failed.locator('.error')
             expect(diagnostic).to_have_text('Dependency installation failed')
             expect(diagnostic).to_be_visible()
-            page.locator('#selection input[value="fail"]').check()
-            expect(selected).to_have_text('2/2')
+            page.locator('#statuses input[value="fail"]').check()
+            expect(selected).to_have_text('2 / 2 selected for metrics')
             expect(score).to_have_text('0.400')
             expect(rows).to_have_count(2)
-            for checkbox in page.locator('#selection input').all():
+            for checkbox in page.locator('#statuses input').all():
                 checkbox.uncheck()
-            expect(selected).to_have_text('0/2')
+            expect(selected).to_have_text('0 / 2 selected for metrics')
             expect(score).to_have_text('—')
             expect(rows).to_have_count(2)
             expect(diagnostic).to_be_visible()
-            page.locator('#search').fill('Healthy task')
+            page.locator('#local-search').fill('Healthy task')
             expect(rows).to_have_count(1)
             expect(rows).to_contain_text('Healthy task')
-            page.locator('#search').fill('Dependency installation failed')
+            page.locator('#local-search').fill('Dependency installation failed')
             expect(rows).to_have_count(1)
             expect(diagnostic).to_be_visible()
-            page.locator('#selection input[value="fail"]').check()
-            expect(selected).to_have_text('1/2')
+            page.locator('#statuses input[value="fail"]').check()
+            expect(selected).to_have_text('1 / 2 selected for metrics')
             expect(rows).to_have_count(1)
-            page.locator('#search').fill('')
+            page.locator('#local-search').fill('')
             expect(rows).to_have_count(2)
             expect(diagnostic).to_be_visible()
             page.locator('#file').select_option('Mf')
@@ -136,25 +158,31 @@ def test_local_diffs_and_config_are_embedded_and_keyboard_accessible(tmp_path: P
             first = page.locator('.task').first
             first.locator('summary .title').click()
             expect(first).to_have_attribute('open', '')
-            expect(first.get_by_role('link', name='Original PR')).to_be_visible()
+            expect(first.get_by_role('link', name='Open Human PR')).to_be_visible()
             file = first.locator('button.file').first
             file.click()
             dialog = page.locator('#diff-dialog')
             expect(dialog).to_be_visible()
             expect(dialog.locator('.diff-panel')).to_have_count(2)
-            expect(dialog.get_by_label('Human diff', exact=True)).to_contain_text('+human')
-            expect(dialog.get_by_label('Agent diff', exact=True)).to_contain_text('</script>')
+            expect(dialog.get_by_label('Human', exact=True)).to_contain_text('human')
+            expect(dialog.get_by_label('Agent', exact=True)).to_contain_text('</script>')
+            expect(dialog.locator('.diff-lines')).to_have_count(2)
+            page.get_by_role('button', name='Full file', exact=True).click()
+            expect(dialog.locator('.full-file')).to_have_count(2)
+            expect(dialog.get_by_label('Agent', exact=True)).to_contain_text('</script>')
+            page.get_by_role('button', name='Diff', exact=True).click()
+            expect(dialog.locator('.diff-lines')).to_have_count(2)
             assert page.evaluate('window.__diffUnsafe') is None
             page.keyboard.press('Escape')
             expect(dialog).not_to_be_visible()
             expect(file).to_be_focused()
-            page.get_by_role('button', name='See Run Config').click()
+            page.get_by_role('button', name='opencode.json').click()
             expect(page.locator('#config-content pre')).to_contain_text('fixture/model')
             page.get_by_role('button', name='Close config', exact=True).click()
             page.set_viewport_size({'width': 390, 'height': 844})
             file.click()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-            expect(dialog.get_by_label('Agent diff', exact=True)).to_be_visible()
+            expect(dialog.get_by_label('Agent', exact=True)).to_be_visible()
             assert not [url for url in requests if url.startswith(('http:', 'https:'))]
             assert not errors
         finally:

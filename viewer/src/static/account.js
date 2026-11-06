@@ -76,7 +76,7 @@ window.viewerAccount = {actor: null, csrf: null};
   // Refresh the short CSRF challenge while the page stays open, without extending the session.
   setInterval(() => {if (!document.hidden) refresh().catch(() => {});}, 240000);
   window.viewerRenderUsers = async () => {
-    const content = el('content'); content.replaceChildren(); el('page-kind').textContent = 'Users';
+    const content = el('content'); content.className = 'admin-page users-page'; content.replaceChildren(); el('page-kind').textContent = 'Users';
     if (window.viewerAccount.actor?.role !== 'admin') {content.append(create('p', 'Administrator access required.')); return;}
     try {
       content.append(create('h1', 'Users'));
@@ -89,7 +89,8 @@ window.viewerAccount = {actor: null, csrf: null};
         try {await request('/admin/users', 'POST', {login: login.value, password: password.value}); password.value = ''; await window.viewerRenderUsers();}
         catch (error) {el('error').textContent = error.message; el('error').hidden = false; submit.disabled = false;}
       };
-      const table = create('table'); const head = create('tr'); for (const label of ['Login', 'Role', 'Access', 'Password']) head.append(create('th', label)); table.append(head); content.append(table);
+      const table = create('table'); table.className = 'admin-table users-table'; const head = create('tr'); head.className = 'admin-table-head'; for (const label of ['Login', 'Role', 'Access', 'Password']) head.append(create('th', label)); table.append(head); content.append(table);
+      const appendRow = row => { [...row.children].forEach((cell,i)=>cell.dataset.label=['Login','Role','Access','Password'][i]); table.append(row); };
       let offset = 0, total = 0;
       do {
         const data = await request('/admin/users?details=1&limit=200&offset=' + offset);
@@ -99,7 +100,7 @@ window.viewerAccount = {actor: null, csrf: null};
           const row = create('tr'); row.dataset.login = user.login; row.append(create('td', user.login), create('td', user.role));
           if (user.role === 'admin') {
             row.append(create('td', user.enabled ? 'Enabled' : 'Disabled'), create('td', user.login === window.viewerAccount.actor.login ? 'Use Change password' : 'Protected admin'));
-            table.append(row); continue;
+            appendRow(row); continue;
           }
           const access = create('td'); const toggle = control(user.enabled ? 'Disable' : 'Enable', async () => {
             toggle.disabled = true;
@@ -112,7 +113,7 @@ window.viewerAccount = {actor: null, csrf: null};
             try {await request('/admin/users/' + encodeURIComponent(user.login) + '/password', 'PUT', {password: next.value}); next.value = ''; await refresh();}
             catch (error) {alert(error.message);} finally {resetButton.disabled = false;}
           };
-          table.append(row);
+          appendRow(row);
         }
       } while (offset < total);
     } catch (error) {content.append(create('p', error.message));}

@@ -68,7 +68,10 @@ class RecordRuntime:
                     self.observed.add(marker)
                     if self.observe is not None:
                         self.observe(request.identity, request.journal)
-            except BaseException as error:
+            except (Exception, KeyboardInterrupt, SystemExit) as error:
+                # Match the coordinator's supported failure types. Transfer the
+                # exact failure through worker futures so completed neighbors
+                # are accepted before _run_items re-raises it after draining.
                 self.failure = error
                 request.error = error
                 self.stop.set()

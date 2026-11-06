@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import subprocess
+from contextlib import closing
 from decimal import localcontext
 from pathlib import Path
 
@@ -127,7 +128,7 @@ def test_partial_native_and_api_cost_keep_independent_known_subtotals(
 
     def mixed(self: executor._Attempt) -> None:
         """Remove one reported cost and use an unpriced model before native sealing."""
-        with sqlite3.connect(self.private / 'home/data/opencode/opencode.db') as database:
+        with closing(sqlite3.connect(self.private / 'home/data/opencode/opencode.db')) as database, database:
             message = json.loads(
                 database.execute('select data from message where id=?', ('msg-detached',)).fetchone()[0]
             )
@@ -335,25 +336,35 @@ def test_viewer_and_producer_cost_outputs_conform(tmp_path: Path, monkeypatch: p
     assert repricing.reprice(directory, tariffs(tmp_path)) == 0
     expected = build_cost_summary(RunStore.open(directory)).to_wire()
     viewer = Path(__file__).resolve().parents[2] / 'viewer'
-    script = '''import json,sys
+    script = '''
+"""Compare viewer accounting with the producer using the same artifact inventory."""
+
+import json
+import sys
 from pathlib import Path
-from viewer.models import Run,State
+
+from viewer.models import Run, State
 from viewer.models.evidence import ArtifactReceipt
-from viewer.validation.operations import OperationStore
-from viewer.validation.contracts import validate_report
 from viewer.presentation.cost_summary import build_cost_summary
 from viewer.util import digest
-root=Path(sys.argv[1])
-inventory={}
+from viewer.validation.contracts import validate_report
+from viewer.validation.operations import OperationStore
+
+root = Path(sys.argv[1])
+inventory = {}
 for path in root.rglob('*'):
- if path.is_file():
-  data=path.read_bytes(); name=path.relative_to(root).as_posix()
-  inventory[name]=ArtifactReceipt(path=name,size_bytes=len(data),sha256=digest(data))
-store=OperationStore(
- Run.model_validate_json((root/'run.json').read_bytes()),
- State.model_validate_json((root/'_meta/state.json').read_bytes()),
- inventory,lambda name:(root/name).read_bytes(),validate_report)
-print(json.dumps(build_cost_summary(store).to_wire(),sort_keys=True))
+    if path.is_file():
+        data = path.read_bytes()
+        name = path.relative_to(root).as_posix()
+        inventory[name] = ArtifactReceipt(path=name, size_bytes=len(data), sha256=digest(data))
+store = OperationStore(
+    Run.model_validate_json((root / 'run.json').read_bytes()),
+    State.model_validate_json((root / '_meta/state.json').read_bytes()),
+    inventory,
+    lambda name: (root / name).read_bytes(),
+    validate_report,
+)
+print(json.dumps(build_cost_summary(store).to_wire(), sort_keys=True))
 '''
     result = subprocess.run(
         [str(viewer / '.venv/bin/python'), '-c', script, str(directory)],
@@ -373,7 +384,7 @@ def test_tiny_native_cost_serializes_as_valid_lossless_report_decimal(
 
     def tiny(self: executor._Attempt) -> None:
         """Store a legitimate tiny provider charge in each real native billing unit before sealing."""
-        with sqlite3.connect(self.private / 'home/data/opencode/opencode.db') as database:
+        with closing(sqlite3.connect(self.private / 'home/data/opencode/opencode.db')) as database, database:
             for table in ('message', 'part'):
                 for identifier, encoded in database.execute(f'select id, data from {table}').fetchall():
                     value = json.loads(encoded)

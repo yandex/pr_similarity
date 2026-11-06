@@ -3,6 +3,7 @@
 import copy
 import math
 import re
+from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 _TOP_LEVEL = frozenset(
@@ -65,7 +66,7 @@ _SANDBOX_ROOTS = (
 )
 
 
-def native_projection(native: object) -> dict:
+def native_projection(native: object) -> dict[str, Any]:
     """Preserve native structure and order; refuse unsupported or private values."""
     if not isinstance(native, dict) or set(native) - _TOP_LEVEL:
         raise ValueError('unsupported_native_fields')

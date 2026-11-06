@@ -1,4 +1,4 @@
-"""Typed state-v2 artifacts after authoritative JSON Schema validation."""
+"""Typed state artifacts for supported schema versions after JSON Schema validation."""
 
 from typing import ClassVar, Literal
 
@@ -13,7 +13,7 @@ from .report import ReportTaskProgress as StateTaskItemProgress
 
 
 class StateRun(WireModel):
-    """Represent the StateRun object in the state-v2 wire contract."""
+    """Represent the StateRun object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/run'
     status: Literal['running', 'stopping', 'interrupted', 'completed', 'completed_with_errors', 'failed']
@@ -71,9 +71,10 @@ StateTaskItemHistoryItemPricing = StateTaskItemHistoryItemScoring
 
 
 class StateTaskItemHistoryItem(WireModel):
-    """Represent the StateTaskItemHistoryItem object in the state-v2 wire contract."""
+    """Represent the StateTaskItemHistoryItem object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/tasks/items/properties/history/items'
+    interruption: StateTaskItemOutcome | None = None
     attempt: StateAttempt
     start: StateTaskItemHistoryItemStart | None
     seal: StateTaskItemHistoryItemSeal | None
@@ -86,12 +87,13 @@ StateTaskItemStart = StateTaskItemOutcome
 
 
 class StateTaskItem(WireModel):
-    """Represent the StateTaskItem object in the state-v2 wire contract."""
+    """Represent the StateTaskItem object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/tasks/items'
     id: str
     ordinal: int
     processing_status: Literal['pending', 'running', 'completed', 'retry_pending', 'interrupted']
+    interruption: StateTaskItemOutcome | None = None
     attempt: StateAttempt | None
     next_sequence: int
     retry_index: int
@@ -124,7 +126,7 @@ StateSelectedOperationsReprice = StateTaskItemPricing
 
 
 class StateSelectedOperations(WireModel):
-    """Represent the StateSelectedOperations object in the state-v2 wire contract."""
+    """Represent the StateSelectedOperations object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/selected_operations'
     rescore: StateSelectedOperationsRescore | None
@@ -135,7 +137,7 @@ StatePendingPublishRequest = StateTaskItemOutcome
 
 
 class StatePendingPublish(WireModel):
-    """Represent the StatePendingPublish object in the state-v2 wire contract."""
+    """Represent the StatePendingPublish object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/pending_publish'
     id: str
@@ -149,7 +151,7 @@ StateLastPublishReceipt = StateTaskItemOutcome
 
 
 class StateLastPublish(WireModel):
-    """Represent the StateLastPublish object in the state-v2 wire contract."""
+    """Represent the StateLastPublish object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#/properties/last_publish'
     id: str
@@ -158,7 +160,7 @@ class StateLastPublish(WireModel):
 
 
 class State(WireModel):
-    """Represent the State object in the state-v2 wire contract."""
+    """Represent the State object in the supported state wire contracts."""
 
     schema_pointer: ClassVar[str] = '#'
     schema_family: Literal['pr_similarity_os.state']

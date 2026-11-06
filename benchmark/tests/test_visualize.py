@@ -9,11 +9,14 @@ from pathlib import Path
 import pytest
 import yaml
 from benchmark import __main__ as cli
+from benchmark import __version__
 from benchmark.config import load_config
 from benchmark.models import BasketV3
 from benchmark.persistence.storage import read_json, write_json
 from benchmark.presentation.report import read_report
-from benchmark.presentation.visualize import _status, _task, visualize
+from benchmark.presentation.run_metrics import task_status as _status
+from benchmark.presentation.run_page import page_data
+from benchmark.presentation.visualize import visualize
 from benchmark.runtime.runner import run
 from test_runner import config_and_basket, fake_attempt, provision_fixture
 
@@ -47,13 +50,15 @@ def test_visualize_is_standalone_safe_and_preserves_report(tmp_path: Path, monke
     monkeypatch.setattr('webbrowser.open', lambda url: (_ for _ in ()).throw(AssertionError('browser forbidden')))
     path = visualize(run)
     document = path.read_text()
-    assert '&lt;/script&gt;&lt;script&gt;' in document
+    assert '\\u003c/script>\\u003cscript>' in document
     assert '<script>alert(' not in document
-    assert 'cache read / cache write' in document and '—' in document
+    assert 'Cache read' in document and 'Cache write' in document
     assert '<script src=' not in document and '<link ' not in document
+    assert f'id="build-info">v{__version__} · Local offline report</span>' in document
+    assert '[dev]' not in document
     assert 'Filter tasks' in document
-    assert 'class="run-header"' in document and 'class="task"' in document
-    assert 'class="task-body"' in document and 'class="condition"' in document
+    assert 'run-overview' in document and 'task-metrics' in document
+    assert 'Run Metric Settings' in document and 'Run setup' in document
     assert '<table>' not in document
     assert 'id="task-sort"' in document and 'id="task-direction"' in document
     assert (run / 'report.json').read_bytes() == before
@@ -63,14 +68,19 @@ def test_visualize_embeds_lossless_facts_and_viewer_selection(tmp_path: Path, mo
     """Keep embedded evidence exact and expose the viewer's default selection controls."""
     directory = sample(tmp_path, 'one', monkeypatch)
     document = visualize(directory).read_text()
-    payload = document.split('<script type="application/json" id="report-data">', 1)[1].split('</script>', 1)[0]
-    assert json.loads(payload) == read_json(directory / 'report.json')
+    payload = document.split('<script type="application/json" id="local-data">', 1)[1].split('</script>', 1)[0]
+    local = json.loads(payload)
+    report = read_report(directory)
+    assert local['run']['run_id'] == report.run.id
+    assert local['run']['display_name'] == report.agent.name
+    assert [row['task_id'] for row in local['tasks']] == [row.id for row in report.tasks]
+    assert [row['title'] for row in local['tasks']] == [row.title for row in report.tasks]
     assert '<input type="checkbox" value="fail">' in document
     assert '<input type="checkbox" value="OK" checked>' in document
-    assert '<option selected>LCpr</option>' in document
-    assert '<option selected>LCf</option>' in document
-    assert 'href="#overview"' in document and 'href="#tasks"' in document
-    assert 'Original PR' in document
+    assert '<option value="LCpr" selected>' in document
+    assert '<option value="LCf" selected>' in document
+    assert 'href="#content"' in document
+    assert 'Open Human PR' in document
 
 
 def test_visualize_status_is_independent_of_scoring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -182,7 +192,7 @@ def test_original_change_link_is_inside_task_card(
     directory = sample(tmp_path, 'one', monkeypatch)
     report = read_report(directory)
     row = report.tasks[0].model_copy(update={'kind': kind})
-    document = _task(row, 0)
-    summary, body = document.split('</summary>', 1)
-    assert '<a ' not in summary and label in body
-    assert 'target="_blank"' in body and 'rel="noopener noreferrer"' in body
+    report.tasks = [row]
+    payload = page_data(report, {}, {})
+    assert payload['tasks'][0]['kind'] == kind
+    assert payload['tasks'][0]['url'] == row.url

@@ -6,33 +6,60 @@ from pathlib import Path
 import pytest
 from benchmark.errors import BenchmarkError
 from benchmark.models.evidence import ArtifactReceipt
+from benchmark.models.report import ReportFile, ReportFileExists
 from benchmark.persistence.layout import artifact_path
 from benchmark.persistence.storage import read_json
+from benchmark.presentation import visualize_data
+from benchmark.presentation.file_views import file_view
 from benchmark.presentation.report import read_report
 from benchmark.presentation.visualize import visualize
-from benchmark.presentation.visualize_data import embedded_data, source_diff
+from benchmark.presentation.visualize_data import embedded_data
 from benchmark.runtime import attempt as executor
-from benchmark.vcs.workspace import FileState
 from test_operation_workflows import stopped_run
+
+
+def _source_view(before: str | None, after: str | None) -> dict:
+    """Render explicit source-role existence through the production file projection."""
+    row = ReportFile(
+        path='file.py',
+        changed_human=True,
+        changed_agent=True,
+        human_loc=1,
+        agent_loc=1,
+        loc_weight=1,
+        mlp=1.0,
+        branch='default',
+        base='base' if before is not None else None,
+        human='human' if after is not None else None,
+        ai='human' if after is not None else None,
+        exists=ReportFileExists(base=before is not None, human=after is not None, ai=after is not None),
+    )
+    sources = {'base': (before or '').encode(), 'human': (after or '').encode()}
+    return file_view(row, lambda path, limit: sources[path][:limit], 8 << 20, 20000)
 
 
 @pytest.mark.parametrize('exists', [True, False])
 def test_empty_file_existence_is_not_an_empty_diff(exists: bool) -> None:
     """Added and deleted empty files retain an explicit difference."""
-    base = FileState(not exists, '', '100644' if not exists else None)
-    changed = FileState(exists, '', '100644' if exists else None)
+    result = _source_view(None if exists else '', '' if exists else None)
     expected = 'added' if exists else 'deleted'
-    assert source_diff(base, changed, 'empty.py', 'human') == f'[File {expected}; empty content]\n'
+    assert result['human_diff'] == {
+        'text': f'[File {expected}; empty content]\n',
+        'truncated': False,
+    }
 
 
-def test_source_diff_preserves_missing_newline_and_full_text() -> None:
-    """Diffs retain source payload and explicitly mark a missing final newline."""
-    base = FileState(True, 'old\n', '100644')
-    changed = FileState(True, '</script>' + 'x' * 20000, '100644')
-    result = source_diff(base, changed, 'file.py', 'ai')
-    assert '-old\n' in result and '+' + changed.text in result
-    assert result.endswith('\\ No newline at end of file\n')
-    assert source_diff(base, base, 'file.py', 'ai') == ''
+def test_file_diff_preserves_missing_newline_and_full_text() -> None:
+    """Displayed diffs retain complete in-limit text and missing-newline markers."""
+    changed = '</script>' + 'x' * 20000
+    result = _source_view('old\n', changed)['human_diff']
+    assert not result['truncated']
+    assert '-old\n' in result['text'] and '+' + changed in result['text']
+    assert result['text'].endswith('\\ No newline at end of file\n')
+    assert _source_view('old\n', 'old\n')['human_diff'] == {
+        'text': '',
+        'truncated': False,
+    }
 
 
 def test_visualize_embeds_selected_diffs_config_and_harness_settings(
@@ -43,25 +70,22 @@ def test_visualize_embeds_selected_diffs_config_and_harness_settings(
     report = read_report(directory)
     original = (directory / 'report.json').read_bytes()
     data = embedded_data(directory, report)
-    settings, native, diffs = data['benchmark'], data['config'], data['diffs']
-    assert isinstance(settings, dict)
-    assert isinstance(native, dict)
-    assert isinstance(diffs, dict)
-    native_config, task_diffs = native['config'], diffs['0']
-    assert isinstance(native_config, dict)
-    assert isinstance(task_diffs, dict)
-    file_diffs = task_diffs['0']
-    assert isinstance(file_diffs, dict)
+    settings, native = data['benchmark'], data['config']
+    task = report.tasks[0]
+    file_diffs = data['file_diffs'][task.id][task.scoring.files[0].path]
     assert settings['timeout_seconds'] == config.data.agent.timeout_seconds
     assert native['supported'] is True
-    assert native_config['model'] == 'fixture/model'
-    assert file_diffs['human_diff']
-    assert file_diffs['agent_diff']
+    assert native['config']['model'] == 'fixture/model'
+    assert file_diffs['human_diff']['text']
+    assert file_diffs['agent_diff']['text']
     document = visualize(directory).read_text()
-    payload = document.split('<script type="application/json" id="view-data">', 1)[1].split('</script>', 1)[0]
-    assert json.loads(payload)['diffs'] == data['diffs']
-    assert 'class="file"' in document and 'id="diff-dialog"' in document
-    assert 'Run Report' in document and 'Original PR' in document
+    payload = document.split('<script type="application/json" id="local-data">', 1)[1].split('</script>', 1)[0]
+    local = json.loads(payload)
+    assert local['file_diffs'] == data['file_diffs']
+    assert local['config'] == native
+    assert local['run']['benchmark'] == settings
+    assert 'function makeFile' in document and 'id="diff-dialog"' in document
+    assert 'Run Report' in document and 'Open Human PR' in document
     assert (directory / 'report.json').read_bytes() == original
 
 
@@ -96,3 +120,68 @@ def test_missing_declared_usage_receipt_finishes_visualize_as_failed(
     assert selected[0]['status'] == 'failed'
     assert selected[0]['finished_at'] is not None
     assert not (directory / 'report.html').exists()
+
+
+@pytest.mark.parametrize('cache', ['missing', 'stale'])
+def test_visualize_uses_authoritative_snapshot_without_report_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cache: str
+) -> None:
+    """A derived cache cannot prevent viewing otherwise intact saved evidence."""
+    directory, _, _ = stopped_run(tmp_path, monkeypatch)
+    expected = read_report(directory)
+    path = directory / 'report.json'
+    if cache == 'missing':
+        path.unlink()
+    else:
+        path.write_text('{}')
+    document = visualize(directory).read_text()
+    payload = document.split('<script type="application/json" id="local-data">', 1)[1].split('</script>', 1)[0]
+    local = json.loads(payload)
+    assert local['run']['run_id'] == expected.run.id
+    assert [task['task_id'] for task in local['tasks']] == [task.id for task in expected.tasks]
+    for row, task in zip(local['tasks'], expected.tasks, strict=True):
+        assert row['metrics']['LCf']['score'] == task.scoring.LCf_mlp
+    assert path.exists() is (cache == 'stale')
+    if path.exists():
+        assert path.read_text() == '{}'
+
+
+def test_local_input_config_respects_viewer_display_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Oversized native input stays unavailable instead of exposing a partial document."""
+    directory, _, _ = stopped_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(visualize_data, 'CONFIG_DISPLAY_BYTES', 1)
+    data = embedded_data(directory, read_report(directory))
+    config = data['config']
+    assert isinstance(config, dict)
+    assert config['supported'] is False
+    assert config['config'] is None
+    assert config['reason'] == 'display_limit'
+
+
+def test_local_html_contains_only_bounded_display_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Source beyond the display limit must not survive in an unused HTML payload."""
+    directory, _, _ = stopped_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(visualize_data, 'DIFF_BYTES', 4)
+    document = visualize(directory).read_text()
+    payload = document.split('<script type="application/json" id="local-data">', 1)[1].split('</script>', 1)[0]
+    data = json.loads(payload)
+    task = read_report(directory).tasks[0]
+    view = data['file_diffs'][task.id][task.scoring.files[0].path]
+    assert view['human_diff']['truncated']
+    assert len(view['human_diff']['text'].encode()) <= 4
+    assert 'human = 2' not in document
+    assert document.count('<script type="application/json"') == 1
+
+
+@pytest.mark.parametrize('field', ['task_id', 'source_path'])
+def test_visualize_rejects_unselected_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+    """Report identity and file selection must match the authoritative state snapshot."""
+    directory, _, _ = stopped_run(tmp_path, monkeypatch)
+    report = read_report(directory)
+    if field == 'task_id':
+        report.tasks[0].id = 'foreign-task'
+    else:
+        report.tasks[0].scoring.files[0].path = 'foreign.py'
+    with pytest.raises(BenchmarkError) as captured:
+        embedded_data(directory, report)
+    assert captured.value.code == 'report_changed'
