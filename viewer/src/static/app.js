@@ -415,6 +415,12 @@ function diffBlock(text) {
   pre.append(lines);
   return pre;
 }
+function filePanelHeading(title, added, removed, truncated) {
+  const heading = node('h4', title + ' (');
+  heading.append(node('span', '+' + added, 'change-added'), ' ', node('span', '−' + removed, 'change-removed'), ')');
+  if (truncated) heading.append(' · shown lines');
+  return heading;
+}
 function unifiedDiffPanel(title, data) {
   const panel = node('section', null, 'diff-panel');
   let added = 0, removed = 0, inHunk = false;
@@ -423,7 +429,7 @@ function unifiedDiffPanel(title, data) {
     else if (inHunk && line.startsWith('+')) ++added;
     else if (inHunk && line.startsWith('-')) ++removed;
   }
-  panel.append(node('h4', title + ' (+' + added + ' −' + removed + ')' + (data.truncated ? ' · shown lines' : '')));
+  panel.append(filePanelHeading(title, added, removed, data.truncated));
   if (data.truncated) panel.append(node('p', 'Diff truncated by display limits', 'truncated'));
   const pre = diffBlock(data.text || (data.truncated ? 'Content exceeds display limit' : 'No changes.'));
   pre.tabIndex = 0; pre.setAttribute('aria-label', title);
@@ -1127,7 +1133,7 @@ function fullFilePanel(title, data) {
  const added=data.lines.filter(line=>line.kind==='added').length;
  const removed=data.lines.filter(line=>line.kind==='removed').length;
  const panel=node('section',null,'diff-panel full-file-panel');
- panel.append(node('h4',title+' (+'+added+' −'+removed+')'+(data.truncated?' · shown lines':'')));
+ panel.append(filePanelHeading(title, added, removed, data.truncated));
  const note=node('div',null,'file-view-note');
  const states={added:'File added',deleted:'File deleted',absent:'File absent',unchanged:'No changes',modified:'Changes relative to base'};
  note.append(node('span',states[data.state]||'Changes relative to base'));

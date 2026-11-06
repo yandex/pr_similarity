@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.4.2
+
+- Color added and removed line counts in Human and Agent file headings,
+  in both Diff and Full file views of the viewer and local HTML reports.
+
 ## 0.3.4.1
 
 - Make setup quieter, with progress messages and reusable environment paths.
