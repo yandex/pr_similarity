@@ -28,14 +28,22 @@ setup:
 			esac; \
 		done; \
 	fi; \
+	printf '%s\n' '[1/4] Preparing virtual environment'; \
 	if [ ! -x "$(VENV_PYTHON)" ]; then \
 		"$(PYTHON)" -m venv .venv || "$(PYTHON)" -m venv --without-pip .venv; \
 	fi; \
 	"$(VENV_PYTHON)" -c 'import sys; assert sys.version_info[:2] == (3, 12), "Python 3.12 required"'; \
+	printf '%s\n' '[2/4] Preparing pip'; \
 	if ! "$(VENV_PYTHON)" -m pip --version >/dev/null 2>&1; then "$(PYTHON)" -m pip --python .venv install --quiet --no-input pip; fi; \
-	"$(VENV_PYTHON)" -m pip install --upgrade pip; \
-	"$(VENV_PYTHON)" -m pip install --require-hashes -r requirements.lock; \
-	"$(VENV_PYTHON)" -m pip install --no-build-isolation --no-deps --config-settings editable_mode=strict -e .
+	"$(VENV_PYTHON)" -m pip install --quiet --upgrade pip; \
+	printf '%s\n' '[3/4] Installing dependencies'; \
+	"$(VENV_PYTHON)" -m pip install --quiet --require-hashes -r requirements.lock; \
+	printf '%s\n' '[4/4] Installing project'; \
+	PYTHONWARNINGS="$${PYTHONWARNINGS:+$${PYTHONWARNINGS},}ignore:Editable installation.:UserWarning:setuptools.command.editable_wheel" "$(VENV_PYTHON)" -m pip install --quiet --no-build-isolation --no-deps --config-settings editable_mode=strict -e .; \
+	printf '%s\n' 'Editable install uses build/; keep this directory while using the environment.'; \
+	setup_python="$(VENV_PYTHON)"; \
+	case "$$setup_python" in /*) ;; *) setup_python="$$PWD/$$setup_python" ;; esac; \
+	printf 'Virtual environment: %s\nPython: %s\n' "$$(dirname "$$(dirname "$$setup_python")")" "$$setup_python"
 
 collect filter generate export basket:
 	@test -x "$(VENV_PYTHON)" || { printf '%s\n' 'Run make setup first'; exit 2; }

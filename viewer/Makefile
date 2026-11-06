@@ -37,13 +37,20 @@ setup:
 	    esac; \
 	  done; \
 	fi; \
+	printf '%s\n' '[1/4] Preparing virtual environment'; \
 	if [ ! -x "$${PRSIM_VIEWER_PYTHON}" ]; then "$${PRSIM_VIEWER_SETUP_PYTHON}" -m venv .venv || "$${PRSIM_VIEWER_SETUP_PYTHON}" -m venv --without-pip .venv; fi; \
 	"$${PRSIM_VIEWER_PYTHON}" -c 'import sys; assert sys.version_info >= (3, 12), "Python >=3.12 required"'; \
-	if ! "$${PRSIM_VIEWER_PYTHON}" -m pip --version >/dev/null 2>&1; then PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_SETUP_PYTHON}" -m pip --python .venv install pip; fi; \
-	PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install --upgrade pip; \
-	PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install --require-hashes -r requirements-build.lock; \
-	PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install -r requirements.lock; \
-	"$${PRSIM_VIEWER_PYTHON}" -m pip install --no-build-isolation --no-deps -e .
+	printf '%s\n' '[2/4] Preparing pip'; \
+	if ! "$${PRSIM_VIEWER_PYTHON}" -m pip --version >/dev/null 2>&1; then PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_SETUP_PYTHON}" -m pip --python .venv install --quiet pip; fi; \
+	PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install --quiet --upgrade pip; \
+	printf '%s\n' '[3/4] Installing dependencies'; \
+	PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install --quiet --require-hashes -r requirements-build.lock; \
+	PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install --quiet -r requirements.lock; \
+	printf '%s\n' '[4/4] Installing project'; \
+	PYTHONWARNINGS="$${PYTHONWARNINGS:+$${PYTHONWARNINGS},}ignore:Editable installation.:UserWarning:setuptools.command.editable_wheel" PIP_INDEX_URL="$${PRSIM_VIEWER_INDEX}" "$${PRSIM_VIEWER_PYTHON}" -m pip install --quiet --no-build-isolation --no-deps -e .; \
+	setup_python="$${PRSIM_VIEWER_PYTHON}"; \
+	case "$$setup_python" in /*) ;; *) setup_python="$$PWD/$$setup_python" ;; esac; \
+	printf 'Virtual environment: %s\nPython: %s\n' "$$(dirname "$$(dirname "$$setup_python")")" "$$setup_python"
 
 browser-setup:
 	@"$${PRSIM_VIEWER_PYTHON}" -m playwright install chromium

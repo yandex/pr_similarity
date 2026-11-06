@@ -17,6 +17,10 @@ make setup PYTHON=python3.12
 make env
 ```
 
+`make setup` prints installation progress and the environment and Python paths.
+Package installation is quiet; warnings and errors remain visible.
+Keep `build/`: the editable installation uses files from this directory.
+
 > [!WARNING]
 > API-key runs may incur provider charges. OAuth runs consume subscription quota.
 > Keep credentials out of YAML and version control. Model access, source Git

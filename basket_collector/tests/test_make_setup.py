@@ -61,9 +61,9 @@ def test_setup_confirmation(tmp_path: Path, existing: bool, answer: str, expecte
         return
     commands = calls.read_text().splitlines()
     assert commands[-3:] == [
-        '-m pip install --upgrade pip',
-        '-m pip install --require-hashes -r requirements.lock',
-        '-m pip install --no-build-isolation --no-deps --config-settings editable_mode=strict -e .',
+        '-m pip install --quiet --upgrade pip',
+        '-m pip install --quiet --require-hashes -r requirements.lock',
+        '-m pip install --quiet --no-build-isolation --no-deps --config-settings editable_mode=strict -e .',
     ]
     assert ('-m venv .venv' in commands) != existing
 
@@ -89,4 +89,4 @@ def test_setup_stops_after_pip_bootstrap_failure(tmp_path: Path) -> None:
     assert result.returncode != 0
     commands = calls.read_text().splitlines()
     assert commands[-1] == '-m pip --python .venv install --quiet --no-input pip'
-    assert not any('install --upgrade' in command for command in commands)
+    assert not any('--upgrade' in command for command in commands)

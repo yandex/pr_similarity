@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.4.1
+
+- Make setup quieter, with progress messages and reusable environment paths.
+- Fix package-data warnings and consistently use the selected setup package index.
+
 ## 0.3.4
 
 - Refresh the viewer and offline HTML with clearer task metrics, setup details,
