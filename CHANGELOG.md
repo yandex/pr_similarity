@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.5.2
+
+- Show storage usage categories as cards that stay visible while measurements update.
+
 ## 0.3.5.1
 
 - Make Settings easier to scan with operation progress below basket controls and

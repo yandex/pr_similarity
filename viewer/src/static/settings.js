@@ -84,14 +84,21 @@
         resources.replaceChildren();
         const heading=create('div');heading.className='settings-section-heading';const label=create('div');label.append(create('h2','Server & storage'),create('p','Updated when settings are loaded or reloaded.'));heading.append(label);resources.append(heading);
         const grid=create('div');grid.className='storage-cards';resources.append(grid);
-        function card(title,used,total,note){const card=create('div');card.className='storage-card';card.append(create('h3',title));const amount=create('div');amount.className='storage-amount';amount.append(create('strong',bytes(used)));if(total)amount.append(create('span',' / '+bytes(total)));card.append(amount);if(total&&used!=null){const meter=create('progress');meter.max=total;meter.value=used;meter.setAttribute('aria-label',title+' used');card.append(meter);}else{const absent=create('div',total?'':'Capacity not reported');absent.className='storage-no-limit';card.append(absent);}card.append(create('p',note));grid.append(card);}
+        function card(title,used,total,note,target=grid,showCapacity=true){const card=create('div');card.className='storage-card';card.append(create('h3',title));const amount=create('div');amount.className='storage-amount';amount.append(create('strong',bytes(used)));if(total)amount.append(create('span',' / '+bytes(total)));card.append(amount);if(total&&used!=null){const meter=create('progress');meter.max=total;meter.value=used;meter.setAttribute('aria-label',title+' used');card.append(meter);}else if(showCapacity){const absent=create('div',total?'':'Capacity not reported');absent.className='storage-no-limit';card.append(absent);}if(note)card.append(create('p',note));target.append(card);}
         const {cache,disk,memory,cpu,object_storage:s3}=snapshot;
         if(cache)card('Local run cache',cache.used_bytes,cache.limit_bytes,cache.resident_versions+' resident versions · '+(cache.idle_ttl_seconds/3600).toLocaleString(undefined,{maximumFractionDigits:1})+'h idle retention');
         if(disk)card('Server disk',disk.used_bytes,disk.total_bytes,bytes(disk.free_bytes)+' free');
         if(s3){
           const state=s3.status==='collecting'?'Collecting usage…':s3.status==='unavailable'?'Usage unavailable; reload to retry.':'';
           card('S3 storage',s3.used_bytes,s3.capacity_bytes,[s3.object_count!=null?s3.object_count.toLocaleString()+' current objects':'',state,s3.sampled_at?'As of '+humanTime(s3.sampled_at):''].filter(Boolean).join(' · '));
-          if(Object.keys(s3.groups||{}).length){const details=create('details');details.className='storage-breakdown';details.append(create('summary','S3 storage breakdown'));const list=create('dl');const labels={publications:'Publications',archives:'Run backups',backups:'Backup copies',trash:'Trash',indexes:'Checkpoints and indexes',other:'Other'};for(const [key,size] of Object.entries(s3.groups)){list.append(create('dt',labels[key]||key),create('dd',bytes(size)));}details.append(list);resources.append(details);}
+          if(Object.keys(s3.groups||{}).length){
+            const breakdown=create('section');breakdown.className='storage-breakdown';breakdown.setAttribute('aria-label','S3 storage breakdown');
+            breakdown.append(create('h3','S3 storage breakdown'));
+            const categories=create('div');categories.className='storage-cards storage-category-cards';breakdown.append(categories);
+            const labels={publications:'Publications',archives:'Run backups',backups:'Backup copies',trash:'Trash',indexes:'Checkpoints and indexes',other:'Other'};
+            for(const [key,size] of Object.entries(s3.groups))card(labels[key]||key,size,null,null,categories,false);
+            resources.append(breakdown);
+          }
         }
         if(memory)card('Server memory',memory.used_bytes,memory.total_bytes,cpu?'CPU load '+cpu.load_1m.toFixed(2)+(cpu.cores?' · '+cpu.cores+' cores':''):'');
         else if(cpu)resources.append(create('p','CPU load '+cpu.load_1m.toFixed(2)));
