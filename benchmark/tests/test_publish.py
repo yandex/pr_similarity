@@ -5,14 +5,20 @@ import json
 import tarfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, TypedDict
 
 import httpx
 import pytest
 from benchmark.errors import BenchmarkError
 from benchmark.execution.agent_input import benchmark_settings
 from benchmark.models import Report, State
-from benchmark.models.evidence import ConfigIdentity, PublishReceipt, PublishRequest
+from benchmark.models.evidence import (
+    ConfigIdentity,
+    PublishFingerprint,
+    PublishReceipt,
+    PublishRequest,
+    ServerReceipt,
+)
 from benchmark.models.report import ReportInference
 from benchmark.persistence.artifact_refs import read_reference, reference
 from benchmark.persistence.run_store import RunStore
@@ -20,6 +26,18 @@ from benchmark.persistence.storage import read_json, write_json
 from benchmark.presentation.inference import generated_groups
 from benchmark.publication.publish import publish
 from test_archive import complete_run
+
+
+class _PublishArguments(TypedDict, total=False):
+    """Describe optional publication arguments used by administrative transport tests."""
+
+    overwrite: bool
+    admin_overwrite_token_env: str
+    admin_overwrite_token_file: Path
+    expected_publication_sha256: str
+    token_env: str
+    client: httpx.Client
+
 
 TOKEN = 'fixture_token_for_tests_only'
 
@@ -33,6 +51,10 @@ def viewer_transport(handler: Callable[[httpx.Request], httpx.Response]) -> http
 
     def dispatch(request: httpx.Request) -> httpx.Response:
         """Serve readback separately from token and idempotent upload responses."""
+        if request.url.path.endswith('/publication-capabilities'):
+            return httpx.Response(200, json={'protocols': ['local-durable-v1'], 'operation_status': True})
+        if '/publication-operations/' in request.url.path:
+            return httpx.Response(404)
         if request.method == 'PUT':
             with tarfile.open(fileobj=io.BytesIO(request.content), mode='r:gz') as archive:
                 report_file = archive.extractfile('report.json')
@@ -120,6 +142,12 @@ def receipt(request: httpx.Request) -> dict:
         'report_sha256': request.headers['X-Report-SHA256'],
         'idempotency_key': request.headers['Idempotency-Key'],
         'author_login': 'fixture-owner',
+        'protocol': 'local-durable-v1',
+        'durability': 'local_durable',
+        'operation_id': request.headers['Idempotency-Key'],
+        'phase': 'available',
+        'message': 'Publication available',
+        'actor_login': 'fixture-owner',
     }
 
 
@@ -202,7 +230,7 @@ def test_bad_receipt_keeps_pending_and_does_not_claim_success(tmp_path: Path, mo
     """Verify bad receipt keeps pending and does not claim success."""
     run = complete_run(tmp_path, monkeypatch)
     monkeypatch.setenv('TEST_VIEWER_TOKEN', TOKEN)
-    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={'run_id': 'wrong'})))
+    client = httpx.Client(transport=viewer_transport(lambda request: httpx.Response(200, json={'run_id': 'wrong'})))
     with pytest.raises(BenchmarkError) as caught:
         publish(run, 'https://viewer.example', token_env='TEST_VIEWER_TOKEN', client=client)
     assert caught.value.code == 'publish_receipt_mismatch'
@@ -221,20 +249,23 @@ def test_bad_public_readback_keeps_request_pending(
     def corrupted(request: httpx.Request) -> httpx.Response:
         """Corrupt the selected public readback while preserving successful upload responses."""
         response = original.handle_request(request)
-        if request.method != 'GET':
+        if request.method != 'GET' or response.status_code != 200:
             return response
         body = json.loads(response.content)
         if corruption == 'native_config' and request.url.path.endswith('/config'):
             body['config']['model'] = 'foreign/model'
         elif corruption == 'task_coverage' and request.url.path.endswith('/tasks'):
             body['items'] = []
-        elif corruption == 'benchmark_metadata' and not request.url.path.endswith(('/config', '/tasks')):
+        elif (
+            corruption == 'benchmark_metadata'
+            and '/api/v1/runs/' in request.url.path
+            and not request.url.path.endswith(('/config', '/tasks'))
+        ):
             body['benchmark']['timeout_seconds'] += 1
         return httpx.Response(200, json=body)
 
-    with httpx.Client(transport=httpx.MockTransport(corrupted)) as client:
-        with pytest.raises(BenchmarkError) as caught:
-            publish(run, 'https://viewer.example', token_env='TEST_VIEWER_TOKEN', client=client)
+    with httpx.Client(transport=httpx.MockTransport(corrupted)) as client, pytest.raises(BenchmarkError) as caught:
+        publish(run, 'https://viewer.example', token_env='TEST_VIEWER_TOKEN', client=client)
     assert caught.value.code == 'publish_readback_mismatch'
     assert pending_publication(run) is not None
 
@@ -301,7 +332,7 @@ def test_malformed_success_receipt_does_not_complete_operation(
     """Verify malformed success receipt does not complete operation."""
     run = complete_run(tmp_path, monkeypatch)
     monkeypatch.setenv('TEST_VIEWER_TOKEN', TOKEN)
-    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=response)))
+    client = httpx.Client(transport=viewer_transport(lambda request: httpx.Response(200, json=response)))
     with pytest.raises(BenchmarkError) as caught:
         publish(run, 'https://viewer.example', token_env='TEST_VIEWER_TOKEN', client=client)
     assert caught.value.code == 'publish_receipt_mismatch'
@@ -316,6 +347,10 @@ def test_public_readback_mismatch_keeps_exact_request_pending(tmp_path: Path, mo
 
     def handler(request: httpx.Request) -> httpx.Response:
         """Confirm uploaded bytes but deliberately serve a wrong public evidence record."""
+        if request.url.path.endswith('/publication-capabilities'):
+            return httpx.Response(200, json={'protocols': ['local-durable-v1'], 'operation_status': True})
+        if '/publication-operations/' in request.url.path:
+            return httpx.Response(404)
         if request.method == 'PUT':
             uploads.append(request.headers['Idempotency-Key'])
             return httpx.Response(201, json=receipt(request))
@@ -389,3 +424,127 @@ def test_omitted_historical_payload_does_not_relax_publication_binding(
     with pytest.raises(BenchmarkError) as caught:
         RunStore.open(directory, allow_omitted_publish_payloads=True)
     assert caught.value.code in ('publication_fingerprint_invalid', 'publication_receipt_invalid')
+
+
+def test_server_without_local_durable_capability_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An old server cannot silently acknowledge the new durability contract."""
+    run = complete_run(tmp_path, monkeypatch)
+    monkeypatch.setenv('TEST_VIEWER_TOKEN', TOKEN)
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Model a server without the capability endpoint and record attempted requests."""
+        calls.append(request.method)
+        return httpx.Response(404)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client, pytest.raises(BenchmarkError) as caught:
+        publish(run, 'https://viewer.example', token_env='TEST_VIEWER_TOKEN', client=client)
+    assert caught.value.code == 'publish_protocol_unsupported'
+    assert calls == ['GET']
+
+
+@pytest.mark.parametrize('field,value', [('phase', 'committing'), ('durability', 's3'), ('protocol', None)])
+def test_intermediate_or_legacy_receipt_cannot_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: str | None,
+) -> None:
+    """Require durable receipt before public readback."""
+    run = complete_run(tmp_path, monkeypatch)
+    monkeypatch.setenv('TEST_VIEWER_TOKEN', TOKEN)
+
+    def upload(request: httpx.Request) -> httpx.Response:
+        """Return a successful HTTP response with the selected receipt field corrupted."""
+        data = receipt(request)
+        data[field] = value
+        return httpx.Response(200, json=data)
+
+    with (
+        httpx.Client(transport=viewer_transport(upload)) as client,
+        pytest.raises(BenchmarkError, match='local durable'),
+    ):
+        publish(run, 'https://viewer.example', token_env='TEST_VIEWER_TOKEN', client=client)
+    assert pending_publication(run) is not None
+
+
+def test_terminal_status_replays_without_upload_and_preserves_admin_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recover lost admin response by status and retain original owner and CAS."""
+    run = complete_run(tmp_path, monkeypatch)
+    monkeypatch.setenv('ADMIN_GRANT', TOKEN)
+    saved, uploads = {}, []
+
+    def upload(request: httpx.Request) -> NoReturn:
+        """Commit the simulated administrative publication and lose its response."""
+        assert request.headers['X-Publication-Protocol'] == 'local-durable-v1'
+        assert request.url.params['expected_publication_sha256'] == 'a' * 64
+        assert request.url.params['overwrite'] == '1'
+        uploads.append(request.content)
+        saved.update(receipt(request), actor_login='administrator')
+        raise httpx.ReadError('Lost committed response')
+
+    original = viewer_transport(upload)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        """Return the committed receipt through authenticated operation lookup."""
+        if '/publication-operations/' in request.url.path and saved:
+            assert request.headers['Authorization'] == 'Bearer ' + TOKEN
+            assert dict(request.url.params) == {
+                key: saved[key] for key in ('run_id', 'archive_sha256', 'report_sha256')
+            }
+            return httpx.Response(200, json={**saved, 'receipt': saved})
+        return original.handle_request(request)
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        kwargs: _PublishArguments = {
+            'overwrite': True,
+            'admin_overwrite_token_env': 'ADMIN_GRANT',
+            'expected_publication_sha256': 'a' * 64,
+            'client': client,
+        }
+        with pytest.raises(BenchmarkError):
+            publish(run, 'https://viewer.example', **kwargs)
+        pending = pending_publication(run)
+        assert pending is not None
+        assert pending.fingerprint.admin_overwrite is True
+        assert pending.fingerprint.protocol == 'local-durable-v1'
+        assert publish(run, 'https://viewer.example', **kwargs) == 0
+    assert len(uploads) == 1
+    assert pending_publication(run) is None
+    for path in (run / 'operations/publish').rglob('*.json'):
+        assert TOKEN not in path.read_text()
+
+
+@pytest.mark.parametrize(
+    'kwargs',
+    [
+        {'admin_overwrite_token_env': 'ADMIN'},
+        {'admin_overwrite_token_env': 'ADMIN', 'overwrite': True},
+        {'admin_overwrite_token_env': 'ADMIN', 'token_env': 'ORDINARY'},
+        {'admin_overwrite_token_env': 'ADMIN', 'admin_overwrite_token_file': Path('/tmp/token')},
+        {'expected_publication_sha256': 'a' * 64},
+    ],
+)
+def test_admin_arguments_rejected_before_run_access(tmp_path: Path, kwargs: _PublishArguments) -> None:
+    """Reject conflicts and missing CAS before freezing a request."""
+    with pytest.raises(BenchmarkError) as caught:
+        publish(tmp_path / 'absent', 'https://viewer.example', **kwargs)
+    assert caught.value.code in ('publish_token_sources', 'publish_admin_arguments')
+
+
+def test_historical_fingerprint_and_receipt_preserve_exact_serialization() -> None:
+    """Absent durability fields remain absent in historical artifacts."""
+    old = {
+        'server': 'https://viewer.example',
+        'run_id': 'run',
+        'archive_sha256': 'a' * 64,
+        'report_sha256': 'b' * 64,
+        'overwrite': False,
+    }
+    assert PublishFingerprint.model_validate(old).to_wire() == old
+    old_receipt = {key: old[key] for key in ('run_id', 'archive_sha256', 'report_sha256')}
+    old_receipt.update(idempotency_key='key', author_login='owner')
+    assert ServerReceipt.model_validate(old_receipt).to_wire() == old_receipt

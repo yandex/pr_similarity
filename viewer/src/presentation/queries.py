@@ -12,6 +12,7 @@ from viewer.presentation.metrics import (
     DEFAULT_STATUSES,
     aggregate,
     displayed_amount,
+    tag_groups,
     task_status,
 )
 from viewer.presentation.task_measurements import TaskMeasurements
@@ -216,12 +217,27 @@ class TaskQuery(Query):
         return [row for _, row in sorted(enumerate(items), key=cmp_to_key(compare))]
 
 
+def _catalogue_row(service: ViewerService, rid: str, entry: CatalogueEntry) -> dict:
+    """Project only fields used by catalogue filters and facet counts."""
+    metadata = service.metadata[rid]
+    return {
+        'run_id': rid,
+        'user': entry['marker']['owner'],
+        'basket_hash': entry['marker']['basket_sha256'],
+        'display_name': metadata['display_name'],
+        'tags': metadata['tags'],
+        'pinned': metadata['pinned'],
+        'created_at': metadata['created_at'],
+        'tag_groups': tag_groups(metadata['tags'], entry['report'].inference),
+    }
+
+
 def catalogue(service: ViewerService, query: Query) -> dict:
     """Build the public filtered basket catalogue."""
     order = [h for h in service.order if not service.display[h]['hidden']]
     visible = set(order)
     all_rows = [
-        service.run(rid, **query.selection)
+        _catalogue_row(service, rid, row)
         for rid, row in service.runs.items()
         if row['marker']['basket_sha256'] in visible and rid not in service.busy_runs()
     ]

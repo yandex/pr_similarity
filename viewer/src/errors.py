@@ -13,6 +13,7 @@ class ViewerError(Exception):
 class StorageError(ViewerError):
     """Report temporary storage failures without exposing provider diagnostics."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, retryable: bool = True) -> None:
         """Report unavailable storage with a retryable HTTP 503 response."""
         super().__init__('storage_unavailable', 'Storage is unavailable; retry the operation.', 503)
+        self.retryable = retryable

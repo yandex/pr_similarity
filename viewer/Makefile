@@ -8,6 +8,9 @@ LOGIN ?=
 ROLE ?=
 RUN_ID ?=
 ORDER_JSON ?=
+CHECKPOINT_KEY ?=
+TARGET_RUNTIME ?=
+MIGRATION_MAX_OBJECTS ?= 100000
 
 export PRSIM_VIEWER_SETUP_PYTHON = $(value PYTHON)
 export PRSIM_VIEWER_PYTHON = $(value VENV_PYTHON)
@@ -19,10 +22,13 @@ export PRSIM_VIEWER_LOGIN = $(value LOGIN)
 export PRSIM_VIEWER_ROLE = $(value ROLE)
 export PRSIM_VIEWER_RUN_ID = $(value RUN_ID)
 export PRSIM_VIEWER_ORDER_JSON = $(value ORDER_JSON)
+export PRSIM_VIEWER_CHECKPOINT_KEY = $(value CHECKPOINT_KEY)
+export PRSIM_VIEWER_TARGET_RUNTIME = $(value TARGET_RUNTIME)
+export PRSIM_VIEWER_MIGRATION_MAX_OBJECTS = $(value MIGRATION_MAX_OBJECTS)
 _COMMAND_LINE_VARIABLES := $(foreach name,$(.VARIABLES),$(if $(filter command line,$(origin $(name))),$(name)))
-unexport $(_COMMAND_LINE_VARIABLES) PYTHON VENV_PYTHON CONFIG DEV PACKAGE_INDEX_URL URL LOGIN ROLE RUN_ID ORDER_JSON
+unexport $(_COMMAND_LINE_VARIABLES) PYTHON VENV_PYTHON CONFIG DEV PACKAGE_INDEX_URL URL LOGIN ROLE RUN_ID ORDER_JSON CHECKPOINT_KEY TARGET_RUNTIME MIGRATION_MAX_OBJECTS
 
-.PHONY: help setup browser-setup test serve start stop status logs admin-profile-create admin-role-set admin-profile-password-set admin-user-create admin-user-enable admin-user-disable admin-password-set admin-basket-order admin-run-delete admin-refresh
+.PHONY: help setup browser-setup test serve start stop status logs admin-profile-create admin-role-set admin-profile-password-set admin-user-create admin-user-enable admin-user-disable admin-password-set admin-basket-order admin-run-delete admin-refresh admin-local-import admin-checkpoint-restore
 
 setup:
 	@set -e; \
@@ -58,7 +64,7 @@ browser-setup:
 test:
 	@"$${PRSIM_VIEWER_PYTHON}" -m pytest tests
 
-serve start stop status logs admin-profile-create admin-role-set admin-profile-password-set admin-user-create admin-user-enable admin-user-disable admin-password-set admin-basket-order admin-run-delete admin-refresh:
+serve start stop status logs admin-profile-create admin-role-set admin-profile-password-set admin-user-create admin-user-enable admin-user-disable admin-password-set admin-basket-order admin-run-delete admin-refresh admin-local-import admin-checkpoint-restore:
 	@"$${PRSIM_VIEWER_PYTHON}" -m viewer $@
 
 help:
@@ -89,6 +95,11 @@ help:
 	  '  make admin-basket-order   Prompt for a JSON array of basket hashes' \
 	  '  make admin-run-delete RUN_ID=<uuid>' \
 	  '  make admin-refresh' \
+	  '' \
+	  'Offline administration (stop the viewer first):' \
+	  '  make admin-local-import  Import existing legacy archives with the local config' \
+	  '  make admin-checkpoint-restore CHECKPOINT_KEY=<key> TARGET_RUNTIME=<new-directory>' \
+	  '  MIGRATION_MAX_OBJECTS=<count> bounds legacy discovery (default: 100000)' \
 	  '' \
 	  'Variables:' \
 	  '  DEV=0|1                   Show [dev] beside the version (default: 0; start/serve)' \

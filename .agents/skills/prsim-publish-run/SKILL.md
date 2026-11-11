@@ -34,8 +34,9 @@ Use a supported hidden login or named token source; never print credentials,
 place values in argv/YAML, read profiles as a workaround or disable TLS.
 
 For upload use `make publish RUN=... URL=...`. Phase/elapsed feedback uses
-`PROGRESS=auto|plain|off`; object-store persistence can
-take several minutes after the bytes are sent. Upload read timeout is 960 seconds,
+`PROGRESS=auto|plain|off`; the client requires `local-durable-v1` and displays
+authenticated server phases during local validation and commit. S3 backup runs
+after the successful response. Upload read timeout is 960 seconds,
 with connect at 20 seconds. Wait for receipt/readback, not an upload percentage.
 Each operation owns
 `operations/publish/<uuid>/{payload.tar.gz,request.json}` plus a closed
@@ -45,6 +46,9 @@ archive bytes, digest and idempotency key pending. Moving the complete run retai
 relative replay paths; an external archive cache is only a cache. Older payload
 blobs are omitted from future archives, with request/receipt history retained.
 
+Require an `available` receipt with `protocol: local-durable-v1` and
+`durability: local_durable`, followed by public readback. Historical receipts
+remain readable; pending legacy requests need their producing installation.
 Confirm the closed receipt and original archive/report/basket hashes, server
 owner and idempotency identity. Read back HTTPS run/config/tasks and
 the `model [effort]` label and its origins (no brackets or internal effort tag
@@ -57,7 +61,8 @@ preserves those edits and reports local differences; generated groups remain
 configured facts, and user tag prefixes stay Setup.
 
 After ambiguity, repeat only within authorized scope to replay the selected
-pending request. Confirmed completed/conflict/rejected receipts clear it. A 409
+pending request. A completed server operation is recovered by authenticated
+status lookup without resending archive bytes. Confirmed completed/conflict/rejected receipts clear it. A 409
 never grants overwrite: use `OVERWRITE=1` only for explicit replacement intent.
 Inspect `_meta/invocations/<uuid>/benchmark.log`; distinguish TLS, login POST,
 upload PUT and storage failure. Health/session reads do not prove a password.

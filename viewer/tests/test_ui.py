@@ -198,8 +198,8 @@ def test_catalogue_filters_pinned_expansion_and_task_statuses(
     page.locator('#statuses input[value=fail]').check()
     page.wait_for_function(
         (
-            '() => [...document.querySelectorAll(\'tr.run-row\')].find(r=>r.text'
-            'Content.includes(\'Agent C\')).children[6].textContent !== \'\u2014\''
+            '() => ([...document.querySelectorAll(\'tr.run-row\')].find(r=>r.text'
+            'Content.includes(\'Agent C\'))?.children[6].textContent ?? \'\u2014\') !== \'\u2014\''
         )
     )
     assert float(agent_c_row.locator('td').nth(6).inner_text()) == 0.2
@@ -512,7 +512,9 @@ def test_pagination_keeps_baskets_and_unknown_inference(
     assert bulk.locator('td').nth(3).inner_text() == 'unknown'
     assert bulk.locator('td').nth(4).inner_text() == '—'
     basket.get_by_role('button', name='Next', exact=True).click()
-    page.wait_for_function('() => document.querySelector(\'.basket .pagination\').textContent.includes(\'26\u201326\')')
+    page.wait_for_function(
+        '() => document.querySelector(\'.basket .pagination\')?.textContent.includes(\'26\u201326\')'
+    )
     assert basket.locator('tr.run-row').count() == 1
     assert page.locator('.basket').count() == 2
     assert basket.locator('td').first.inner_text() == '26'
@@ -594,7 +596,8 @@ def test_hidden_basket_removes_facets_and_stale_selected_filter(
     )
     page.locator('#direction').select_option('asc')
     expect(page.locator('#counts')).to_have_text('2 shown / 2 runs')
-    assert page.locator('tr.run-row').count() == 2 and page.locator('#filter-model option').all_text_contents() == [
+    expect(page.locator('tr.run-row')).to_have_count(2)
+    assert page.locator('#filter-model option').all_text_contents() == [
         'openai/Alpha [high]',
         'openai/Alpha [low]',
     ]
@@ -788,3 +791,163 @@ def test_original_link_survives_task_api_failure(browser_page: tuple[Page, str, 
     expect(first.locator('.task-body')).to_have_count(1)
     expect(first.get_by_role('link', name='Open Human PR', exact=True)).to_be_visible()
     assert not errors
+
+
+def test_collapsed_baskets_wait_for_expansion(browser_page: BrowserPage) -> None:
+    """Collapsed baskets render their headers without fetching run pages."""
+    page, origin, app, _ = browser_page
+    svc = app.state.service
+    svc.set_settings(
+        svc.settings()['revision'],
+        svc.order,
+        {key: {'hidden': False, 'collapsed': True} for key in svc.order},
+    )
+    requests = []
+    page.on('request', lambda request: requests.append(request.url) if '/runs?' in request.url else None)
+    page.goto(origin)
+    expect(page.locator('.basket')).to_have_count(2)
+    page.wait_for_timeout(200)
+    assert requests == []
+    page.get_by_role('button', name='Expand basket', exact=True).first.click()
+    expect(page.locator('tr.run-row').first).to_be_visible()
+    assert len(requests) == 1
+
+
+def test_slow_basket_does_not_block_other_sections(browser_page: BrowserPage) -> None:
+    """One pending page leaves other basket headers and rows usable."""
+    page, origin, _, _ = browser_page
+    held = []
+
+    def delay_first(route: Route) -> None:
+        """Hold one basket response while allowing its sibling section to load."""
+        if not held:
+            held.append(route)
+        else:
+            route.continue_()
+
+    page.route('**/baskets/*/runs?*', delay_first)
+    page.goto(origin)
+    expect(page.locator('.basket')).to_have_count(2)
+    expect(page.locator('tr.run-row').first).to_be_visible()
+    held[0].continue_()
+    expect(page.locator('tr.run-row')).to_have_count(3)
+
+
+def test_offscreen_basket_loads_on_scroll(browser_page: BrowserPage) -> None:
+    """An expanded basket below the viewport waits until approached."""
+    page, origin, _, _ = browser_page
+
+    def tall_first_basket(route: Route) -> None:
+        """Extend the first section so the second basket starts outside the viewport."""
+        response = route.fetch()
+        route.fulfill(
+            response=response, body=response.text() + '\n.basket:first-child {margin-bottom: 2500px !important}'
+        )
+
+    page.route('**/assets/style.css', tall_first_basket)
+    requests = []
+    page.on('request', lambda request: requests.append(request.url) if '/runs?' in request.url else None)
+    page.goto(origin)
+    expect(page.locator('.basket')).to_have_count(2)
+    expect(page.locator('tr.run-row').first).to_be_visible()
+    assert len(requests) == 1
+    page.locator('.basket').last.scroll_into_view_if_needed()
+    expect(page.locator('tr.run-row')).to_have_count(3)
+    assert len(requests) == 2
+
+
+def test_old_basket_response_ignored_after_filter_change(browser_page: BrowserPage) -> None:
+    """A delayed page cannot replace the results of a newer filter selection."""
+    page, origin, _, _ = browser_page
+    held = []
+
+    def delay_old(route: Route) -> None:
+        """Delay unfiltered results until the newer model selection has rendered."""
+        if 'model=' in route.request.url:
+            route.continue_()
+        else:
+            held.append(route)
+
+    page.route('**/baskets/*/runs?*', delay_old)
+    page.goto(origin)
+    expect(page.locator('.basket')).to_have_count(2)
+    page.wait_for_timeout(200)
+    assert len(held) == 2
+    page.get_by_role('button', name='Choose Model', exact=True).click()
+    page.get_by_role('checkbox', name='openai/Beta [high]', exact=True).check()
+    page.keyboard.press('Escape')
+    expect(page.get_by_role('link', name='Agent B', exact=True)).to_be_visible()
+    for route in held:
+        with page.expect_response(route.request.url) as response:
+            route.continue_()
+        response.value.finished()
+    page.wait_for_timeout(200)
+    expect(page.locator('tr.run-row')).to_have_count(1)
+    expect(page.get_by_role('link', name='Agent B', exact=True)).to_be_visible()
+
+
+def test_settings_progress_preserves_unsaved_layout(browser_page: BrowserPage) -> None:
+    """Refresh polling updates only progress and stops after a partial result."""
+    page, origin, _, _ = browser_page
+    polls = []
+    terminal = False
+
+    def stats(route: Route) -> None:
+        """Return active or partial refresh progress without changing the layout response."""
+        response = route.fetch()
+        data = response.json()
+        polls.append(route.request.url)
+        data['refresh_job'] = {
+            'status': 'partial' if terminal else 'running',
+            'request_id': 'refresh-test',
+            'checked': len(polls),
+            'total': 10,
+            'errors': 1 if terminal else 0,
+            'active': [] if terminal else [{'run_id': 'run-test', 'stage': 'download', 'bytes': 12}],
+        }
+        route.fulfill(response=response, json=data)
+
+    page.route('**/admin/stats', stats)
+    page.goto(origin + '/settings')
+    page.get_by_role('button', name='Log in', exact=True).click()
+    page.locator('#account-login').fill('operator')
+    page.locator('#account-password').fill('secret')
+    page.locator('#account-submit').click()
+    checkbox = page.get_by_role('checkbox', name='Hide Basket A', exact=True)
+    checkbox.check()
+    page.evaluate('document.querySelector(\'.basket-layout-table\').dataset.testIdentity = \'original\'')
+    terminal = True
+    expect(page.locator('#refresh-progress')).to_contain_text('completed with errors')
+    expect(checkbox).to_be_checked()
+    expect(page.locator('.basket-layout-table')).to_have_attribute('data-test-identity', 'original')
+    expect(page.get_by_role('button', name='Refresh caches', exact=True)).to_be_disabled()
+    count = len(polls)
+    page.wait_for_timeout(1200)
+    assert len(polls) == count
+
+
+def test_basket_failure_has_local_retry(browser_page: BrowserPage) -> None:
+    """A failed basket retries without reloading the other loaded section."""
+    page, origin, _, _ = browser_page
+    calls = []
+    failed_url = None
+
+    def fail_once(route: Route) -> None:
+        """Fail one basket request and allow its local retry to complete."""
+        nonlocal failed_url
+        calls.append(route.request.url)
+        if failed_url is None:
+            failed_url = route.request.url
+            route.fulfill(status=503, json={'error': {'message': 'Basket temporarily unavailable'}})
+        else:
+            route.continue_()
+
+    page.route('**/baskets/*/runs?*', fail_once)
+    page.goto(origin)
+    expect(page.get_by_role('button', name='Retry', exact=True)).to_be_visible()
+    expect(page.locator('tr.run-row').first).to_be_visible()
+    assert len(calls) == 2
+    page.get_by_role('button', name='Retry', exact=True).click()
+    expect(page.locator('tr.run-row')).to_have_count(3)
+    assert len(calls) == 3
+    assert calls[-1] == failed_url

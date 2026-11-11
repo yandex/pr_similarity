@@ -169,3 +169,20 @@ def test_unknown_cli_options_are_rejected_without_echoing_values(command: str) -
     assert result.returncode == 2
     assert 'Invalid arguments; use --help for accepted options.' in result.stderr
     assert 'fixture_secret_do_not_echo' not in result.stdout + result.stderr
+
+
+def test_admin_make_inputs_are_accepted_and_never_executed(tmp_path: Path) -> None:
+    """Administrative source names are data and invalid CAS fails before run access."""
+    marker = tmp_path / 'unexpected'
+    result = invoke(
+        'publish',
+        'RUN=missing',
+        'URL=https://viewer.example',
+        'OVERWRITE=1',
+        'ADMIN_OVERWRITE_TOKEN_ENV=$(shell touch ' + str(marker) + ')',
+        'EXPECTED_PUBLICATION_SHA256=invalid',
+    )
+    assert result.returncode != 0
+    assert not marker.exists()
+    assert 'Unsupported Make variable' not in result.stderr
+    assert 'Administrative overwrite requires' in result.stderr

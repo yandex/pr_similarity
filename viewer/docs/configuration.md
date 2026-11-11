@@ -19,7 +19,8 @@ Use absolute paths in a service installation. Run the local examples from
 | `runtime` | Persistent private directory for SQLite, locks, cache and staging |
 | `admin_token_file` | Private local administration token file; startup creates it |
 | `host`, `port` | Listener address and port |
-| `storage` | `s3` for object storage; `mock` for local development |
+| `storage` | Backup backend: `s3` for object storage; `mock` for local development |
+| `publication_storage` | `local` for durable local publication and archive backups; omitted fields retain `legacy` mode |
 | `bucket` | Existing private S3 bucket; unused with mock storage |
 | `endpoint`, `region` | Optional S3 endpoint/region; null uses SDK defaults |
 | `prefix` | Optional normalized object-key prefix to isolate this instance |
@@ -30,6 +31,51 @@ The full example assumes an HTTPS reverse proxy in front of the loopback
 listener. To serve TLS directly, set both certificate paths and the matching
 origin/port. Storage credentials come from the environment or standard boto3
 credential chain; do not add credentials to JSON.
+
+## Local publication and backups
+
+The supplied examples select `publication_storage: "local"`. `storage` chooses
+its backup backend. Switching an existing runtime requires the explicit
+[import procedure](reference.md#upgrading-an-existing-viewer); changing this field
+alone does not migrate legacy publications. S3 must implement conditional
+`PutObject` with `IfNoneMatch` and `IfMatch`; unsupported endpoints are rejected.
+
+| Field | Default and meaning |
+|---|---|
+| `cache_idle_ttl_seconds` | `172800` (48 hours) since successful run access before eviction eligibility |
+| `cache_cleanup_interval_seconds` | `300`; interval between local eviction passes |
+| `catalogue_cache_bytes` | `8388608` (8 MiB); serialized-byte budget for cached public catalogue responses |
+| `catalogue_cache_entries` | `128`; maximum query variants, keyed by catalogue revision and in-progress run identities |
+| `report_cache_bytes` | `67108864` (64 MiB); sum of source JSON bytes retained in the parsed report LRU; Python objects use additional RAM |
+| `report_cache_entries` | `16`; maximum parsed reports; cache identity includes the immutable local generation and path |
+| `cache_max_bytes` | `21474836480` (20 GiB); local cache budget |
+| `pending_backup_max_bytes` | `17179869184` (16 GiB); admission budget for data awaiting backup |
+| `disk_reserve_bytes` | `1073741824` (1 GiB); disk space kept free; zero disables this reserve |
+| `backup_workers` | `2`; concurrent archive-backup workers |
+| `restore_workers` | `2`; concurrent cold restores |
+| `restore_queue_limit` | `4`; additional pending restore slots beyond the worker slots; zero disables this extra queue |
+| `publish_workers` | `4`; concurrent publication workers |
+| `backup_retry_seconds` | `30`; delay before retrying temporary backup failures |
+| `cold_read_timeout_seconds` | `900`; deadline for a request waiting for restored run data |
+| `version_retention_seconds` | `7776000` (90 days); local historical-version retention after supersession or last successful read; current, pending and unverified versions remain protected. Remote history is retained; automatic remote purging is not implemented |
+| `checkpoint_interval_seconds` | `86400` (one day); interval between private account/catalogue checkpoints |
+| `checkpoint_retry_seconds` | `300`; delay before retrying a failed checkpoint |
+
+Worker counts range from 1 to 32. Other fields in this table are positive integers
+except `disk_reserve_bytes` and `restore_queue_limit`, which may be zero. Active reader leases and versions
+without a verified backup prevent eviction. Listing the catalogue and background
+refresh do not extend idle TTL. Failed credentials block backup retries until the
+underlying authorization problem is resolved; temporary network failures remain
+retryable. Check administrative job status before removing local data.
+
+Cold restoration admits at most `restore_workers + restore_queue_limit` distinct
+run generations at once. Readers of an admitted generation share its job without
+using another slot. If the bound is reached, a new cold identity receives
+`503 restore_busy`; warm reads and catalogue requests do not use these slots.
+When the last reader leaves a queued job, that job is removed. Running storage
+I/O remains counted until completion, even if every reader has timed out.
+Completed jobs are discarded. The request deadline is not extended by retries
+after cache eviction.
 
 ## Authentication
 

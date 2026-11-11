@@ -4,6 +4,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from viewer.service import ViewerService
+from viewer.web.cache import public_catalogue_request
 
 
 class SecurityHeaders:
@@ -31,7 +32,16 @@ class SecurityHeaders:
                     }
                 )
                 if scope.get('path', '').startswith('/api/'):
-                    target['Cache-Control'] = 'no-store'
+                    cacheable = (
+                        public_catalogue_request(scope.get('method', ''), scope.get('path', ''))
+                        and message['status'] in {200, 304}
+                        and target.get('Cache-Control') == 'public, no-cache'
+                        and 'ETag' in target
+                    )
+                    if not cacheable:
+                        target['Cache-Control'] = 'no-store'
+                        if 'ETag' in target:
+                            del target['ETag']
             await send(message)
 
         await self.app(scope, receive, headers)

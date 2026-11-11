@@ -62,11 +62,11 @@ def test_v1_migration_keeps_accounts_and_rejects_newer_database(tmp_path: Path) 
     assert list(runtime.glob('viewer-v1-backup-*.sqlite'))
     db.close()
     with closing(sqlite3.connect(runtime / 'viewer.sqlite')) as future, future:
-        future.execute('PRAGMA user_version=3')
+        future.execute('PRAGMA user_version=4')
     with pytest.raises(ViewerError, match='newer'):
         Database(runtime)
     with closing(sqlite3.connect(runtime / 'viewer.sqlite')) as future, future:
-        assert future.execute('PRAGMA user_version').fetchone()[0] == 3
+        assert future.execute('PRAGMA user_version').fetchone()[0] == 4
 
 
 def test_public_pages_and_login_logout(client: TestClient) -> None:

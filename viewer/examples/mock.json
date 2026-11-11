@@ -4,5 +4,6 @@
   "host": "127.0.0.1",
   "port": 8000,
   "storage": "mock",
-  "limits": {}
+  "limits": {},
+  "publication_storage": "local"
 }

@@ -9,5 +9,6 @@
   "endpoint": null,
   "region": null,
   "prefix": "",
-  "limits": {}
+  "limits": {},
+  "publication_storage": "local"
 }

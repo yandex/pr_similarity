@@ -75,7 +75,7 @@ class Database:
         self.connection = sqlite3.connect(self.path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         version = self.connection.execute('PRAGMA user_version').fetchone()[0]
-        if version > 2:
+        if version > 3:
             self.connection.close()
             raise ViewerError('database_version', 'Database schema is newer than this viewer.', 503)
         if version == 1:
@@ -123,7 +123,8 @@ class Database:
                         'ECK(role IN (\'user\',\'admin\'))'
                     )
                 )
-            self.connection.execute('PRAGMA user_version=2')
+            if version < 2:
+                self.connection.execute('PRAGMA user_version=2')
 
     @serialized
     def create_user(self, login: str, password: str, *, role: str = 'user') -> dict:
@@ -248,9 +249,13 @@ class Database:
         run_id: str | None = None,
         *,
         verify: Callable[[str, str], object] | None = None,
+        ttl_seconds: int | None = None,
     ) -> dict:
         """Create a short-lived grant for one authenticated operation."""
-        token, expires = secrets.token_urlsafe(32), self.clock() + self.ttl
+        ttl = self.ttl if ttl_seconds is None else ttl_seconds
+        if type(ttl) is not int or ttl < 1:
+            raise ViewerError('invalid_grant_ttl', 'Grant TTL must be a positive integer.')
+        token, expires = secrets.token_urlsafe(32), self.clock() + ttl
         with self.connection:
             self.connection.execute('BEGIN IMMEDIATE')
             (verify or self.authenticate)(login, password)

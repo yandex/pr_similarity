@@ -78,7 +78,7 @@ def test_upload_timeout_does_not_expand_readback(
 
     def handler(request: httpx.Request) -> httpx.Response:
         """Check readback timeouts and delegate requests to the viewer transport."""
-        if request.method == 'GET':
+        if request.method == 'GET' and '/publication-operations/' not in request.url.path:
             assert request.extensions['timeout']['read'] == 120
         return transport.handle_request(request)
 
@@ -87,8 +87,8 @@ def test_upload_timeout_does_not_expand_readback(
             publish(run, 'https://viewer.example', token_env='TEST_VIEWER_TOKEN', client=client, progress='plain') == 0
         )
     output = capsys.readouterr().err
-    assert 'Publishing to object storage may take several minutes' in output
-    assert 'waiting for server' in output and 'Verifying publication' in output
+    assert 'Publishing to local durable storage' in output
+    assert 'sending archive' in output and 'Verifying publication' in output
     assert not any(t.name == 'publication-progress' for t in threading.enumerate())
 
 
@@ -101,8 +101,57 @@ def test_unavailable_timer_does_not_prevent_confirmed_publication(
 
     def fail_start(self: threading.Thread) -> None:
         """Simulate failure to start the optional progress thread."""
-        raise RuntimeError('No progress thread available')
+        if self.name == 'publication-progress':
+            raise RuntimeError('No progress thread available')
+        original_start(self)
 
+    original_start = threading.Thread.start
     monkeypatch.setattr(threading.Thread, 'start', fail_start)
     with httpx.Client(transport=viewer_transport(lambda request: httpx.Response(201, json=receipt(request)))) as client:
         assert publish(run, 'https://viewer.example', token_env='TEST_VIEWER_TOKEN', client=client) == 0
+
+
+def test_server_phase_is_visible_while_upload_waits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Report validation through a separate client before blocked PUT returns."""
+    run = complete_run(tmp_path, monkeypatch)
+    monkeypatch.setenv('TEST_VIEWER_TOKEN', TOKEN)
+    admitted, observed = threading.Event(), threading.Event()
+    identity = {}
+
+    def upload(request: httpx.Request) -> httpx.Response:
+        """Hold the upload response until its independent status request arrives."""
+        identity.update(receipt(request))
+        admitted.set()
+        assert observed.wait(5)
+        return httpx.Response(201, json=identity)
+
+    def status(request: httpx.Request) -> httpx.Response:
+        """Report validation while the upload connection is still waiting."""
+        assert admitted.wait(5)
+        assert request.headers['Authorization'] == 'Bearer ' + TOKEN
+        observed.set()
+        return httpx.Response(
+            200, json={**identity, 'phase': 'validating', 'message': 'Checking archive members', 'receipt': None}
+        )
+
+    with (
+        httpx.Client(transport=viewer_transport(upload)) as client,
+        httpx.Client(transport=httpx.MockTransport(status)) as polling,
+    ):
+        assert (
+            publish(
+                run,
+                'https://viewer.example',
+                token_env='TEST_VIEWER_TOKEN',
+                client=client,
+                status_client=polling,
+                progress='plain',
+            )
+            == 0
+        )
+    assert 'validating: Checking archive members' in capsys.readouterr().err
+    assert not any(t.name == 'publication-status' for t in threading.enumerate())
