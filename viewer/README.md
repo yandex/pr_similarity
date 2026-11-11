@@ -114,7 +114,8 @@ loads its persisted catalogue without scanning S3 at startup. Legacy mode retain
 its startup recovery and catalogue validation.
 Settings places operation progress below the basket controls and shows server and
 storage usage. Resources update on initial load and **Reload settings**; mock
-storage hides unavailable S3 metrics. See [monitoring configuration](docs/configuration.md#settings-monitoring).
+storage hides unavailable S3 metrics. Available S3 usage categories stay visible
+as cards while measurements update. See [monitoring configuration](docs/configuration.md#settings-monitoring).
 
 ## Advanced topics
 

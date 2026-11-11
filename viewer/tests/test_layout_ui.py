@@ -112,6 +112,7 @@ def test_resources_refresh_only_on_reload_and_mock_hides_s3(browser_page: Browse
     login(page, origin)
     expect(page.locator('.storage-card h3', has_text='Server disk')).to_be_visible()
     expect(page.locator('.storage-card h3', has_text='S3 storage')).to_have_count(0)
+    expect(page.locator('.storage-breakdown')).to_have_count(0)
     assert sum('refresh=1' in url for url in requests) == 1
     checkbox = page.get_by_role('checkbox', name='Hide Basket A', exact=True)
     checkbox.check()
@@ -179,9 +180,10 @@ def test_activity_unknown_upload_length_and_s3_unknown_capacity(browser_page: Br
     page.locator('.activity-details summary').click()
     page.wait_for_timeout(2300)
     expect(page.locator('.activity-details')).to_have_attribute('open', '')
-    expect(page.locator('.storage-card')).to_contain_text('2 KiB')
+    storage = page.locator('.storage-card').filter(has=page.get_by_role('heading', name='S3 storage', exact=True))
+    expect(storage).to_contain_text('2 KiB')
     expect(page.locator('.storage-card progress')).to_have_count(0)
-    expect(page.locator('.storage-card')).to_contain_text('Capacity not reported')
+    expect(storage).to_contain_text('Capacity not reported')
     assert not errors, errors
 
 
