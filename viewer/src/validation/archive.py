@@ -7,6 +7,7 @@ import os
 import shutil
 import tarfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Protocol, cast
@@ -64,22 +65,15 @@ class BoundedGzip:
         return data
 
 
-def validate_archive(path: Path, destination: Path, limits: Limits, *, deadline: float | None = None) -> ImportedRun:
-    """Validate and extract a bounded publication archive with cleanup on failure."""
-    deadline = deadline if deadline is not None else time.monotonic() + limits.transfer_seconds
-    if destination.exists():
-        raise ViewerError('staging_exists', 'Staging destination already exists.', 409)
-    size = path.stat().st_size
-    if size > limits.archive_bytes:
-        raise ViewerError('archive_limit', 'Compressed archive exceeds limit.', 413)
-    archive_hash = hashlib.sha256()
-    with path.open('rb') as stream:
-        while data := stream.read(CHUNK):
-            if time.monotonic() > deadline:
-                raise ViewerError('transfer_timeout', 'Archive validation deadline exceeded.', 413)
-            archive_hash.update(data)
+def _extract_archive(
+    path: Path,
+    destination: Path,
+    limits: Limits,
+    deadline: float,
+    size: int,
+) -> dict[str, ArtifactReceipt]:
+    """Extract regular members under stream limits and return their exact byte inventory."""
     inventory: dict[str, ArtifactReceipt] = {}
-    destination.mkdir(mode=0o700, parents=True)
 
     class BoundedTarInfo(tarfile.TarInfo):
         """Validate tar headers before parsing extended member metadata."""
@@ -94,38 +88,71 @@ def validate_archive(path: Path, destination: Path, limits: Limits, *, deadline:
             # The private hook exists at runtime but is omitted from tarfile's stubs.
             return cast(_TarMemberProcessor, super())._proc_member(tar)
 
+    with path.open('rb') as compressed, gzip.GzipFile(fileobj=compressed) as inflated:
+        bounded = BoundedGzip(inflated, size, limits, deadline)
+        # Streaming mode only needs read(); the upstream stub requires full BinaryIO.
+        with tarfile.open(fileobj=cast(BinaryIO, bounded), mode='r|', tarinfo=BoundedTarInfo) as archive:
+            for member in archive:
+                name = safe_path(member.name, limits.path_bytes)
+                if name in inventory or not member.isfile() or member.issparse():
+                    raise ViewerError('unsafe_archive', 'Archive contains duplicate or non-regular members.')
+                if len(inventory) >= limits.files or member.size > limits.file_bytes:
+                    raise ViewerError('archive_limit', 'Archive members exceed configured limits.', 413)
+                if name.endswith('.json') and member.size > limits.json_bytes:
+                    raise ViewerError('archive_limit', 'JSON artifact exceeds configured limit.', 413)
+                target = destination / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = archive.extractfile(member)
+                if source is None:
+                    raise ViewerError('invalid_contract', 'Uploaded documents or artifacts are inconsistent.')
+                hasher, count = hashlib.sha256(), 0
+                with target.open('xb') as output:
+                    os.chmod(target, 0o600)
+                    while data := source.read(CHUNK):
+                        count += len(data)
+                        if count > limits.file_bytes:
+                            raise ViewerError('archive_limit', 'Member exceeds configured limit.', 413)
+                        output.write(data)
+                        hasher.update(data)
+                require(count == member.size)
+                inventory[name] = ArtifactReceipt(path=name, size_bytes=count, sha256=hasher.hexdigest())
+        # Enforce limits on the entire gzip stream, including trailing data.
+        while bounded.read(min(CHUNK, limits.file_bytes)):
+            pass
+    return inventory
+
+
+def validate_archive(
+    path: Path,
+    destination: Path,
+    limits: Limits,
+    *,
+    deadline: float | None = None,
+    on_phase: Callable[[str], None] | None = None,
+) -> ImportedRun:
+    """Validate and extract a bounded publication archive with cleanup on failure."""
+    deadline = deadline if deadline is not None else time.monotonic() + limits.transfer_seconds
+    if destination.exists():
+        raise ViewerError('staging_exists', 'Staging destination already exists.', 409)
+    size = path.stat().st_size
+    if size > limits.archive_bytes:
+        raise ViewerError('archive_limit', 'Compressed archive exceeds limit.', 413)
+    archive_hash = hashlib.sha256()
+    with path.open('rb') as stream:
+        while data := stream.read(CHUNK):
+            if time.monotonic() > deadline:
+                raise ViewerError('transfer_timeout', 'Archive validation deadline exceeded.', 413)
+            archive_hash.update(data)
+    destination.mkdir(mode=0o700, parents=True)
+
+    validated = False
+    strict_cleanup = False
     try:
-        with path.open('rb') as compressed, gzip.GzipFile(fileobj=compressed) as inflated:
-            bounded = BoundedGzip(inflated, size, limits, deadline)
-            # Streaming mode only needs read(); the upstream stub requires full BinaryIO.
-            with tarfile.open(fileobj=cast(BinaryIO, bounded), mode='r|', tarinfo=BoundedTarInfo) as archive:
-                for member in archive:
-                    name = safe_path(member.name, limits.path_bytes)
-                    if name in inventory or not member.isfile() or member.issparse():
-                        raise ViewerError('unsafe_archive', 'Archive contains duplicate or non-regular members.')
-                    if len(inventory) >= limits.files or member.size > limits.file_bytes:
-                        raise ViewerError('archive_limit', 'Archive members exceed configured limits.', 413)
-                    if name.endswith('.json') and member.size > limits.json_bytes:
-                        raise ViewerError('archive_limit', 'JSON artifact exceeds configured limit.', 413)
-                    target = destination / name
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    source = archive.extractfile(member)
-                    if source is None:
-                        raise ViewerError('invalid_contract', 'Uploaded documents or artifacts are inconsistent.')
-                    hasher, count = hashlib.sha256(), 0
-                    with target.open('xb') as output:
-                        os.chmod(target, 0o600)
-                        while data := source.read(CHUNK):
-                            count += len(data)
-                            if count > limits.file_bytes:
-                                raise ViewerError('archive_limit', 'Member exceeds configured limit.', 413)
-                            output.write(data)
-                            hasher.update(data)
-                    require(count == member.size)
-                    inventory[name] = ArtifactReceipt(path=name, size_bytes=count, sha256=hasher.hexdigest())
-            # Enforce limits on the entire gzip stream, including trailing data.
-            while bounded.read(min(CHUNK, limits.file_bytes)):
-                pass
+        if on_phase is not None:
+            on_phase('extracting')
+        inventory = _extract_archive(path, destination, limits, deadline, size)
+        if on_phase is not None:
+            on_phase('validating')
         for name in ('report.json', 'basket.json', 'manifest.json'):
             require(name in inventory, 'missing_artifact')
 
@@ -158,9 +185,14 @@ def validate_archive(path: Path, destination: Path, limits: Limits, *, deadline:
                 'Run/archive schema v1 is deprecated and supported for reading only; '
                 'create a new run with the current benchmark.'
             )
-        return ImportedRun(path, destination, archive_hash.hexdigest(), report, basket, manifest)
+        imported = ImportedRun(path, destination, archive_hash.hexdigest(), report, basket, manifest)
+        validated = True
+        return imported
     except (ViewerError, OSError, ValueError, tarfile.TarError, EOFError, OverflowError, RecursionError) as error:
-        shutil.rmtree(destination)
+        strict_cleanup = True
         if isinstance(error, ViewerError):
             raise
         raise ViewerError('invalid_archive', 'Invalid or unreadable archive.') from None
+    finally:
+        if not validated:
+            shutil.rmtree(destination, ignore_errors=not strict_cleanup)

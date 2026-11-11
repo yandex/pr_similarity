@@ -2,25 +2,53 @@
 (() => {
   const create = (tag, text) => {const n = document.createElement(tag); if (text !== undefined) n.textContent = text; return n;};
   const control = (text, callback) => {const n = create('button', text); n.type = 'button'; n.onclick = callback; return n;};
-  let version = 0;
+  let version = 0, pollTimer = null;
+  window.addEventListener('pagehide', () => {++version; clearTimeout(pollTimer);});
   window.viewerRenderSettings = async () => {
+    clearTimeout(pollTimer);
     const current = ++version, content = document.getElementById('content'); content.className = 'admin-page settings-page'; content.replaceChildren();
     document.getElementById('page-kind').textContent = 'Settings';
     if (window.viewerAccount.actor?.role !== 'admin') {content.append(create('p', 'Administrator access required.')); return;}
     try {
       const [layout, stats] = await Promise.all([window.viewerRequest('/admin/baskets/layout'), window.viewerRequest('/admin/stats')]);
       if (current !== version || window.viewerAccount.actor?.role !== 'admin') return;
-      content.append(create('h1', 'Settings'), create('p', stats.baskets + ' baskets · ' + stats.runs + ' runs · ' + stats.users + ' users'), create('p', 'Last successful refresh: ' + (stats.last_refresh_at ? new Date(stats.last_refresh_at).toLocaleString() : '—')));
+      content.append(create('h1', 'Settings'));
+      const totals = create('p'), lastRefresh = create('p'), progress = create('div');
+      progress.setAttribute('role', 'status'); progress.id = 'refresh-progress';
+      content.append(totals, lastRefresh, progress);
       const message = create('p'); message.setAttribute('role', 'status'); content.append(message);
-      const job = stats.refresh_job;
-      if (job) {
-        const labels = {idle: 'No refresh requested.', pending: 'Refresh queued.', running: 'Refreshing catalogue in the background.', retrying: 'Storage unavailable; refresh will retry.', waiting_recovery: 'Refresh is waiting for an interrupted write.', succeeded: 'Catalogue refresh completed.', failed: 'Refresh failed. Use Refresh caches to retry.', cancelled: 'Refresh was interrupted. Use Refresh caches to retry.'};
-        message.textContent = labels[job.status] || 'Refresh status unavailable.';
-        if (job.error_code) message.textContent += ' Error: ' + job.error_code + '.';
-        if (job.request_id) message.textContent += ' Request: ' + job.request_id + '.';
-        if (['pending', 'running', 'retrying', 'waiting_recovery'].includes(job.status)) message.textContent += ' Reload settings to check progress.';
+      const activeStatuses = ['pending', 'running', 'retrying', 'waiting_recovery'];
+      const isCurrent = () => current === version && progress.isConnected && window.viewerAccount.actor?.role === 'admin';
+      function showStats(value) {
+        totals.textContent = value.baskets + ' baskets · ' + value.runs + ' runs · ' + value.users + ' users';
+        lastRefresh.textContent = 'Last successful refresh: ' + (value.last_refresh_at ? new Date(value.last_refresh_at).toLocaleString() : '—');
+        progress.replaceChildren();
+        const job = value.refresh_job;
+        if (job) {
+          const labels = {idle: 'No refresh requested.', pending: 'Refresh queued.', running: 'Refreshing catalogue in the background.', retrying: 'Storage unavailable; refresh will retry.', waiting_recovery: 'Refresh is waiting for an interrupted write.', succeeded: 'Catalogue refresh completed.', partial: 'Catalogue refresh completed with errors or deferred runs.', failed: 'Refresh failed. Use Refresh caches to retry.', cancelled: 'Refresh was interrupted. Use Refresh caches to retry.'};
+          progress.append(create('p', labels[job.status] || 'Refresh status unavailable.'));
+          const fields = ['request_id', 'completed_id', 'phase', 'boundary', 'discovered', 'total', 'checked', 'updated', 'protected', 'deferred', 'errors', 'bytes', 'error_code'];
+          for (const key of fields) if (job[key] != null) progress.append(create('p', key.replaceAll('_', ' ') + ': ' + job[key]));
+          for (const active of Array.isArray(job.active) ? job.active : []) {
+            progress.append(create('p', ['run_id', 'generation', 'object', 'stage', 'last_progress'].filter(key => active[key] != null).map(key => key.replaceAll('_', ' ') + ': ' + active[key]).join(' · ')));
+          }
+        }
+        if (value.recovery && ['failed', 'retrying'].includes(value.recovery.status)) progress.append(create('p', 'Interrupted write: ' + value.recovery.status + '. Use Refresh caches to retry.'));
+        clearTimeout(pollTimer);
+        if (activeStatuses.includes(job?.status)) pollTimer = setTimeout(pollStats, 1000);
       }
-      if (stats.recovery && ['failed', 'retrying'].includes(stats.recovery.status)) message.textContent += ' Interrupted write: ' + stats.recovery.status + '. Use Refresh caches to retry.';
+      async function pollStats() {
+        if (!isCurrent()) return;
+        try {
+          const value = await window.viewerRequest('/admin/stats');
+          if (isCurrent()) showStats(value);
+        } catch (error) {
+          if (isCurrent()) {
+            progress.replaceChildren(create('p', error.message), control('Retry progress', pollStats));
+          }
+        }
+      }
+      showStats(stats);
       const items = layout.items.map(item => ({...item}));
       let busy = false, drag = null, frame = null;
       const hint=create('p','Drag baskets to reorder, or use ↑ / ↓ on a handle. Save to apply.');hint.id='basket-reorder-help';hint.className='admin-hint';content.append(hint);
@@ -35,13 +63,16 @@
       });
       const reload = control('Reload settings', () => window.viewerRenderSettings());
       const refresh = control('Refresh caches', async () => {
-        busy = true; cancelDrag(); refresh.disabled = true; save.disabled = true; reload.disabled = true;
-        for (const input of table.querySelectorAll('input,button')) input.disabled = true;
+        refresh.disabled = true;
         message.textContent = 'Requesting a background catalogue refresh…';
-        try {await window.viewerRequest('/admin/refresh', 'POST', {}); if (current === version) await window.viewerRenderSettings();}
-        catch (error) {if (current === version) {message.textContent = error.message; busy = false; refresh.disabled = false; save.disabled = false; reload.disabled = false; draw();}}
+        try {
+          await window.viewerRequest('/admin/refresh', 'POST', {});
+          if (isCurrent()) {message.textContent = 'Refresh requested.'; await pollStats();}
+        } catch (error) {if (isCurrent()) message.textContent = error.message;}
+        finally {if (isCurrent()) refresh.disabled = layoutDirty;}
       });
-      function dirty() {refresh.disabled = true; message.textContent = 'Unsaved layout. Save or reload before refreshing caches.';}
+      let layoutDirty = false;
+      function dirty() {layoutDirty = true; refresh.disabled = true; message.textContent = 'Unsaved layout. Save or reload before refreshing caches.';}
       function cancelDrag() {
         if(frame!=null)cancelAnimationFrame(frame);frame=null;
         for(const row of table.querySelectorAll('tr'))row.classList.remove('dragging','drop-before','drop-after');

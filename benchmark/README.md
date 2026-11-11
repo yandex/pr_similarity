@@ -229,6 +229,9 @@ Keep each run's original basket and agent settings for resume. Runs from an
 incompatible installation cannot be resumed, repriced or rescored; retain their
 files and use the installation that created them. Use the pinned OpenCode runtime
 from an example; changing it requires checking the telemetry adapter before use.
+Publication requires an updated viewer advertising `local-durable-v1` with local
+storage enabled. Recover a pending legacy upload using its producing installation;
+do not rewrite its request or archive. Historical receipts remain readable.
 State v2 runs remain supported. Recording an interruption upgrades mutable state
 to v3 while preserving immutable run/native evidence. Use the updated viewer for
 these archives; older tools cannot read the recovery contract.

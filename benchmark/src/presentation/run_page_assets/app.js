@@ -364,12 +364,14 @@ function basketSection(basket, page) {
     const next = toggle.getAttribute('aria-expanded') !== 'true'; basketExpanded.set(basket.hash, next);
     toggle.setAttribute('aria-expanded', String(next)); toggle.textContent = next ? 'Collapse basket' : 'Expand basket';
     for (const child of children) child.hidden = !next;
+    if (next) section.loadBasket?.();
   });
   toggle.setAttribute('aria-expanded', String(opened));
   section.firstElementChild.append(toggle);
   for (const child of children) child.hidden = !opened;
   return section;
 }
+let catalogueObserver = null;
 async function renderCatalogue(version) {
   const query = filters();
   const data = await allPages('/baskets', query);
@@ -377,20 +379,44 @@ async function renderCatalogue(version) {
   populateFilters(data.filter_options);
   if (query.toString() !== filters().toString()) {offsets.clear(); return renderCatalogue(version);}
   $('counts').textContent = data.shown_runs + ' shown / ' + data.total_runs + ' runs';
-  const sections = await Promise.all(data.items.map(async basket => {
-    const params = new URLSearchParams(query); params.set('limit', '25'); params.set('offset', String(offsets.get(basket.hash) || 0));
-    let page = await api('/baskets/' + basket.hash + '/runs?' + params);
-    if (version !== generation) return null;
-    if (page.offset > 0 && page.offset >= page.total) {
-      offsets.delete(basket.hash); params.set('offset', '0');
-      page = await api('/baskets/' + basket.hash + '/runs?' + params);
+  catalogueObserver?.disconnect();
+  catalogueObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) if (entry.isIntersecting) entry.target.loadBasket?.();
+  }, {rootMargin: '200px'});
+  const observer = catalogueObserver;
+  const sections = data.items.map(basket => {
+    let section = basketSection(basket, {items: [], offset: 0, limit: 25, total: 0});
+    const body = section.querySelector('tbody');
+    const row = node('tr'), cell = node('td', 'Loading…', 'muted'); cell.colSpan = 12;
+    row.append(cell); body.append(row);
+    let loading = false, loaded = false;
+    const current = () => version === generation && section.isConnected;
+    async function load() {
+      if (!current() || loading || loaded || section.querySelector('[aria-expanded]').getAttribute('aria-expanded') !== 'true') return;
+      loading = true; cell.replaceChildren(document.createTextNode('Loading…'));
+      try {
+        const params = new URLSearchParams(query); params.set('limit', '25'); params.set('offset', String(offsets.get(basket.hash) || 0));
+        let page = await api('/baskets/' + basket.hash + '/runs?' + params);
+        if (!current()) return;
+        if (page.offset > 0 && page.offset >= page.total) {
+          offsets.delete(basket.hash); params.set('offset', '0');
+          page = await api('/baskets/' + basket.hash + '/runs?' + params);
+          if (!current()) return;
+        }
+        const replacement = basketSection(basket, page);
+        observer.unobserve(section); section.replaceWith(replacement); section = replacement; loaded = true;
+      } catch (error) {
+        if (current()) cell.replaceChildren(node('span', error.message + ' '), button('Retry', load));
+      } finally {loading = false;}
     }
-    return basketSection(basket, page);
-  }));
-  if (version !== generation) return;
+    section.loadBasket = load;
+    return section;
+  });
   $('content').replaceChildren(...sections);
+  for (const section of sections) observer.observe(section);
   if (!sections.length) $('content').append(node('p', data.total_runs ? 'No runs match the filters.' : 'No published runs.', 'empty'));
 }
+
 function stat(label, value, title, color = '') {
   const card = node('div', null, 'stat ' + color);
   const strong = node('strong', value instanceof Node ? null : value); if (value instanceof Node) strong.append(value);
@@ -627,6 +653,7 @@ async function renderRun(version) {
 async function reload() {
   if (metricTip) metricTip.hidden = true;
   const version = ++generation;
+  catalogueObserver?.disconnect();
   $('activity').textContent = 'Loading…'; $('error').hidden = true;
   try {
     if (settingsPage) await window.viewerRenderSettings(); else if (usersPage) await window.viewerRenderUsers(); else if (detail) await renderRun(version); else await renderCatalogue(version);

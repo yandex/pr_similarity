@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.5
+
+- Save published runs locally before confirming success, then back them up to S3.
+- Keep cached results available during S3 outages and restore archived runs when opened.
+- Recover interrupted publications without uploading an already saved archive again.
+
 ## 0.3.4.2
 
 - Color added and removed line counts in Human and Agent file headings,

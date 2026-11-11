@@ -5,6 +5,7 @@ import os
 import re
 import stat
 import sys
+import threading
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -143,7 +144,14 @@ def _token(
     return token
 
 
-def _new_request(store: RunStore, lease: RunLease, url: str, overwrite: bool) -> PublishRequest:
+def _new_request(
+    store: RunStore,
+    lease: RunLease,
+    url: str,
+    overwrite: bool,
+    admin_overwrite: bool = False,
+    expected_publication_sha256: str | None = None,
+) -> PublishRequest:
     """Freeze exact archive bytes before publishing the request pointer in state."""
     identifier = str(uuid.uuid4())
     relative = Path('operations/publish') / identifier
@@ -168,6 +176,9 @@ def _new_request(store: RunStore, lease: RunLease, url: str, overwrite: bool) ->
         archive_sha256=payload.sha256,
         report_sha256=archive.manifest.report_sha256,
         overwrite=overwrite,
+        protocol='local-durable-v1',
+        admin_overwrite=admin_overwrite,
+        expected_publication_sha256=expected_publication_sha256,
     )
     basket = load_basket(store.directory / 'basket.json')
     identity = ConfigIdentity.model_validate(read_json(store.directory / 'config_identity.json'))
@@ -234,7 +245,23 @@ def _receipt_data(response: httpx.Response, pending: PublishRequest, token: str)
     author = data.get('author_login')
     if not isinstance(author, str) or not author or token in author or len(author) > 256:
         raise BenchmarkError('publish_receipt_mismatch', 'Server receipt has invalid authenticated author metadata.')
+    if (
+        data.get('protocol') != 'local-durable-v1'
+        or data.get('durability') != 'local_durable'
+        or data.get('phase') != 'available'
+        or any(
+            not isinstance(data.get(field), str) or not data[field] or token in data[field]
+            for field in ('operation_id', 'message', 'actor_login')
+        )
+    ):
+        raise BenchmarkError('publish_receipt_mismatch', 'Server has not confirmed local durable publication.')
     return ServerReceipt(
+        protocol=data['protocol'],
+        durability=data['durability'],
+        operation_id=data['operation_id'],
+        phase=data['phase'],
+        message=data['message'],
+        actor_login=data['actor_login'],
         run_id=pending.run_id,
         archive_sha256=pending.fingerprint.archive_sha256,
         report_sha256=pending.fingerprint.report_sha256,
@@ -414,7 +441,7 @@ def _confirm_upload(
     if response.status_code == 409:
         _close_request(store, pending, 'conflict')
         command.message(
-            'Publication exists (HTTP 409); use OVERWRITE=1 for replacement with a server backup.', level='WARNING'
+            'Publication exists (HTTP 409); use OVERWRITE=1 to replace the existing publication.', level='WARNING'
         )
         command.finish('conflict')
         return 1
@@ -440,6 +467,197 @@ def _confirm_upload(
     return 0
 
 
+def _prepare_publication(
+    store: RunStore,
+    lease: RunLease,
+    command: Command,
+    url: str,
+    *,
+    dry_run: bool,
+    overwrite: bool,
+    admin_overwrite: bool,
+    expected_publication_sha256: str | None,
+) -> tuple[PublishRequest, Path]:
+    """Select the original pending request or freeze and journal a new publication."""
+    run_dir = store.directory
+    selected = store.state.pending_publish
+    if selected is not None and not dry_run:
+        pending = read_reference(run_dir, selected.request, PublishRequest)
+        path = _validate_pending(store, pending, url)
+        if (
+            pending.fingerprint.admin_overwrite != admin_overwrite
+            or pending.fingerprint.expected_publication_sha256 != expected_publication_sha256
+        ):
+            raise BenchmarkError(
+                'publish_pending', 'Replay requires the original administrative intent and expected hash.'
+            )
+        command.message(
+            'Recovering the unresolved upload with its original bytes, key and overwrite setting.',
+            level='WARNING',
+        )
+    else:
+        pending = _new_request(store, lease, url, overwrite, admin_overwrite, expected_publication_sha256)
+        path = artifact_path(run_dir, pending.payload.path, must_exist=True)
+        if dry_run:
+            relative = 'operations/publish/' + pending.id + '/validation.json'
+            write_json(
+                run_dir / relative,
+                PublicationValidation(
+                    schema_version=2,
+                    status='dry_run',
+                    request=reference(run_dir, 'operations/publish/' + pending.id + '/request.json'),
+                ),
+            )
+            command.message(f'Validated archive: {path}; no HTTP or authorization.')
+            command.finish('completed')
+            return pending, path
+        store.select_publication(pending.id, reference(run_dir, 'operations/publish/' + pending.id + '/request.json'))
+    return pending, path
+
+
+def _require_publication_protocol(client: httpx.Client, url: str, pending: PublishRequest) -> None:
+    """Require local durability support without changing a historical request."""
+    capability = client.get(url + '/api/v1/publication-capabilities')
+    try:
+        capabilities = capability.json() if capability.status_code == 200 else None
+    except ValueError:
+        capabilities = None
+    if (
+        not isinstance(capabilities, dict)
+        or not isinstance(capabilities.get('protocols'), list)
+        or 'local-durable-v1' not in capabilities['protocols']
+        or capabilities.get('operation_status') is not True
+    ):
+        raise BenchmarkError('publish_protocol_unsupported', 'Viewer does not support local-durable-v1 publication.')
+    if pending.fingerprint.protocol != 'local-durable-v1':
+        raise BenchmarkError('publish_protocol_unsupported', 'Pending legacy publication requires its original client.')
+
+
+class _PublicationStatus:
+    """Track actor-bound server progress while keeping credentials out of artifacts."""
+
+    def __init__(self, pending: PublishRequest, token: str, feedback: PublicationProgress) -> None:
+        """Retain request context and the last displayed phase only for this upload."""
+        self.pending = pending
+        self.token = token
+        self.feedback = feedback
+        self.last_status: tuple[str, str] | None = None
+
+    def lookup(self, connection: httpx.Client) -> httpx.Response | None:
+        """Read actor-bound state without spending the publication grant."""
+        fingerprint = self.pending.fingerprint
+        response = connection.get(
+            self.pending.fingerprint.server + '/api/v1/publication-operations/' + self.pending.idempotency_key,
+            params={
+                'run_id': self.pending.run_id,
+                'archive_sha256': fingerprint.archive_sha256,
+                'report_sha256': fingerprint.report_sha256,
+            },
+            headers={'Authorization': 'Bearer ' + self.token},
+            timeout=5,
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise BenchmarkError('publish_status_failed', 'Publication status could not be verified.')
+        data = response.json()
+        if (
+            not isinstance(data, dict)
+            or any(
+                data.get(key) != value
+                for key, value in {
+                    'run_id': self.pending.run_id,
+                    'archive_sha256': fingerprint.archive_sha256,
+                    'report_sha256': fingerprint.report_sha256,
+                }.items()
+            )
+            or data.get('phase') not in ('receiving', 'extracting', 'validating', 'committing', 'available', 'rejected')
+            or not isinstance(data.get('message'), str)
+            or not isinstance(data.get('operation_id'), str)
+        ):
+            raise BenchmarkError('publish_status_mismatch', 'Publication status identity is invalid.')
+        message = data['message'].replace(self.token, '[REDACTED]')
+        state = (data['phase'], message)
+        if state != self.last_status:
+            self.feedback.phase('Publishing · ' + data['phase'] + ': ' + message, reset=False)
+            self.last_status = state
+        if data['phase'] == 'rejected':
+            return httpx.Response(422)
+        if data['phase'] == 'available':
+            receipt = data.get('receipt')
+            if not isinstance(receipt, dict) or receipt.get('operation_id') != data['operation_id']:
+                raise BenchmarkError('publish_status_mismatch', 'Terminal status has no matching receipt.')
+            return httpx.Response(200, json=receipt)
+        return response
+
+
+def _upload_archive(
+    client: httpx.Client,
+    status_client: httpx.Client | None,
+    owned_client: bool,
+    url: str,
+    pending: PublishRequest,
+    path: Path,
+    token: str,
+    status: _PublicationStatus,
+) -> httpx.Response:
+    """Stream frozen bytes with optional polling, then release only owned resources."""
+    fingerprint = pending.fingerprint
+    headers = {
+        'X-Publication-Protocol': 'local-durable-v1',
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/gzip',
+        'Idempotency-Key': pending.idempotency_key,
+        'X-Archive-SHA256': fingerprint.archive_sha256,
+        'X-Report-SHA256': fingerprint.report_sha256,
+    }
+
+    stop = threading.Event()
+    owned_status_client = status_client is None and owned_client
+    polling = status_client
+    if polling is None:
+        polling = httpx.Client(timeout=5, follow_redirects=False, verify=True) if owned_client else client
+
+    def poll() -> None:
+        """Show server phases while the independent upload connection waits."""
+        while not stop.wait(0.2):
+            try:
+                status.lookup(polling)
+            except (httpx.HTTPError, BenchmarkError, ValueError):
+                # A transient status failure cannot replace the authoritative PUT result.
+                pass
+
+    worker = threading.Thread(target=poll, name='publication-status', daemon=True)
+    started = False
+    try:
+        worker.start()
+        started = True
+        with path.open('rb') as stream:
+
+            def chunks() -> Iterator[bytes]:
+                """Stream the immutable payload without buffering it in memory."""
+                while chunk := stream.read(64 << 10):
+                    yield chunk
+
+            params = {'overwrite': '1' if fingerprint.overwrite else '0'}
+            if fingerprint.expected_publication_sha256 is not None:
+                params['expected_publication_sha256'] = fingerprint.expected_publication_sha256
+            response = client.put(
+                url + '/api/v1/runs/' + fingerprint.run_id,
+                params=params,
+                headers=headers,
+                content=chunks(),
+                timeout=httpx.Timeout(120, connect=20, read=960),
+            )
+    finally:
+        stop.set()
+        if started:
+            worker.join()
+        if owned_status_client:
+            polling.close()
+    return response
+
+
 def _publish_locked(
     store: RunStore,
     lease: RunLease,
@@ -454,39 +672,27 @@ def _publish_locked(
     token_prompt: bool,
     client: httpx.Client | None,
     feedback: PublicationProgress,
+    admin_overwrite: bool,
+    expected_publication_sha256: str | None,
+    status_client: httpx.Client | None,
 ) -> int:
     """Run one locked publication journal without changing frozen native results."""
     run_dir = store.directory
     owned_client = client is None
     try:
         feedback.phase('Preparing archive')
-        selected = store.state.pending_publish
-        if selected is not None and not dry_run:
-            pending = read_reference(run_dir, selected.request, PublishRequest)
-            path = _validate_pending(store, pending, url)
-            command.message(
-                'Recovering the unresolved upload with its original bytes, key and overwrite setting.',
-                level='WARNING',
-            )
-        else:
-            pending = _new_request(store, lease, url, overwrite)
-            path = artifact_path(run_dir, pending.payload.path, must_exist=True)
-            if dry_run:
-                relative = 'operations/publish/' + pending.id + '/validation.json'
-                write_json(
-                    run_dir / relative,
-                    PublicationValidation(
-                        schema_version=2,
-                        status='dry_run',
-                        request=reference(run_dir, 'operations/publish/' + pending.id + '/request.json'),
-                    ),
-                )
-                command.message(f'Validated archive: {path}; no HTTP or authorization.')
-                command.finish('completed')
-                return 0
-            store.select_publication(
-                pending.id, reference(run_dir, 'operations/publish/' + pending.id + '/request.json')
-            )
+        pending, path = _prepare_publication(
+            store,
+            lease,
+            command,
+            url,
+            dry_run=dry_run,
+            overwrite=overwrite,
+            admin_overwrite=admin_overwrite,
+            expected_publication_sha256=expected_publication_sha256,
+        )
+        if dry_run:
+            return 0
         command.message(
             'Model/Effort come from frozen native config; overwrite preserves viewer display name and Setup labels.'
         )
@@ -494,31 +700,21 @@ def _publish_locked(
             client = httpx.Client(timeout=httpx.Timeout(120, connect=20), follow_redirects=False, verify=True)
         feedback.phase('Waiting for login', active=False)
         token = _token(client, url, run_dir, command, token_file, token_env, token_prompt)
-        command.message('Publishing to object storage may take several minutes. Please wait.')
+        _require_publication_protocol(client, url, pending)
+        command.message('Publishing to local durable storage. Please wait.')
         feedback.phase('Publishing · sending archive')
-        fingerprint = pending.fingerprint
-        headers = {
-            'Authorization': 'Bearer ' + token,
-            'Content-Type': 'application/gzip',
-            'Idempotency-Key': pending.idempotency_key,
-            'X-Archive-SHA256': fingerprint.archive_sha256,
-            'X-Report-SHA256': fingerprint.report_sha256,
-        }
-        with path.open('rb') as stream:
-
-            def chunks() -> Iterator[bytes]:
-                """Stream the archive and report when upload switches to the server wait."""
-                while chunk := stream.read(64 << 10):
-                    yield chunk
-                feedback.phase('Publishing · waiting for server', reset=False)
-
-            response = client.put(
-                url + '/api/v1/runs/' + fingerprint.run_id,
-                params={'overwrite': '1' if fingerprint.overwrite else '0'},
-                headers=headers,
-                content=chunks(),
-                timeout=httpx.Timeout(120, connect=20, read=960),
+        status = _PublicationStatus(pending, token, feedback)
+        response = status.lookup(client)
+        if (
+            response is not None
+            and response.status_code == 200
+            and response.json().get('phase') in ('receiving', 'extracting', 'validating', 'committing')
+        ):
+            raise BenchmarkError(
+                'publish_in_progress', 'Publication is still processing; repeat publish to recover its result.'
             )
+        if response is None:
+            response = _upload_archive(client, status_client, owned_client, url, pending, path, token, status)
         feedback.phase('Verifying publication')
         return _confirm_upload(response, pending, store, command, token, client, feedback)
     except OPERATION_ERRORS as error:
@@ -536,6 +732,47 @@ def _publish_locked(
         command.close()
 
 
+def _select_token_sources(
+    run_dir: Path,
+    overwrite: bool,
+    token_file: Path | None,
+    token_env: str | None,
+    token_prompt: bool,
+    admin_overwrite_token_file: Path | None,
+    admin_overwrite_token_env: str | None,
+    expected_publication_sha256: str | None,
+) -> tuple[Path | None, str | None, bool]:
+    """Validate source conflicts and administrative intent before accessing the run."""
+    if sum((token_file is not None, token_env is not None, token_prompt)) > 1:
+        raise BenchmarkError('publish_token_sources', 'Choose one of TOKEN_FILE, TOKEN_ENV or TOKEN_PROMPT.')
+    if token_file is not None and token_file.expanduser().resolve().is_relative_to(run_dir):
+        raise BenchmarkError('publish_token_file', 'TOKEN_FILE must be outside the run directory.')
+    admin_overwrite = admin_overwrite_token_file is not None or admin_overwrite_token_env is not None
+    if admin_overwrite:
+        if (
+            sum((admin_overwrite_token_file is not None, admin_overwrite_token_env is not None)) > 1
+            or token_file is not None
+            or token_env is not None
+            or token_prompt
+        ):
+            raise BenchmarkError('publish_token_sources', 'Choose exactly one ordinary or administrative token source.')
+        if (
+            not overwrite
+            or not expected_publication_sha256
+            or not re.fullmatch(r'[0-9a-f]{64}', expected_publication_sha256)
+        ):
+            raise BenchmarkError(
+                'publish_admin_arguments',
+                'Administrative overwrite requires OVERWRITE=1 and EXPECTED_PUBLICATION_SHA256.',
+            )
+        token_file, token_env = admin_overwrite_token_file, admin_overwrite_token_env
+        if token_file is not None and token_file.expanduser().resolve().is_relative_to(run_dir):
+            raise BenchmarkError('publish_token_file', 'ADMIN_OVERWRITE_TOKEN_FILE must be outside the run directory.')
+    elif expected_publication_sha256 is not None:
+        raise BenchmarkError('publish_admin_arguments', 'EXPECTED_PUBLICATION_SHA256 requires an administrative token.')
+    return token_file, token_env, admin_overwrite
+
+
 def publish(
     run_dir: Path,
     url: str,
@@ -548,6 +785,10 @@ def publish(
     level: str = 'INFO',
     client: httpx.Client | None = None,
     progress: str = 'auto',
+    admin_overwrite_token_file: Path | None = None,
+    admin_overwrite_token_env: str | None = None,
+    expected_publication_sha256: str | None = None,
+    status_client: httpx.Client | None = None,
 ) -> int:
     """Freeze and publish one stopped run, replaying unresolved requests with identical bytes.
 
@@ -562,6 +803,10 @@ def publish(
         level: Console threshold; warnings remain visible.
         client: Optional injected HTTPS transport for bounded verification.
         progress: Disposable auto/plain/off phase and elapsed feedback.
+        admin_overwrite_token_file: Owner-only administrative grant file outside the run.
+        admin_overwrite_token_env: Environment variable name containing an administrative grant.
+        expected_publication_sha256: Current server archive hash required for administrative CAS.
+        status_client: Optional independently injected status transport for bounded tests.
 
     Returns:
         Zero after validated dry run or confirmed public readback, one on conflict.
@@ -574,10 +819,16 @@ def publish(
     if progress not in ('auto', 'plain', 'off'):
         raise BenchmarkError('invalid_arguments', 'PROGRESS accepts auto, plain or off.')
     run_dir = run_dir.expanduser().resolve()
-    if sum((token_file is not None, token_env is not None, token_prompt)) > 1:
-        raise BenchmarkError('publish_token_sources', 'Choose one of TOKEN_FILE, TOKEN_ENV or TOKEN_PROMPT.')
-    if token_file is not None and token_file.expanduser().resolve().is_relative_to(run_dir):
-        raise BenchmarkError('publish_token_file', 'TOKEN_FILE must be outside the run directory.')
+    token_file, token_env, admin_overwrite = _select_token_sources(
+        run_dir,
+        overwrite,
+        token_file,
+        token_env,
+        token_prompt,
+        admin_overwrite_token_file,
+        admin_overwrite_token_env,
+        expected_publication_sha256,
+    )
     with run_lock(run_dir) as lease:
         store = RunStore.open(run_dir, lease=lease)
         report = store.rebuild()
@@ -605,6 +856,9 @@ def publish(
                 token_prompt=token_prompt,
                 client=client,
                 feedback=feedback,
+                admin_overwrite=admin_overwrite,
+                expected_publication_sha256=expected_publication_sha256,
+                status_client=status_client,
             )
         finally:
             feedback.close()

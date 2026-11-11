@@ -339,6 +339,9 @@ class PublishFingerprint(WireModel):
     archive_sha256: str
     report_sha256: str
     overwrite: bool
+    protocol: str | None = None
+    admin_overwrite: bool = False
+    expected_publication_sha256: str | None = None
 
 
 class BenchmarkSettings(WireModel):
@@ -383,6 +386,12 @@ class ServerReceipt(WireModel):
     report_sha256: str
     idempotency_key: str
     author_login: str
+    protocol: str | None = None
+    durability: str | None = None
+    operation_id: str | None = None
+    phase: str | None = None
+    message: str | None = None
+    actor_login: str | None = None
 
 
 class PublicMetadata(WireModel):

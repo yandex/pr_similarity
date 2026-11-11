@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from benchmark.__main__ import parser
 from benchmark.persistence.storage import read_json
 from benchmark.runtime import commands
 from benchmark.runtime.commands import Command
@@ -275,3 +276,19 @@ def test_deferred_debug_file_open_failure_is_presentation_only(tmp_path: Path) -
     command.finish('completed')
     assert read_json(command.path)['status'] == 'completed'
     assert 'Runtime still progresses' in (tmp_path / 'run.log').read_text()
+
+
+def test_publish_help_hides_administrative_options() -> None:
+    """Public native help omits privileged options while parsing still accepts them."""
+    result = subprocess.run(
+        [sys.executable, '-m', 'benchmark', 'publish', '--help'], capture_output=True, text=True, check=True
+    )
+    assert '--admin-overwrite-token-file' not in result.stdout
+    assert '--admin-overwrite-token-env' not in result.stdout
+    assert '--expected-publication-sha256' not in result.stdout
+    assert 'EXPECTED_PUBLICATION_SHA256' not in result.stdout
+    arguments = parser().parse_args(
+        ['publish', '--admin-overwrite-token-env', 'PRIVATE_TOKEN', '--expected-publication-sha256', 'a' * 64]
+    )
+    assert arguments.admin_overwrite_token_env == 'PRIVATE_TOKEN'
+    assert arguments.expected_publication_sha256 == 'a' * 64

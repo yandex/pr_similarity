@@ -56,12 +56,16 @@ incomplete tasks; `partial_tasks`, `unavailable_tasks`, `known_requests`,
 These display fields do not change saved benchmark report or archive formats.
 
 On a run page, its logged-in owner can use **Delete Run**; an administrator can
-delete any run. Confirm the displayed name before deletion. The publication moves
-to server trash through durable recovery; a newer overwritten publication requires
-a reload and new confirmation. Guests and other ordinary users cannot delete it.
-Deletion retains ownership and old receipts. Replaying an upload for a deleted
-publication returns 404 rather than confirming an absent run; the publisher closes
-that pending request, and a subsequent publication uses a fresh operation.
+delete any run. Confirm the displayed name before deletion. The expected publication
+hash prevents deleting a version that has changed since the page was loaded.
+Local storage records a deletion tombstone and removes the run from the catalogue;
+legacy storage retains its trash workflow. Guests and other ordinary users cannot
+delete the run. Existing archives and historical receipts keep their original identity.
+
+A run that has been idle may need to reload its archived data before the page or
+file opens. The original request waits for validation and restore. Catalogue
+listings remain available from the persisted database. A failed restore reports
+an error without exposing partial run contents.
 
 Different basket hashes remain separate populations. Coverage and omissions
 describe the collector's input population; failed
@@ -93,11 +97,12 @@ pinning is a viewer presentation choice, not a new benchmark evaluation.
 Changing a display name or Setup tag does not rewrite the source report/archive
 or configured Model/Effort. Local run labels remain frozen across resume; an
 overwrite preserves the server name/Setup edits and reports any differences.
-Uploading the same ID again is a conflict unless an explicit same-owner overwrite
-is requested; the server keeps the previous publication in trash.
+Uploading the same ID again is a conflict unless an explicit overwrite is
+requested.
+Local storage keeps distinct generations rather than changing archived bytes.
 
 Administrators use Settings to arrange, collapse or hide baskets from the home
-catalogue. Drag a basket by its grip, or focus the grip and use ArrowUp, ArrowDown,
+catalogue. Collapsed sections load their run rows when expanded. Drag a basket by its grip, or focus the grip and use ArrowUp, ArrowDown,
 Home or End. Save basket layout persists the order and flags; Reload settings
 recovers from a concurrent revision conflict. **Hidden is not private:** direct
 run/task/config/diff links remain

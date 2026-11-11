@@ -64,6 +64,13 @@ def parser() -> argparse.ArgumentParser:
     upload.add_argument('--url', default=env('URL'))
     upload.add_argument('--dry-run', choices=('0', '1'), default=env('DRY_RUN') or '0')
     upload.add_argument('--overwrite', choices=('0', '1'), default=env('OVERWRITE') or '0')
+    upload.add_argument(
+        '--admin-overwrite-token-file', type=Path, default=env('ADMIN_OVERWRITE_TOKEN_FILE'), help=argparse.SUPPRESS
+    )
+    upload.add_argument('--admin-overwrite-token-env', default=env('ADMIN_OVERWRITE_TOKEN_ENV'), help=argparse.SUPPRESS)
+    upload.add_argument(
+        '--expected-publication-sha256', default=env('EXPECTED_PUBLICATION_SHA256'), help=argparse.SUPPRESS
+    )
     upload.add_argument('--token-file', type=Path, default=env('TOKEN_FILE'))
     upload.add_argument('--token-env', default=env('TOKEN_ENV'))
     upload.add_argument('--token-prompt', choices=('0', '1'), default=env('TOKEN_PROMPT') or '0')
@@ -98,7 +105,7 @@ def _launch(args: argparse.Namespace) -> int:
         progress=args.progress,
     )
     report = read_report(directory)
-    print(f"Agent run: {report.run.status}; report: {directory / 'report.json'}.", file=sys.stderr)
+    print(f'Agent run: {report.run.status}; report: {directory / 'report.json'}.', file=sys.stderr)
     return status
 
 
@@ -149,6 +156,9 @@ def dispatch(args: argparse.Namespace) -> int:
             args.url,
             dry_run=args.dry_run == '1',
             overwrite=args.overwrite == '1',
+            admin_overwrite_token_file=args.admin_overwrite_token_file,
+            admin_overwrite_token_env=args.admin_overwrite_token_env,
+            expected_publication_sha256=args.expected_publication_sha256,
             token_file=args.token_file,
             token_env=args.token_env,
             token_prompt=args.token_prompt == '1',

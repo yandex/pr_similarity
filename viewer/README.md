@@ -23,8 +23,8 @@ make admin-profile-create LOGIN=admin
 Package installation is quiet; warnings and errors remain visible.
 
 Enter the administrator password when prompted, then open **http://127.0.0.1:8000**.
-Log in to create users and manage baskets. The mock configuration stores data
-locally and starts with an empty catalogue.
+Log in to create users and manage baskets. The mock configuration uses local publication storage and a local backup backend.
+It starts with an empty catalogue.
 
 > [!NOTE]
 > To browse an existing service, open its HTTPS address; no local installation
@@ -84,7 +84,9 @@ separate from uploading a run.
 | Assign a role locally | `make admin-role-set LOGIN=student ROLE=user` |
 | Create / enable / disable a user | `make admin-user-create LOGIN=student`, `make admin-user-enable LOGIN=student`, `make admin-user-disable LOGIN=student` |
 | Reset a password | `make admin-password-set LOGIN=student` |
-| Refresh caches | `make admin-refresh` |
+| Verify and refresh all current backups | `make admin-refresh` |
+| Import legacy storage while stopped | `make admin-local-import CONFIG=config.local.json` |
+| Restore a private checkpoint while stopped | `make admin-checkpoint-restore CHECKPOINT_KEY=<key> TARGET_RUNTIME=<new-directory>` |
 
 All service/admin commands accept `CONFIG=<path>`. Administration can use
 `URL=<https-origin>`; the local provisioning commands access SQLite directly.
@@ -107,8 +109,9 @@ Tests use local/mock storage and temporary servers; they do not deploy or call
 a real bucket. `GET /healthz` returns `{"status":"ok"}` for a running process.
 `GET /readyz` returns 200 only after recovery and catalogue validation; otherwise
 it returns 503 with the startup phase and a safe error code. The CLI starts its
-listener during validation; result APIs return 503 until ready. Full startup
-validation is still required, so large stores can take time to become ready.
+listener during initialization; result APIs return 503 until ready. Local mode
+loads its persisted catalogue without scanning S3 at startup. Legacy mode retains
+its startup recovery and catalogue validation.
 ## Advanced topics
 
 <details>
@@ -119,7 +122,8 @@ and set these fields:
 
 | Field | What to set |
 | --- | --- |
-| `storage` | `s3` for a private S3-compatible object store |
+| `publication_storage` | `local` after explicit migration of any existing runtime |
+| `storage` | `s3` for a private archive-backup object store |
 | `bucket` | An existing private bucket |
 | `endpoint`, `region`, `prefix` | Values required by your object store; `prefix` optionally isolates this instance |
 | `runtime` | A persistent absolute directory owned by the service user |
@@ -130,7 +134,9 @@ and set these fields:
 Provide storage credentials through environment variables or the
 [standard boto3 credential chain](https://docs.aws.amazon.com/boto3/latest/guide/credentials.html),
 outside the JSON config and repository. The service
-needs list/read/write/delete access to its bucket prefix. Use one process per
+needs list/read/write/delete access to its bucket prefix and conditional
+`PutObject` support (`IfNoneMatch` and `IfMatch`). Unsupported endpoints do not
+fall back to overwriting immutable objects. Use one process per
 runtime and keep its SQLite database and admin token across updates.
 
 Expose the listener through your HTTPS reverse proxy, or configure `tls_cert`
@@ -185,6 +191,9 @@ Restart the service to change the label. This flag only changes the label.
 The viewer can display supported archives from earlier installations without
 converting the original files. Update benchmark and viewer together before
 publishing new results, and preserve SQLite backups when upgrading the service.
+Existing configurations retain legacy storage until an explicit
+[import](docs/reference.md#upgrading-an-existing-viewer). New publication clients
+require local mode; keep the producing installation to recover legacy pending uploads.
 The reader accepts state v3 recovery observations alongside v2 run/report/native
 facts. An interrupted historical attempt may omit only explicitly unrecorded
 native facts; the current selected attempt still needs valid publication evidence.
@@ -196,14 +205,21 @@ See the [saved-data note](../README.md#reading-data-from-earlier-releases).
 <details>
 <summary>Publication completion and recovery</summary>
 
-Publication updates only the affected run and returns after its files, settings
-and receipt are saved. Layout edits do not scan run evidence. Failed completion
-retains the previous catalogue; the journal supports retry and restart recovery.
-Recovery validates files already recorded as transferred against storage, so
-losing their local staging copies does not prevent completion. Files still
-awaiting transfer are validated from staging before installation.
-Catalogue versions are built separately from storage reads and installed as one
-coherent unit. A background worker retries interrupted writes without requiring
-a new user mutation.
+With `publication_storage: "local"`, publication returns an `available` receipt
+only after archive validation, a synced local version and a SQLite commit. The
+backup intent is committed with the receipt; background backup starts after the
+response and resumes after restart. A successful receipt confirms local durability,
+not completion of S3 backup.
+
+The catalogue is stored in SQLite. Run reads use a local version or wait in the
+same HTTP request while a verified archive bundle is restored. Backed-up inactive
+copies become eligible for eviction after 48 idle hours or under disk pressure;
+active readers and unbacked data remain protected. Administrative refresh verifies
+all current archive bundles, including unchanged ones. After checkpoint restore,
+reconciliation also preserves allocation floors from interrupted remote backups
+before allowing new writes. Startup upload recovery retries transient failures
+without stopping cache maintenance or checkpoint scheduling. See
+[storage and recovery](docs/reference.md#storage-backup-and-recovery) for migration,
+checkpoints, progress and error handling.
 
 </details>

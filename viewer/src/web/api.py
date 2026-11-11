@@ -4,29 +4,35 @@ import asyncio
 import hashlib
 import hmac
 import html
+import logging
 import os
 import re
 import shutil
 import sqlite3
 import stat
+import sys
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import ExitStack, asynccontextmanager
 from importlib.resources import files
 from pathlib import Path
 
+import anyio
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response, StreamingResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
+from starlette.types import Receive, Scope, Send
 from viewer import __version__
 from viewer.config import Config
 from viewer.errors import ViewerError
+from viewer.local_service import LocalViewerService
 from viewer.models.report import ReportTask
 from viewer.persistence.database import Actor, Database
 from viewer.persistence.storage import MockFileStore, S3Store, Store, StoredBody
@@ -43,13 +49,39 @@ from viewer.presentation.queries import (
     task_changes,
 )
 from viewer.service import CatalogueEntry, ViewerService
-from viewer.util import parse_json
+from viewer.util import digest, parse_json
 from viewer.validation.archive import validate_archive
 from viewer.validation.contracts import require
 from viewer.web.auth import SESSION_COOKIE, BrowserAuth
+from viewer.web.cache import conditional_json
+from viewer.web.local_reads import ClosingStreamResponse, local_read
 from viewer.web.middleware import SecurityHeaders, StartupGate
 
 HEX = re.compile(r'[0-9a-f]{64}\Z')
+
+
+class PublicationResponse(JSONResponse):
+    """Activate durable backup intent after the response send attempt finishes."""
+
+    def __init__(self, value: dict, activate: Callable[[], None], *, status_code: int = 200) -> None:
+        """Bind a committed receipt to its deferred backup activation."""
+        self.activated = False
+        self.activate = activate
+        super().__init__(value, status_code=status_code, background=BackgroundTask(self.start_backup))
+
+    def start_backup(self) -> None:
+        """Start the idempotent backup dispatcher after local commit and send."""
+        self.activate()
+        self.activated = True
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Activate after delivery or after the transport rejects the response."""
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            if not self.activated:
+                with anyio.CancelScope(shield=True):
+                    await run_in_threadpool(self.start_backup)
 
 
 def admin_token(path: Path) -> str:
@@ -109,19 +141,40 @@ class _Application:
             ttl=self.config.grant_ttl_seconds,
             **({'clock': self.clock} if self.clock else {}),
         )
+        if (
+            config.publication_storage == 'legacy'
+            and self.db.connection.execute(
+                'SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=\'local_heads\''
+            ).fetchone()
+        ):
+            self.db.close()
+            raise ViewerError(
+                'local_storage_mode_required',
+                'This runtime contains a local catalogue; enable local publication storage.',
+                503,
+            )
         self.store = self.store or (
             MockFileStore(self.config.runtime / 'mock-storage')
             if self.config.storage == 'mock'
             else S3Store(self.config)
         )
         try:
-            self.service = ViewerService(self.config, self.store, self.db, initialize=not deferred_startup)
+            if config.publication_storage == 'local':
+                self.service = LocalViewerService(self.config, self.store, self.db, initialize=not deferred_startup)
+            else:
+                self.service = ViewerService(self.config, self.store, self.db, initialize=not deferred_startup)
         except Exception:
             self.db.close()
             raise
         self.writes = asyncio.Lock()
+        self.publication_slots = asyncio.Semaphore(config.publish_workers)
         self.browser = BrowserAuth(self.db, self.config)
         self.password_checks = asyncio.Semaphore(self.config.password_checks)
+
+    def _local_service(self) -> 'LocalViewerService':
+        """Narrow handlers whose routes require the local storage mode."""
+        assert isinstance(self.service, LocalViewerService)
+        return self.service
 
     async def authenticate_perform[T](self, function: Callable[[], T]) -> T:
         # Bound admission rather than accumulating an unbounded hash-work queue.
@@ -136,6 +189,10 @@ class _Application:
 
         def invoke() -> T:
             """Reject shutdown before invoking the caller under the service lock."""
+            if getattr(self.service, 'read_is_pinned', lambda: False)():
+                if self.service.maintenance.stopping:
+                    raise ViewerError('service_stopping', 'Service is stopping.', 503)
+                return function()
             with self.service.lock:
                 if self.service.maintenance.stopping:
                     raise ViewerError('service_stopping', 'Service is stopping.', 503)
@@ -293,15 +350,30 @@ class _Application:
 
         return JSONResponse(await self.authenticate_perform(issue))
 
+    async def catalogue_result(self, request: Request, build: Callable[[], dict]) -> Response:
+        """Revalidate a catalogue projection cached by query and current publication state."""
+
+        def read() -> dict:
+            """Build or reuse the projection while holding the short catalogue lock."""
+            cache = getattr(self.service, 'catalogue_response', None)
+            if cache is None:
+                return build()
+            key = (request.url.path, tuple(sorted(request.query_params.multi_items())))
+            return cache(key, build)
+
+        return conditional_json(request, await self.perform(read))
+
     async def get_baskets(self, request: Request) -> Response:
         """Return the filtered and sorted basket catalogue."""
         query = Query(request.query_params)
-        return JSONResponse(await self.perform(lambda: catalogue(self.service, query)))
+        return await self.catalogue_result(request, lambda: catalogue(self.service, query))
 
     async def get_basket_runs(self, request: Request) -> Response:
         """Return runs belonging to the selected frozen basket."""
         query = Query(request.query_params)
-        return JSONResponse(await self.perform(lambda: basket_runs(self.service, request.path_params['hash'], query)))
+        return await self.catalogue_result(
+            request, lambda: basket_runs(self.service, request.path_params['hash'], query)
+        )
 
     async def get_run(self, request: Request) -> Response:
         """Return the public run projection with the requested metric selection."""
@@ -421,7 +493,7 @@ class _Application:
         )
 
     async def metadata(self, request: Request) -> Response:
-        """Update the run owner display metadata."""
+        """Update display metadata with a one-use owner or administrative grant."""
         rid = request.path_params['run_id']
         value = await self.body(request, {'display_name', 'tags'}, required=set())
 
@@ -431,14 +503,275 @@ class _Application:
                 with self.service.lock:
                     if self.service.maintenance.stopping:
                         raise ViewerError('service_stopping', 'Service is stopping.', 503)
-                    login = self.db.authorize(bearer(request), 'metadata', rid)
-                    self.service.require_owner(rid, login)
+                    login, admin = self.metadata_actor(request, rid)
+                    if admin:
+                        self.service._require_run(rid)
+                    else:
+                        self.service.require_owner(rid, login)
                     self.service.validate_patch(value)
                     self.service.check_write_admission()
                     self.db.consume(bearer(request))
+                if admin:
+                    return self._local_service().patch_metadata(rid, login, value, admin=True)
                 return self.service.patch_metadata(rid, login, value)
 
         return JSONResponse(await run_in_threadpool(update))
+
+    def metadata_actor(self, request: Request, rid: str) -> tuple[str, bool]:
+        """Resolve an unused metadata grant without publication replay privileges."""
+        token = bearer(request)
+        try:
+            return self.db.authorize(token, 'metadata', rid), False
+        except ViewerError:
+            if self.config.publication_storage != 'local':
+                raise
+        login = self.db.authorize(token, 'admin-overwrite')
+        actor = self.db.actor(login)
+        if actor is None or actor['role'] != 'admin':
+            raise ViewerError('invalid_grant', 'Missing or expired grant.', 401)
+        return login, True
+
+    async def capabilities(self, request: Request) -> Response:
+        """Advertise the publication protocol implemented by this storage mode."""
+        local = self.config.publication_storage == 'local'
+        return JSONResponse({'protocols': ['local-durable-v1'] if local else [], 'operation_status': local})
+
+    async def admin_overwrite_token(self, request: Request) -> Response:
+        """Issue a one-use administrative replacement or metadata grant after role checks."""
+        if self.config.publication_storage != 'local':
+            raise ViewerError('not_found', 'Resource not found.', 404)
+        value = await self.body(request, {'login', 'password'})
+
+        def issue() -> dict:
+            """Create the grant in the same transaction as role verification."""
+
+            def verify(login: str, password: str) -> None:
+                """Authenticate before revealing administrative authorization."""
+                self.browser.authenticate(request, login, password)
+                actor = self.db.actor(login)
+                if actor is None or actor['role'] != 'admin':
+                    raise ViewerError('admin_denied', 'Administrative authorization required.', 403)
+
+            return self.db.issue(
+                value['login'],
+                value['password'],
+                'admin-overwrite',
+                verify=verify,
+                ttl_seconds=self.config.admin_overwrite_token_ttl_seconds,
+            )
+
+        return JSONResponse(await self.authenticate_perform(issue))
+
+    def publication_actor(self, request: Request, key: str, *, status: bool = False) -> tuple[str, bool]:
+        """Resolve current grants or the exact token admitted for a saved operation."""
+        token = bearer(request)
+        if not token or len(token) > 1024:
+            raise ViewerError('invalid_grant', 'Missing or expired grant.', 401)
+        for operation in ('publish', 'admin-overwrite'):
+            try:
+                login = self.db.authorize(token, operation)
+            except ViewerError:
+                continue
+            actor = self.db.actor(login)
+            if actor is None or (operation == 'admin-overwrite' and actor['role'] != 'admin'):
+                raise ViewerError('invalid_grant', 'Missing or expired grant.', 401)
+            return login, operation == 'admin-overwrite'
+        found = self._local_service().repository.operation_by_grant(key, digest(token.encode()))
+        if found is not None:
+            login, operation = found
+            actor = self.db.actor(login)
+            admin = bool(operation.get('admin'))
+            if actor is not None and (not admin or actor['role'] == 'admin'):
+                if status or operation.get('phase') == 'available':
+                    return login, admin
+        raise ViewerError('invalid_grant', 'Missing or expired grant.', 401)
+
+    async def publication_status(self, request: Request) -> Response:
+        """Read an actor-bound operation using its complete publication identity."""
+        if self.config.publication_storage != 'local':
+            raise ViewerError('not_found', 'Resource not found.', 404)
+        key = request.path_params['key']
+        identity = {
+            field: request.query_params.get(field, '') for field in ('run_id', 'archive_sha256', 'report_sha256')
+        }
+        require(
+            bool(HEX.fullmatch(identity['archive_sha256'])) and bool(HEX.fullmatch(identity['report_sha256'])),
+            'invalid_digest',
+        )
+
+        def read() -> dict:
+            """Validate operation credentials before reading its public status."""
+            login, _ = self.publication_actor(request, key, status=True)
+            operation = self._local_service().repository.operation(login, key)
+            actor = self.db.actor(login)
+            assert actor is not None
+            if operation and operation.get('admin') and actor['role'] != 'admin':
+                raise ViewerError('admin_denied', 'Administrative authorization required.', 403)
+            return self._local_service().publication_status(login, key, **identity)
+
+        return JSONResponse(await self.perform(read))
+
+    async def authorize_download(self, request: Request) -> None:
+        """Check archive access before a cold load; admission checks it again later."""
+
+        def authorize() -> None:
+            """Check the current account and immutable archive ownership."""
+            rid = request.path_params['run_id']
+            actor, _ = self.archive_actor(request, rid)
+            if actor['role'] == 'admin':
+                self.service._require_run(rid)
+            else:
+                login = actor['login']
+                assert login is not None
+                self.service.require_owner(rid, login)
+
+        await self.perform(authorize)
+
+    async def receive_local_archive(
+        self,
+        request: Request,
+        root: Path,
+        archive_hash: str,
+        deadline: float,
+    ) -> Path:
+        """Receive bounded archive bytes and fsync them before saving the durable upload copy."""
+        path = root / 'archive.tar.gz'
+        hasher = hashlib.sha256()
+        size = 0
+        async with asyncio.timeout(max(0.001, deadline - time.monotonic())):
+            with path.open('xb') as output:
+                os.chmod(path, 0o600)
+                async for data in request.stream():
+                    size += len(data)
+                    if size > self.config.limits.archive_bytes:
+                        raise ViewerError('archive_limit', 'Compressed archive exceeds limit.', 413)
+                    await run_in_threadpool(output.write, data)
+                    hasher.update(data)
+                await run_in_threadpool(output.flush)
+                await run_in_threadpool(os.fsync, output.fileno())
+        require(hasher.hexdigest() == archive_hash, 'archive_digest_mismatch')
+        return path
+
+    async def finish_local_upload(
+        self,
+        service: LocalViewerService,
+        login: str,
+        key: str,
+        root: Path | None,
+        operation_id: str | None,
+        error: BaseException | None,
+    ) -> None:
+        """Record failure before releasing staging and reservations on every exit path."""
+        with anyio.CancelScope(shield=True):
+            try:
+                if error is not None:
+                    await run_in_threadpool(service.publication_failed, login, key, error)
+            finally:
+                try:
+                    if root is not None:
+                        await run_in_threadpool(shutil.rmtree, root, ignore_errors=True)
+                        if root.exists():
+                            logging.getLogger('viewer.upload').warning(
+                                'upload_cleanup_incomplete operation_id=%s',
+                                operation_id,
+                            )
+                finally:
+                    await run_in_threadpool(service.release_upload, login, key)
+
+    async def publish_local(
+        self,
+        request: Request,
+        rid: str,
+        key: str,
+        archive_hash: str,
+        report_hash: str,
+        overwrite: bool,
+    ) -> Response:
+        """Admit and validate a local publication without the global upload lock."""
+        if request.headers.get('x-publication-protocol') != 'local-durable-v1':
+            raise ViewerError('publication_protocol_required', 'Use publication protocol local-durable-v1.', 409)
+        service = self._local_service()
+        expected = request.query_params.get('expected_publication_sha256')
+        if expected is not None:
+            require(bool(HEX.fullmatch(expected)), 'invalid_digest')
+        login, admin = await self.perform(lambda: self.publication_actor(request, key))
+        if admin and (not overwrite or expected is None):
+            raise ViewerError(
+                'admin_overwrite_required',
+                'Administrative overwrite requires overwrite and expected publication hash.',
+                409,
+            )
+        if self.publication_slots.locked():
+            raise ViewerError('publication_busy', 'Publication workers are busy; retry.', 503)
+        async with self.publication_slots:
+            status = await run_in_threadpool(
+                lambda: service.admit_publication(
+                    login,
+                    key,
+                    rid,
+                    archive_hash,
+                    report_hash,
+                    overwrite=overwrite,
+                    admin=admin,
+                    expected_publication_sha256=expected,
+                    grant_token=bearer(request),
+                    reserve_upload=True,
+                )
+            )
+            if status.get('phase') == 'available':
+                return PublicationResponse(status['receipt'], lambda: service.activate_backup(rid))
+            deadline = time.monotonic() + self.config.limits.transfer_seconds
+            root = None
+            completed = False
+            try:
+                if shutil.disk_usage(service.staging).free < self.config.limits.staging_free_bytes:
+                    raise ViewerError('staging_space', 'Insufficient staging space.', 503)
+                root = Path(tempfile.mkdtemp(prefix='upload-', dir=service.staging))
+                path = await self.receive_local_archive(request, root, archive_hash, deadline)
+                await run_in_threadpool(
+                    lambda: service.publication_phase(login, key, 'extracting', archive_path=str(path))
+                )
+                imported = await run_in_threadpool(
+                    validate_archive,
+                    path,
+                    root / 'data',
+                    self.config.limits,
+                    deadline=deadline,
+                    on_phase=lambda phase: service.publication_phase(login, key, phase),
+                )
+                require(
+                    imported.report.run.id == rid and imported.manifest.report_sha256 == report_hash,
+                    'publish_identity_mismatch',
+                )
+                existed = await self.perform(lambda: rid in service.runs)
+                result = await run_in_threadpool(
+                    lambda: service.publish(
+                        imported,
+                        login,
+                        key,
+                        overwrite=overwrite,
+                        grant_token=bearer(request),
+                        deadline=deadline,
+                        admin=admin,
+                        expected_publication_sha256=expected,
+                    )
+                )
+                response = PublicationResponse(
+                    result,
+                    lambda: service.activate_backup(rid),
+                    status_code=200 if existed else 201,
+                )
+                completed = True
+                return response
+            finally:
+                await self.finish_local_upload(
+                    service,
+                    login,
+                    key,
+                    root,
+                    status.get('operation_id'),
+                    sys.exception() if not completed else None,
+                )
 
     async def publish(self, request: Request) -> Response:
         """Validate and publish an uploaded archive under the existing ownership rules."""
@@ -458,6 +791,8 @@ class _Application:
             request.headers.get('content-type', '').split(';')[0] == 'application/gzip',
             'invalid_content_type',
         )
+        if self.config.publication_storage == 'local':
+            return await self.publish_local(request, rid, key, archive_hash, report_hash, overwrite == '1')
         # TTL is checked once at admission, not after a long upload.
         login = await self.perform(lambda: self.db.authorize(bearer(request), 'publish'))
         deadline = time.monotonic() + self.config.limits.transfer_seconds
@@ -535,22 +870,19 @@ class _Application:
             """Yield bounded response chunks until the stream is exhausted."""
             hasher = hashlib.sha256()
             size = 0
-            try:
-                while True:
-                    if time.monotonic() > deadline:
-                        raise TimeoutError('Download deadline exceeded')
-                    data = await run_in_threadpool(stream.read, 64 << 10)
-                    if not data:
-                        break
-                    size += len(data)
-                    hasher.update(data)
-                    if size > marker['archive_size']:
-                        raise OSError('Stored archive size differs')
-                    yield data
-                if size != marker['archive_size'] or hasher.hexdigest() != marker['archive_sha256']:
-                    raise OSError('Stored archive digest differs')
-            finally:
-                await run_in_threadpool(stream.close)
+            while True:
+                if time.monotonic() > deadline:
+                    raise TimeoutError('Download deadline exceeded')
+                data = await run_in_threadpool(stream.read, 64 << 10)
+                if not data:
+                    break
+                size += len(data)
+                hasher.update(data)
+                if size > marker['archive_size']:
+                    raise OSError('Stored archive size differs')
+                yield data
+            if size != marker['archive_size'] or hasher.hexdigest() != marker['archive_sha256']:
+                raise OSError('Stored archive digest differs')
 
         headers = {
             'Content-Length': str(marker['archive_size']),
@@ -558,7 +890,7 @@ class _Application:
             'Content-Disposition': 'attachment; filename="' + rid + '.tar.gz"',
             'Cache-Control': 'no-store',
         }
-        return StreamingResponse(chunks(), media_type='application/gzip', headers=headers)
+        return ClosingStreamResponse(chunks(), stream.close, media_type='application/gzip', headers=headers)
 
     async def users(self, request: Request) -> Response:
         """List users or create an account after administrative authorization."""
@@ -686,6 +1018,46 @@ class _Application:
 
         return JSONResponse(await self.perform(update))
 
+    async def resume_refresh(self, request: Request) -> Response:
+        """Resume one incomplete refresh against its saved discovery boundary."""
+        if self.config.publication_storage != 'local':
+            raise ViewerError('not_found', 'Resource not found.', 404)
+        await self.body(request, set(), optional=True)
+
+        def resume() -> dict:
+            """Authorize the administrator before selecting the persisted audit plan."""
+            self.require_admin(request)
+            job = self._local_service().resume_refresh(request.path_params['request_id'])
+            return {**self.service.snapshot.counts(), 'refresh_job': job}
+
+        return JSONResponse(await self.perform(resume))
+
+    async def checkpoint(self, request: Request) -> Response:
+        """Queue a recovery checkpoint without waiting for remote transfers."""
+        if self.config.publication_storage != 'local':
+            raise ViewerError('not_found', 'Resource not found.', 404)
+        await self.body(request, set(), optional=True)
+
+        def queue() -> dict:
+            """Require administration before starting the background checkpoint job."""
+            self.require_admin(request)
+            return {'checkpoint_job': self._local_service().request_checkpoint()}
+
+        return JSONResponse(await self.perform(queue))
+
+    async def retry_backup(self, request: Request) -> Response:
+        """Retry blocked backup work after an administrator fixes storage access."""
+        if self.config.publication_storage != 'local':
+            raise ViewerError('not_found', 'Resource not found.', 404)
+        await self.body(request, set(), optional=True)
+
+        def retry() -> dict:
+            """Authorize the selected run's backup retry without changing publication data."""
+            self.require_admin(request)
+            return self._local_service().retry_backup(request.path_params['run_id'])
+
+        return JSONResponse(await self.perform(retry))
+
     async def asset(self, request: Request) -> Response:
         """Serve only explicitly allowed packaged UI assets."""
         name = request.path_params.get('name', 'index.html')
@@ -744,6 +1116,18 @@ class _Application:
 
     def build(self) -> Starlette:
         """Build routes and exception handlers for this application owner."""
+
+        def read(
+            handler: Callable[[Request], Awaitable[Response]],
+            before: Callable[[Request], Awaitable[None]] | None = None,
+        ) -> Callable[[Request], Awaitable[Response]]:
+            """Wrap detail routes only when immutable local leases are available."""
+            return (
+                local_read(self._local_service(), handler, before)
+                if self.config.publication_storage == 'local'
+                else handler
+            )
+
         routes = [
             Route('/healthz', self.health),
             Route('/readyz', self.ready),
@@ -754,27 +1138,33 @@ class _Application:
             Route('/assets/{name}', self.asset),
             Route('/api/v1/auth/session', self.session, methods=['GET', 'POST', 'DELETE']),
             Route('/api/v1/auth/password', self.own_password, methods=['PUT']),
+            Route('/api/v1/publication-capabilities', self.capabilities),
+            Route('/api/v1/publication-operations/{key:path}', self.publication_status),
+            Route('/api/v1/auth/admin-overwrite-token', self.admin_overwrite_token, methods=['POST']),
             Route('/api/v1/auth/{operation}-token', self.auth, methods=['POST']),
             Route('/api/v1/baskets', self.get_baskets),
             Route('/api/v1/baskets/{hash}/runs', self.get_basket_runs),
-            Route('/api/v1/runs/{run_id}/config', self.get_config),
-            Route('/api/v1/runs/{run_id}', self.get_run, methods=['GET']),
+            Route('/api/v1/runs/{run_id}/config', read(self.get_config)),
+            Route('/api/v1/runs/{run_id}', read(self.get_run), methods=['GET']),
             Route('/api/v1/runs/{run_id}', self.publish, methods=['PUT']),
             Route('/api/v1/runs/{run_id}', self.delete_owned_run, methods=['DELETE']),
-            Route('/api/v1/runs/{run_id}/tasks', self.get_tasks),
-            Route('/api/v1/runs/{run_id}/tasks/{task_id}', self.get_task),
-            Route('/api/v1/runs/{run_id}/tasks/{task_id}/files/{file_id}', self.get_file),
+            Route('/api/v1/runs/{run_id}/tasks', read(self.get_tasks)),
+            Route('/api/v1/runs/{run_id}/tasks/{task_id}', read(self.get_task)),
+            Route('/api/v1/runs/{run_id}/tasks/{task_id}/files/{file_id}', read(self.get_file)),
             Route('/api/v1/runs/{run_id}/pinned', self.pinned, methods=['PUT']),
             Route('/api/v1/runs/{run_id}/metadata', self.metadata, methods=['PATCH']),
-            Route('/api/v1/runs/{run_id}/archive', self.download),
+            Route('/api/v1/runs/{run_id}/archive', read(self.download, self.authorize_download)),
             Route('/api/v1/admin/users', self.users, methods=['GET', 'POST']),
             Route('/api/v1/admin/users/{login}', self.user_access, methods=['PATCH']),
             Route('/api/v1/admin/users/{login}/password', self.user_password, methods=['PUT']),
             Route('/api/v1/admin/baskets/order', self.basket_order, methods=['PUT']),
             Route('/api/v1/admin/runs/{run_id}', self.delete_run, methods=['DELETE']),
+            Route('/api/v1/admin/runs/{run_id}/backup/retry', self.retry_backup, methods=['POST']),
             Route('/api/v1/admin/baskets/layout', self.layout, methods=['GET', 'PUT']),
             Route('/api/v1/admin/stats', self.cache_stats),
+            Route('/api/v1/admin/checkpoint', self.checkpoint, methods=['POST']),
             Route('/api/v1/admin/refresh', self.refresh, methods=['POST']),
+            Route('/api/v1/admin/refresh/{request_id}/resume', self.resume_refresh, methods=['POST']),
         ]
         app = Starlette(
             routes=routes,

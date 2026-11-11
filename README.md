@@ -149,6 +149,15 @@ their contents. A reader may warn when opening older data. Reading does not impl
 that work can be continued: incompatible runs cannot be resumed, repriced or
 rescored, and incompatible collector checkpoints need a new output directory.
 Keep original files and use the producing installation when a reader rejects them.
+For 0.3.5, update benchmark and viewer together. Existing viewer configurations
+without `publication_storage` retain legacy mode. Before selecting `local`, stop
+the service, preserve its runtime and complete the explicit
+[legacy import](viewer/docs/reference.md#upgrading-an-existing-viewer).
+Keep the account database, original archives, run UUIDs and receipts. Replacing
+source files alone does not migrate stored user state. Pending publications from
+a legacy client must be recovered with that producing installation; new clients
+require `local-durable-v1` and never relabel an old request as locally durable.
+
 See the [changelog](CHANGELOG.md) for the compatibility history.
 
 </details>
@@ -197,6 +206,6 @@ The exported directory is a complete standalone source distribution, ready to
 use as the Git repository contents without further source changes. Its generated
 `release-manifest.json` records the product version, file hashes, sizes and
 executable flags. Keep the manifest with the distribution to verify its contents.
-Release notes are in [CHANGELOG.md](CHANGELOG.md#0342).
+Release notes are in [CHANGELOG.md](CHANGELOG.md#035).
 
 </details>

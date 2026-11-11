@@ -27,7 +27,10 @@ from pathlib import Path
 
 arguments = sys.argv[1:]
 with Path(os.environ['SETUP_CALL_LOG']).open('a') as stream:
-    stream.write(json.dumps({'argv': arguments, 'index': os.getenv('PIP_INDEX_URL'), 'warnings': os.getenv('PYTHONWARNINGS')}) + '\\n')
+    stream.write(
+        json.dumps({'argv': arguments, 'index': os.getenv('PIP_INDEX_URL'), 'warnings': os.getenv('PYTHONWARNINGS')})
+        + '\\n'
+    )
 if arguments[:2] == ['-m', 'venv']:
     if os.environ.get('SETUP_VENV_FALLBACK') and '--without-pip' not in arguments:
         sys.exit(1)

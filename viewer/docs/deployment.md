@@ -3,7 +3,7 @@
 # Persistent Linux service
 
 This recipe uses **one systemd process with built-in TLS**, a private S3 bucket,
-and persistent local SQLite state. The service listens on HTTPS port 8443;
+and persistent local publication files plus SQLite state. The service listens on HTTPS port 8443;
 replace `viewer.example.org` with a DNS name pointing to the host and allow that
 port through your firewall. Obtain a certificate for that name from a CA trusted
 by browsers and publishers. A private CA also works if clients trust it. Keep
@@ -36,7 +36,10 @@ EnvironmentFile entries `AWS_ACCESS_KEY_ID=...`, `AWS_SECRET_ACCESS_KEY=...`, an
 bucket, never commit this file or paste secrets into command-line arguments.
 With a host/workload identity supported by boto3, omit `EnvironmentFile` from the
 unit instead. The identity needs list/read/write/delete access within the chosen
-bucket prefix; use a separate prefix for each viewer runtime.
+bucket prefix; use a separate prefix for each viewer runtime. The backend must
+support conditional `PutObject` with both `IfNoneMatch` and `IfMatch`; providers
+that reject these conditions cannot safely host the backup registry. The viewer
+fails rather than falling back to unconditional writes.
 
 Install the certificate chain and private key as
 `/etc/pr-similarity-viewer/fullchain.pem` and `/etc/pr-similarity-viewer/privkey.pem`,
@@ -49,6 +52,7 @@ with the same ownership and mode, replacing the bucket, region and hostname:
   "runtime": "/var/lib/pr-similarity-viewer",
   "admin_token_file": "/var/lib/pr-similarity-viewer/admin-token",
   "storage": "s3",
+  "publication_storage": "local",
   "bucket": "your-private-bucket",
   "region": "us-east-1",
   "endpoint": null,
@@ -107,7 +111,10 @@ sudo systemctl start prsim-viewer
 Background recovery and catalogue refresh failures log the error code, attempt
 number, exception type and frame locations (file name, line and function) in the
 service journal. These diagnostics omit exception messages, source lines and
-local variables. The status API reports the safe error code without frame details.
+local variables. The status API reports the safe error code without frame details. S3 diagnostics
+also record the operation, hashed object identifier, HTTP/provider error code,
+request ID, duration and SDK retry count; raw keys, headers and provider error
+messages are omitted.
 
 `enable` starts the unit after reboot. During a maintenance window, also verify
 status, login and the saved run after a host reboot. Create the first administrator
@@ -130,7 +137,7 @@ reloads the running listener. Restart after rotating static S3 credentials too.
 From a client that trusts the certificate, check
 `curl --fail https://viewer.example.org:8443/healthz` for process liveness and
 `curl --fail https://viewer.example.org:8443/readyz` for readiness. The latter
-returns 503 while recovery or catalogue validation is running; wait for 200
+returns 503 while initialization is running; wait for 200
 before signing in through the browser. Create a publisher account through **Users**. From an installed benchmark
 and an actual completed run, exercise storage and publication:
 
@@ -144,10 +151,22 @@ The second command prompts for that viewer account. Verify the completed receipt
 open the published run, task and native config pages, and download the original
 archive as its owner. Compare its SHA-256 with the publisher's saved
 `operations/publish/<operation>/payload.tar.gz`. Restart the service and repeat
-login, run/task/config reads and the archive comparison. This exercises S3 writes
-and reads as well as SQLite account/ownership persistence; `/healthz` alone does
-not test either. Check the service journal for startup/storage errors.
+login, run/task/config reads and the archive comparison. This checks local durable
+publication and SQLite account/ownership persistence. Then inspect
+`GET /api/v1/admin/stats`: wait for the backup job to complete, request
+`make admin-refresh CONFIG=/etc/pr-similarity-viewer/config.json`, and require a
+`succeeded` full audit. The audit reads and validates the remote archive bytes;
+a local read or `/healthz` alone does not check S3 backup integrity.
 
-For updates use [Reading data from earlier releases](../../README.md#reading-data-from-earlier-releases). Preserve SQLite
+Request `POST /api/v1/admin/checkpoint` using administrator authentication and
+wait for `checkpoint_job.status: succeeded`. Retain its `manifest_key` and rehearse
+[offline restore](reference.md#checkpoints-and-offline-restore) into a new runtime
+before depending on it for disaster recovery. These are deployment acceptance
+steps to run on your own authorized installation, not evidence of a production
+validation performed by this release. Check the service journal for storage errors.
+
+For an existing runtime, follow the stopped-service
+[legacy import procedure](reference.md#upgrading-an-existing-viewer) before enabling
+`publication_storage: "local"`. For updates use [Reading data from earlier releases](../../README.md#reading-data-from-earlier-releases). Preserve SQLite
 and the admin token; see [storage, backup and recovery](reference.md#storage-backup-and-recovery)
 for S3 layout, receipts and recovery. Source replacement must not replace runtime.
