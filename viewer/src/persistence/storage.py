@@ -10,7 +10,7 @@ import re
 import shutil
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -162,6 +162,10 @@ class StoredBody(ClosableReader, Protocol):
 
 class Store:
     """Define the bounded object operations used by the viewer service."""
+
+    def iter_sizes(self, *, check: Callable[[], None] | None = None) -> Iterator[tuple[str, int]]:
+        """List current object metadata only when the backend supports inventories."""
+        raise ViewerError('storage_stats_unavailable', 'Object inventory is unavailable.', 503)
 
     def get(self, key: str, limit: int = 64 << 20) -> bytes:
         """Read one object and reject content larger than the supplied limit."""
@@ -411,6 +415,25 @@ class S3Store(Store):
             for entry in response.get('Contents', []):
                 key = entry['Key']
                 yield key[len(self.prefix) + 1 :] if self.prefix else key
+            if not response.get('IsTruncated'):
+                break
+            continuation = response['NextContinuationToken']
+
+    def iter_sizes(self, *, check: Callable[[], None] | None = None) -> Iterator[tuple[str, int]]:
+        """Enumerate sizes under the configured prefix without downloading bodies."""
+        prefix = self.prefix + '/' if self.prefix else ''
+        continuation = None
+        while True:
+            if check is not None:
+                check()
+            kwargs = {'Prefix': prefix}
+            if continuation:
+                kwargs['ContinuationToken'] = continuation
+            response = self._call('list_objects_v2', **kwargs)
+            for entry in response.get('Contents', []):
+                if not entry['Key'].startswith(prefix):
+                    raise ValueError('Inventory key is outside the configured prefix')
+                yield entry['Key'][len(prefix) :], entry['Size']
             if not response.get('IsTruncated'):
                 break
             continuation = response['NextContinuationToken']

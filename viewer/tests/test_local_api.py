@@ -503,6 +503,15 @@ def test_local_parallel_publication_and_status_stay_responsive(
             ).result(timeout=5)
             assert status.status_code == 200, status.text
             assert status.json()['phase'] == 'extracting'
+            admin = {'Authorization': 'Bearer ' + 'A' * 32}
+            snapshot = pool.submit(client.get, '/api/v1/admin/stats', headers=admin).result(timeout=5)
+            assert snapshot.status_code == 200
+            uploads = [row for row in snapshot.json()['activity']['items'] if row['kind'] == 'upload']
+            assert len(uploads) == 1
+            assert uploads[0]['run_id'] == prepared['run_id']
+            assert uploads[0]['status'] == 'extracting'
+            assert uploads[0]['received_bytes'] == uploads[0]['total_bytes'] > 0
+            assert 'grant_hash' not in str(uploads)
             blocked_read = pool.submit(client.get, '/api/v1/runs/' + prepared['run_id']).result(timeout=5)
             assert blocked_read.status_code == 503
             assert blocked_read.json()['error']['code'] == 'run_updating'
@@ -513,6 +522,8 @@ def test_local_parallel_publication_and_status_stay_responsive(
             release.set()
         completed, _, _, _ = first.result(timeout=10)
         assert completed.status_code == (200 if existing else 201), completed.text
+        snapshot = client.get('/api/v1/admin/stats', headers=admin).json()
+        assert not [row for row in snapshot['activity']['items'] if row['kind'] == 'upload']
 
 
 def test_pinned_report_cache_miss_does_not_block_catalogue(

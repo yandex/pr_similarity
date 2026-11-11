@@ -887,7 +887,7 @@ def test_old_basket_response_ignored_after_filter_change(browser_page: BrowserPa
 
 
 def test_settings_progress_preserves_unsaved_layout(browser_page: BrowserPage) -> None:
-    """Refresh polling updates only progress and stops after a partial result."""
+    """Activity polling preserves unsaved layout and discovers new work after a partial result."""
     page, origin, _, _ = browser_page
     polls = []
     terminal = False
@@ -904,6 +904,11 @@ def test_settings_progress_preserves_unsaved_layout(browser_page: BrowserPage) -
             'total': 10,
             'errors': 1 if terminal else 0,
             'active': [] if terminal else [{'run_id': 'run-test', 'stage': 'download', 'bytes': 12}],
+        }
+        data['activity'] = {
+            'items': [dict(data['refresh_job'], kind='refresh', name='All published runs')],
+            'total': 1,
+            'limit': 100,
         }
         route.fulfill(response=response, json=data)
 
@@ -922,8 +927,8 @@ def test_settings_progress_preserves_unsaved_layout(browser_page: BrowserPage) -
     expect(page.locator('.basket-layout-table')).to_have_attribute('data-test-identity', 'original')
     expect(page.get_by_role('button', name='Refresh caches', exact=True)).to_be_disabled()
     count = len(polls)
-    page.wait_for_timeout(1200)
-    assert len(polls) == count
+    page.wait_for_timeout(2300)
+    assert len(polls) > count
 
 
 def test_basket_failure_has_local_retry(browser_page: BrowserPage) -> None:

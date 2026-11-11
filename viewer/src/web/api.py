@@ -34,6 +34,7 @@ from viewer.config import Config
 from viewer.errors import ViewerError
 from viewer.local_service import LocalViewerService
 from viewer.models.report import ReportTask
+from viewer.monitoring import ActivityTracker, activity_snapshot
 from viewer.persistence.database import Actor, Database
 from viewer.persistence.storage import MockFileStore, S3Store, Store, StoredBody
 from viewer.presentation.config_view import public_config
@@ -48,9 +49,10 @@ from viewer.presentation.queries import (
     public_task,
     task_changes,
 )
+from viewer.resources import ResourceSnapshots, local_resources
 from viewer.service import CatalogueEntry, ViewerService
 from viewer.util import digest, parse_json
-from viewer.validation.archive import validate_archive
+from viewer.validation.archive import ImportedRun, validate_archive
 from viewer.validation.contracts import require
 from viewer.web.auth import SESSION_COOKIE, BrowserAuth
 from viewer.web.cache import conditional_json
@@ -166,6 +168,8 @@ class _Application:
         except Exception:
             self.db.close()
             raise
+        self.uploads = ActivityTracker(clock=self.db.clock)
+        self.resources = ResourceSnapshots(config, self.store)
         self.writes = asyncio.Lock()
         self.publication_slots = asyncio.Semaphore(config.publish_workers)
         self.browser = BrowserAuth(self.db, self.config)
@@ -633,6 +637,8 @@ class _Application:
         root: Path,
         archive_hash: str,
         deadline: float,
+        *,
+        progress: Callable[[int], None] | None = None,
     ) -> Path:
         """Receive bounded archive bytes and fsync them before saving the durable upload copy."""
         path = root / 'archive.tar.gz'
@@ -647,6 +653,8 @@ class _Application:
                         raise ViewerError('archive_limit', 'Compressed archive exceeds limit.', 413)
                     await run_in_threadpool(output.write, data)
                     hasher.update(data)
+                    if progress is not None:
+                        progress(size)
                 await run_in_threadpool(output.flush)
                 await run_in_threadpool(os.fsync, output.fileno())
         require(hasher.hexdigest() == archive_hash, 'archive_digest_mismatch')
@@ -677,6 +685,27 @@ class _Application:
                             )
                 finally:
                     await run_in_threadpool(service.release_upload, login, key)
+
+    def validate_local_upload(
+        self,
+        service: LocalViewerService,
+        login: str,
+        key: str,
+        operation_id: str,
+        path: Path,
+        root: Path,
+        deadline: float,
+    ) -> ImportedRun:
+        """Preserve durable upload phases while validating outside the service lock."""
+
+        def phase(value: str) -> None:
+            """Record the durable phase before updating its optional display observation."""
+            service.publication_phase(login, key, value)
+            self.uploads.update(operation_id, phase=value)
+
+        self.uploads.update(operation_id, phase='extracting')
+        service.publication_phase(login, key, 'extracting', archive_path=str(path))
+        return validate_archive(path, root / 'data', self.config.limits, deadline=deadline, on_phase=phase)
 
     async def publish_local(
         self,
@@ -723,27 +752,30 @@ class _Application:
             deadline = time.monotonic() + self.config.limits.transfer_seconds
             root = None
             completed = False
+            operation_id = status['operation_id']
+            declared = request.headers.get('content-length', '')
+            total_bytes = int(declared) if declared.isdecimal() and len(declared) <= 20 else None
+            self.uploads.start(operation_id, run_id=rid, actor=login, total_bytes=total_bytes)
             try:
                 if shutil.disk_usage(service.staging).free < self.config.limits.staging_free_bytes:
                     raise ViewerError('staging_space', 'Insufficient staging space.', 503)
                 root = Path(tempfile.mkdtemp(prefix='upload-', dir=service.staging))
-                path = await self.receive_local_archive(request, root, archive_hash, deadline)
-                await run_in_threadpool(
-                    lambda: service.publication_phase(login, key, 'extracting', archive_path=str(path))
+                path = await self.receive_local_archive(
+                    request,
+                    root,
+                    archive_hash,
+                    deadline,
+                    progress=lambda size: self.uploads.update(operation_id, received_bytes=size),
                 )
                 imported = await run_in_threadpool(
-                    validate_archive,
-                    path,
-                    root / 'data',
-                    self.config.limits,
-                    deadline=deadline,
-                    on_phase=lambda phase: service.publication_phase(login, key, phase),
+                    self.validate_local_upload, service, login, key, operation_id, path, root, deadline
                 )
                 require(
                     imported.report.run.id == rid and imported.manifest.report_sha256 == report_hash,
                     'publish_identity_mismatch',
                 )
                 existed = await self.perform(lambda: rid in service.runs)
+                self.uploads.update(operation_id, phase='committing')
                 result = await run_in_threadpool(
                     lambda: service.publish(
                         imported,
@@ -764,14 +796,17 @@ class _Application:
                 completed = True
                 return response
             finally:
-                await self.finish_local_upload(
-                    service,
-                    login,
-                    key,
-                    root,
-                    status.get('operation_id'),
-                    sys.exception() if not completed else None,
-                )
+                try:
+                    await self.finish_local_upload(
+                        service,
+                        login,
+                        key,
+                        root,
+                        status.get('operation_id'),
+                        sys.exception() if not completed else None,
+                    )
+                finally:
+                    self.uploads.finish(operation_id)
 
     async def publish(self, request: Request) -> Response:
         """Validate and publish an uploaded archive under the existing ownership rules."""
@@ -800,6 +835,10 @@ class _Application:
             if shutil.disk_usage(self.service.staging).free < self.config.limits.staging_free_bytes:
                 raise ViewerError('staging_space', 'Insufficient staging space.', 503)
             root = Path(tempfile.mkdtemp(prefix='upload-', dir=self.service.staging))
+            activity_id = str(uuid.uuid4())
+            length = request.headers.get('content-length', '')
+            total_bytes = int(length) if length.isdecimal() and len(length) <= 20 else None
+            self.uploads.start(activity_id, run_id=rid, actor=login, total_bytes=total_bytes)
             try:
                 path = root / 'archive.tar.gz'
                 hasher = hashlib.sha256()
@@ -809,6 +848,7 @@ class _Application:
                         os.chmod(path, 0o600)
                         async for data in request.stream():
                             size += len(data)
+                            self.uploads.update(activity_id, received_bytes=size)
                             if size > self.config.limits.archive_bytes:
                                 raise ViewerError('archive_limit', 'Compressed archive exceeds limit.', 413)
                             output.write(data)
@@ -817,7 +857,12 @@ class _Application:
                         os.fsync(output.fileno())
                 require(hasher.hexdigest() == archive_hash, 'archive_digest_mismatch')
                 imported = await run_in_threadpool(
-                    validate_archive, path, root / 'data', self.config.limits, deadline=deadline
+                    validate_archive,
+                    path,
+                    root / 'data',
+                    self.config.limits,
+                    deadline=deadline,
+                    on_phase=lambda phase: self.uploads.update(activity_id, phase=phase),
                 )
                 require(
                     imported.report.run.id == rid and imported.manifest.report_sha256 == report_hash,
@@ -826,6 +871,7 @@ class _Application:
                 existed = await self.perform(
                     lambda: rid in self.service.runs or self.db.receipt(login, key) is not None
                 )
+                self.uploads.update(activity_id, phase='committing')
                 result = await run_in_threadpool(
                     lambda: self.service.publish(
                         imported,
@@ -838,6 +884,7 @@ class _Application:
                 )
                 return JSONResponse(result, status_code=200 if existed else 201)
             finally:
+                self.uploads.finish(activity_id)
                 shutil.rmtree(root, ignore_errors=True)
 
     async def download(self, request: Request) -> Response:
@@ -1002,9 +1049,23 @@ class _Application:
         def read() -> dict:
             """Authorize the administrator and read current cache statistics."""
             self.require_admin(request)
-            return self.service.cache_stats()
+            result = self.service.cache_stats()
+            result['activity'] = activity_snapshot(self.service, self.uploads, result)
+            return result
 
         return JSONResponse(await self.perform(read))
+
+    async def resource_stats(self, request: Request) -> Response:
+        """Request a snapshot explicitly or read it without scanning object storage."""
+        await self.perform(lambda: self.require_admin(request))
+        refresh = request.query_params.get('refresh', '0')
+        require(refresh in ('0', '1'), 'invalid_query')
+        if refresh == '1':
+            local = await self.perform(lambda: local_resources(self.service))
+            value = self.resources.request(local)
+        else:
+            value = self.resources.current()
+        return JSONResponse(value, headers={'Cache-Control': 'no-store'})
 
     async def refresh(self, request: Request) -> Response:
         """Refresh the catalogue while retaining the previous snapshot on failure."""
@@ -1107,8 +1168,10 @@ class _Application:
         try:
             yield
         finally:
-            stopped = await run_in_threadpool(self.service.close)
-            if not stopped:
+            stopped, resources_stopped = await asyncio.gather(
+                run_in_threadpool(self.service.close), run_in_threadpool(self.resources.close)
+            )
+            if not stopped or not resources_stopped:
                 raise RuntimeError(
                     'Maintenance shutdown timed out; retain database and runtime lock until process exit.'
                 )
@@ -1162,6 +1225,7 @@ class _Application:
             Route('/api/v1/admin/runs/{run_id}/backup/retry', self.retry_backup, methods=['POST']),
             Route('/api/v1/admin/baskets/layout', self.layout, methods=['GET', 'PUT']),
             Route('/api/v1/admin/stats', self.cache_stats),
+            Route('/api/v1/admin/resources', self.resource_stats),
             Route('/api/v1/admin/checkpoint', self.checkpoint, methods=['POST']),
             Route('/api/v1/admin/refresh', self.refresh, methods=['POST']),
             Route('/api/v1/admin/refresh/{request_id}/resume', self.resume_refresh, methods=['POST']),

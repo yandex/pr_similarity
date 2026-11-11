@@ -62,6 +62,7 @@ class RefreshAudit:
         """Build an idle progress envelope with no captured remote discovery boundary."""
         return dict(
             status='idle',
+            started_at=None,
             request_id=None,
             completed_id=None,
             phase='idle',
@@ -364,6 +365,7 @@ class RefreshAudit:
                 if self._state['status'] not in ('pending', 'running'):
                     return self.status()
                 self._state['status'] = 'running'
+                self._state['started_at'] = utc_now()
             self._save()
             if not self._state['discovery_complete']:
                 self._discover()

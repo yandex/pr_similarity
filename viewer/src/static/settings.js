@@ -2,10 +2,10 @@
 (() => {
   const create = (tag, text) => {const n = document.createElement(tag); if (text !== undefined) n.textContent = text; return n;};
   const control = (text, callback) => {const n = create('button', text); n.type = 'button'; n.onclick = callback; return n;};
-  let version = 0, pollTimer = null;
-  window.addEventListener('pagehide', () => {++version; clearTimeout(pollTimer);});
-  window.viewerRenderSettings = async () => {
-    clearTimeout(pollTimer);
+  let version = 0, pollTimer = null, resourceTimer = null;
+  window.addEventListener('pagehide', () => {++version; clearTimeout(pollTimer); clearTimeout(resourceTimer);});
+  window.viewerRenderSettings = async (refreshResources = true) => {
+    clearTimeout(pollTimer); clearTimeout(resourceTimer);
     const current = ++version, content = document.getElementById('content'); content.className = 'admin-page settings-page'; content.replaceChildren();
     document.getElementById('page-kind').textContent = 'Settings';
     if (window.viewerAccount.actor?.role !== 'admin') {content.append(create('p', 'Administrator access required.')); return;}
@@ -13,42 +13,96 @@
       const [layout, stats] = await Promise.all([window.viewerRequest('/admin/baskets/layout'), window.viewerRequest('/admin/stats')]);
       if (current !== version || window.viewerAccount.actor?.role !== 'admin') return;
       content.append(create('h1', 'Settings'));
-      const totals = create('p'), lastRefresh = create('p'), progress = create('div');
-      progress.setAttribute('role', 'status'); progress.id = 'refresh-progress';
-      content.append(totals, lastRefresh, progress);
-      const message = create('p'); message.setAttribute('role', 'status'); content.append(message);
-      const activeStatuses = ['pending', 'running', 'retrying', 'waiting_recovery'];
-      const isCurrent = () => current === version && progress.isConnected && window.viewerAccount.actor?.role === 'admin';
-      function showStats(value) {
-        totals.textContent = value.baskets + ' baskets · ' + value.runs + ' runs · ' + value.users + ' users';
-        lastRefresh.textContent = 'Last successful refresh: ' + (value.last_refresh_at ? new Date(value.last_refresh_at).toLocaleString() : '—');
-        progress.replaceChildren();
-        const job = value.refresh_job;
-        if (job) {
-          const labels = {idle: 'No refresh requested.', pending: 'Refresh queued.', running: 'Refreshing catalogue in the background.', retrying: 'Storage unavailable; refresh will retry.', waiting_recovery: 'Refresh is waiting for an interrupted write.', succeeded: 'Catalogue refresh completed.', partial: 'Catalogue refresh completed with errors or deferred runs.', failed: 'Refresh failed. Use Refresh caches to retry.', cancelled: 'Refresh was interrupted. Use Refresh caches to retry.'};
-          progress.append(create('p', labels[job.status] || 'Refresh status unavailable.'));
-          const fields = ['request_id', 'completed_id', 'phase', 'boundary', 'discovered', 'total', 'checked', 'updated', 'protected', 'deferred', 'errors', 'bytes', 'error_code'];
-          for (const key of fields) if (job[key] != null) progress.append(create('p', key.replaceAll('_', ' ') + ': ' + job[key]));
-          for (const active of Array.isArray(job.active) ? job.active : []) {
-            progress.append(create('p', ['run_id', 'generation', 'object', 'stage', 'last_progress'].filter(key => active[key] != null).map(key => key.replaceAll('_', ' ') + ': ' + active[key]).join(' · ')));
+      const totals = create('p');totals.className='settings-totals';content.append(totals,create('h2','Baskets'));
+      const message = create('p');message.className='settings-message';message.setAttribute('role','status');
+      const operations = create('section');operations.className='settings-operations';
+      const activityHeader=create('div');activityHeader.className='settings-section-heading';
+      const activityTitle=create('div');activityTitle.append(create('h2','Activity'),create('p','Uploads, archive backups and catalogue refresh.'));activityHeader.append(activityTitle);
+      const progress=create('div');progress.id='refresh-progress';
+      const summary=create('div');summary.className='activity-summary';summary.setAttribute('role','status');
+      const activityTable=create('table');activityTable.className='admin-table activity-table';
+      const activityFooter=create('p');activityFooter.className='activity-footer';
+      progress.append(summary,activityTable,activityFooter);operations.append(activityHeader,progress);
+      const isCurrent=()=>current===version&&progress.isConnected&&window.viewerAccount.actor?.role==='admin';
+      const humanTime=value=>value?new Date(value).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'Never';
+      const bytes=value=>{if(value==null)return '—';const units=['B','KiB','MiB','GiB','TiB'];let i=0;while(value>=1024&&i<units.length-1){value/=1024;i++;}return value.toLocaleString(undefined,{maximumFractionDigits:1})+' '+units[i];};
+      const duration=value=>value==null?'—':value<60?Math.floor(value)+'s':Math.floor(value/60)+'m '+Math.floor(value%60)+'s';
+      function realRows(value){
+        const labels={receiving:'Receiving',extracting:'Extracting',validating:'Validating',committing:'Saving',pending:'Queued',uploading:'Backing up',retry_wait:'Retry scheduled',blocked:'Needs attention',running:'Running',retrying:'Retrying',waiting_recovery:'Waiting for recovery',partial:'Needs attention',failed:'Failed',cancelled:'Interrupted'};
+        return (value.activity?.items||[]).map(job=>{
+          let detail=job.phase?.replaceAll('_',' ')||'',percent=null,extra=job.error_code||'';
+          if(job.kind==='upload'){
+            detail=job.status==='receiving'?bytes(job.received_bytes)+(job.total_bytes!=null?' of '+bytes(job.total_bytes):' received'):detail;
+            if(job.status==='receiving'&&job.total_bytes>0)percent=Math.min(100,100*job.received_bytes/job.total_bytes);
+          }else if(job.kind==='backup'){
+            detail=job.status==='retry_wait'?'Retry in '+duration(Math.max(0,job.retry_at-Date.now()/1000)):job.archive_bytes!=null?'Archive · '+bytes(job.archive_bytes):detail;
+            if(job.backup_kind==='tombstone')detail='Deletion backup · '+detail;
+            if(job.status==='blocked')extra+=' Retry requires operator attention.';
+          }else if(job.kind==='refresh'){
+            detail=job.status==='partial'?'Catalogue refresh completed with errors or deferred runs.':job.total?`${job.checked||0} of ${job.total} runs checked · ${job.errors||0} errors`:'Discovering archive backups';
+            if(job.total>0)percent=Math.min(100,100*(job.checked||0)/job.total);
+            if(['partial','failed','cancelled'].includes(job.status))extra+=' Use Refresh caches to retry.';
+            for(const active of job.active||[])extra+=' '+Object.entries(active).map(([key,value])=>key.replaceAll('_',' ')+': '+value).join(' · ');
+          }
+          return {key:job.kind+':'+(job.id||job.run_id||'refresh'),kind:{upload:'Upload',backup:'Backup',refresh:'Refresh'}[job.kind]||job.kind,owner:job.actor||job.owner||'',name:job.name,context:job.basket||'',status:labels[job.status]||job.status,tone:['blocked','failed','partial'].includes(job.status)?'error':['pending','retry_wait','waiting_recovery','cancelled'].includes(job.status)?'waiting':'active',detail,percent,time:duration(job.elapsed_seconds),id:job.run_id,link:job.run_available!==false,extra};
+        });
+      }
+      function showStats(value){
+        totals.textContent=`${value.baskets} baskets · ${value.runs} runs · ${value.users} users`;
+        const openDetails=new Set(Array.from(activityTable.querySelectorAll('details[open]'),node=>node.dataset.key));
+        const rows=realRows(value);summary.replaceChildren();activityTable.replaceChildren();
+        for(const [kind,label] of [['Upload','uploads'],['Backup','backups'],['Refresh','refresh']]){
+          const count=rows.filter(r=>r.kind===kind).length;if(count){const chip=create('span',`${count} ${label}`);chip.className='activity-chip';summary.append(chip);}
+        }
+        if(['failed','retrying'].includes(value.recovery?.status)){
+          summary.append(create('span','Interrupted write: '+value.recovery.status+(value.recovery.error_code?' · '+value.recovery.error_code:'')+'. Use Refresh caches to retry.'));
+        }
+        if(!rows.length){if(!summary.childElementCount)summary.append(create('span','No active operations'));activityTable.hidden=true;}
+        else{
+          activityTable.hidden=false;const thead=create('thead'),head=create('tr');
+          for(const label of ['Operation','Run / scope','Status','Progress','Elapsed']){const cell=create('th',label);cell.scope='col';head.append(cell);}thead.append(head);activityTable.append(thead);
+          const body=create('tbody');activityTable.append(body);
+          for(const item of rows){
+            const row=create('tr');row.className='activity-'+item.tone;
+            const kind=create('td');kind.dataset.label='Operation';kind.append(create('strong',item.kind));const owner=create('small',item.owner||'');kind.append(owner);
+            const identity=create('td');identity.dataset.label='Run / scope';const title=create(item.id&&item.link?'a':'strong',item.name);if(item.id&&item.link)title.href='/run?run_id='+encodeURIComponent(item.id);identity.append(title,create('small',item.context||''));
+            const status=create('td');status.dataset.label='Status';const badge=create('span',item.status);badge.className='activity-status '+item.tone;status.append(badge);
+            const detail=create('td');detail.dataset.label='Progress';detail.append(create('span',item.detail));
+            if(item.percent!=null){const meter=create('progress');meter.max=100;meter.value=item.percent;meter.setAttribute('aria-label',item.kind+' progress');detail.append(meter);}
+            if(item.extra||item.id){const disclosure=create('details');disclosure.className='activity-details';disclosure.dataset.key=item.key;disclosure.open=openDetails.has(item.key);disclosure.append(create('summary','Details'));if(item.extra)disclosure.append(create('p',item.extra));if(item.id)disclosure.append(create('code',item.id));detail.append(disclosure);}
+            const elapsed=create('td',item.time);elapsed.className='activity-elapsed';elapsed.dataset.label='Elapsed';row.append(kind,identity,status,detail,elapsed);body.append(row);
           }
         }
-        if (value.recovery && ['failed', 'retrying'].includes(value.recovery.status)) progress.append(create('p', 'Interrupted write: ' + value.recovery.status + '. Use Refresh caches to retry.'));
-        clearTimeout(pollTimer);
-        if (activeStatuses.includes(job?.status)) pollTimer = setTimeout(pollStats, 1000);
+        activityFooter.textContent=`${value.backup_jobs?.backed_up||0} backups complete · Last successful refresh: ${humanTime(value.last_refresh_at)}`;
+        if(value.activity?.total>rows.length)activityFooter.textContent+=' · Showing '+rows.length+' of '+value.activity.total+' operations';
+        clearTimeout(pollTimer);pollTimer=setTimeout(pollStats,2000);
       }
-      async function pollStats() {
-        if (!isCurrent()) return;
-        try {
-          const value = await window.viewerRequest('/admin/stats');
-          if (isCurrent()) showStats(value);
-        } catch (error) {
-          if (isCurrent()) {
-            progress.replaceChildren(create('p', error.message), control('Retry progress', pollStats));
-          }
-        }
-      }
+      async function pollStats(){if(!isCurrent())return;try{const value=await window.viewerRequest('/admin/stats');if(isCurrent())showStats(value);}catch(error){if(isCurrent()){summary.replaceChildren(create('span',error.message),control('Retry progress',pollStats));pollTimer=setTimeout(pollStats,5000);}}}
       showStats(stats);
+      const resources=create('section');resources.className='settings-storage';
+      function showResources(snapshot){
+        resources.replaceChildren();
+        const heading=create('div');heading.className='settings-section-heading';const label=create('div');label.append(create('h2','Server & storage'),create('p','Updated when settings are loaded or reloaded.'));heading.append(label);resources.append(heading);
+        const grid=create('div');grid.className='storage-cards';resources.append(grid);
+        function card(title,used,total,note){const card=create('div');card.className='storage-card';card.append(create('h3',title));const amount=create('div');amount.className='storage-amount';amount.append(create('strong',bytes(used)));if(total)amount.append(create('span',' / '+bytes(total)));card.append(amount);if(total&&used!=null){const meter=create('progress');meter.max=total;meter.value=used;meter.setAttribute('aria-label',title+' used');card.append(meter);}else{const absent=create('div',total?'':'Capacity not reported');absent.className='storage-no-limit';card.append(absent);}card.append(create('p',note));grid.append(card);}
+        const {cache,disk,memory,cpu,object_storage:s3}=snapshot;
+        if(cache)card('Local run cache',cache.used_bytes,cache.limit_bytes,cache.resident_versions+' resident versions · '+(cache.idle_ttl_seconds/3600).toLocaleString(undefined,{maximumFractionDigits:1})+'h idle retention');
+        if(disk)card('Server disk',disk.used_bytes,disk.total_bytes,bytes(disk.free_bytes)+' free');
+        if(s3){
+          const state=s3.status==='collecting'?'Collecting usage…':s3.status==='unavailable'?'Usage unavailable; reload to retry.':'';
+          card('S3 storage',s3.used_bytes,s3.capacity_bytes,[s3.object_count!=null?s3.object_count.toLocaleString()+' current objects':'',state,s3.sampled_at?'As of '+humanTime(s3.sampled_at):''].filter(Boolean).join(' · '));
+          if(Object.keys(s3.groups||{}).length){const details=create('details');details.className='storage-breakdown';details.append(create('summary','S3 storage breakdown'));const list=create('dl');const labels={publications:'Publications',archives:'Run backups',backups:'Backup copies',trash:'Trash',indexes:'Checkpoints and indexes',other:'Other'};for(const [key,size] of Object.entries(s3.groups)){list.append(create('dt',labels[key]||key),create('dd',bytes(size)));}details.append(list);resources.append(details);}
+        }
+        if(memory)card('Server memory',memory.used_bytes,memory.total_bytes,cpu?'CPU load '+cpu.load_1m.toFixed(2)+(cpu.cores?' · '+cpu.cores+' cores':''):'');
+        else if(cpu)resources.append(create('p','CPU load '+cpu.load_1m.toFixed(2)));
+        if(snapshot.sampled_at){const stamp=create('p','Server snapshot: '+humanTime(snapshot.sampled_at));stamp.className='storage-timestamp';resources.append(stamp);}
+      }
+      async function loadResources(refresh=false){
+        if(!isCurrent())return;
+        clearTimeout(resourceTimer);
+        try{const value=await window.viewerRequest('/admin/resources'+(refresh?'?refresh=1':''));if(!isCurrent())return;showResources(value);if(value.object_storage?.status==='collecting')resourceTimer=setTimeout(()=>loadResources(),1000);}
+        catch(error){if(isCurrent()){showResources({});resources.append(create('p',error.message));}}
+      }
       const items = layout.items.map(item => ({...item}));
       let busy = false, drag = null, frame = null;
       const hint=create('p','Drag baskets to reorder, or use ↑ / ↓ on a handle. Save to apply.');hint.id='basket-reorder-help';hint.className='admin-hint';content.append(hint);
@@ -58,7 +112,7 @@
         for (const input of table.querySelectorAll('input,button')) input.disabled = true;
         try {
           await window.viewerRequest('/admin/baskets/layout', 'PUT', {expected_revision: layout.revision, items: items.map(({hash, hidden, collapsed}) => ({hash, hidden, collapsed}))});
-          if (current === version) await window.viewerRenderSettings();
+          if (current === version) await window.viewerRenderSettings(false);
         } catch (error) {if (current === version) {message.textContent = error.message; reload.disabled = false;}}
       });
       const reload = control('Reload settings', () => window.viewerRenderSettings());
@@ -142,7 +196,7 @@
           table.append(row);
         });
       }
-      draw();const actions=create('div');actions.className='admin-actions';actions.append(save,reload,refresh);content.append(actions);
+      draw();const actions=create('div');actions.className='admin-actions';actions.append(save,reload);content.append(actions,message,operations,resources);activityHeader.append(refresh);loadResources(refreshResources);
     } catch (error) {if (current === version) content.append(create('p', error.message), control('Retry', () => window.viewerRenderSettings()));}
   };
 })();

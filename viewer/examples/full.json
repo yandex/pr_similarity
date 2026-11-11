@@ -60,5 +60,8 @@
   "report_cache_bytes": 67108864,
   "report_cache_entries": 16,
   "catalogue_cache_bytes": 8388608,
-  "catalogue_cache_entries": 128
+  "catalogue_cache_entries": 128,
+  "admin_activity_limit": 100,
+  "storage_stats_max_objects": 200000,
+  "storage_stats_timeout_seconds": 60
 }

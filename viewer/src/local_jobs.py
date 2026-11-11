@@ -6,6 +6,7 @@ import time
 import uuid
 from collections.abc import Callable
 
+from viewer.activity import ActivityTracker
 from viewer.config import Config
 from viewer.errors import StorageError
 from viewer.local_repository import BackupJob, LocalRepository
@@ -21,6 +22,7 @@ class BackupWorkers:
         self.wake = threading.Event()
         self.threads: list[threading.Thread] = []
         self.epoch = str(uuid.uuid4())
+        self.activity = ActivityTracker(clock=repository.database.clock)
 
     def start(self) -> None:
         """Start each configured worker once and wake it to inspect eligible intents."""
@@ -44,6 +46,7 @@ class BackupWorkers:
         job = self.repository.claim_backup(worker or self.epoch, lease_seconds=60)
         if job is None:
             return False
+        self.activity.start(str(job.id), run_id=job.run_id, actor=job.record.owner)
         done = threading.Event()
         lost = threading.Event()
 
@@ -85,6 +88,7 @@ class BackupWorkers:
                     blocked=not retryable,
                 )
         finally:
+            self.activity.finish(str(job.id))
             done.set()
             renewal.join(timeout=2)
         return True

@@ -57,6 +57,9 @@ class Config:
     prefix: str = ''
     storage: str = 's3'
     publication_storage: str = 'legacy'
+    admin_activity_limit: int = 100
+    storage_stats_max_objects: int = 200000
+    storage_stats_timeout_seconds: int = 60
     cache_idle_ttl_seconds: int = 172800
     cache_cleanup_interval_seconds: int = 300
     catalogue_cache_bytes: int = 8 << 20
@@ -107,6 +110,9 @@ class Config:
         if self.publication_storage not in ('legacy', 'local'):
             raise ViewerError('invalid_config', 'Select legacy or local publication storage.')
         for value in (
+            self.admin_activity_limit,
+            self.storage_stats_max_objects,
+            self.storage_stats_timeout_seconds,
             self.cache_idle_ttl_seconds,
             self.cache_cleanup_interval_seconds,
             self.cache_max_bytes,
