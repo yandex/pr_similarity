@@ -112,6 +112,10 @@ it returns 503 with the startup phase and a safe error code. The CLI starts its
 listener during initialization; result APIs return 503 until ready. Local mode
 loads its persisted catalogue without scanning S3 at startup. Legacy mode retains
 its startup recovery and catalogue validation.
+Settings places operation progress below the basket controls and shows server and
+storage usage. Resources update on initial load and **Reload settings**; mock
+storage hides unavailable S3 metrics. See [monitoring configuration](docs/configuration.md#settings-monitoring).
+
 ## Advanced topics
 
 <details>

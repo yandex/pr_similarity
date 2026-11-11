@@ -538,3 +538,62 @@ body {margin:0}
 .file-view-toggle button:hover{color:var(--text);border-color:var(--accent)}
 .diff-dialog-header{align-items:center}
 @media(max-width:650px){.diff-dialog-header{flex-wrap:wrap}.diff-dialog-header h2{flex-basis:100%}.file-view-controls{margin-left:auto}}
+
+/* Settings operations and storage layout prototype. */
+.settings-page{max-width:1240px}
+.settings-page h2{font-size:18px;line-height:1.4;margin:0 0 6px}
+.settings-totals{color:var(--text2);font-size:12px;margin:-8px 0 28px}
+.settings-message:empty{display:none}
+.settings-message{font-size:13px;color:var(--text2)}
+.settings-operations,.settings-storage{margin-top:36px;padding-top:28px;border-top:1px solid var(--border2)}
+.settings-section-heading{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:18px}
+.settings-section-heading p{margin:4px 0 0;color:var(--text2);font-size:12px}
+.settings-section-heading>button{white-space:nowrap;font-size:12px;padding:8px 13px}
+.activity-summary{display:flex;align-items:center;gap:8px;min-height:24px;margin:0 0 12px;color:var(--text2);font-size:12px}
+.activity-chip{padding:4px 10px;border-radius:20px;background:#101c29;color:#a9c7db;border:1px solid #26394c}
+.activity-table{border-collapse:separate;border-spacing:0;font-size:12px;overflow:visible}
+.activity-table th:nth-child(1){width:12%}.activity-table th:nth-child(2){width:28%}.activity-table th:nth-child(3){width:16%}.activity-table th:nth-child(4){width:36%}.activity-table th:nth-child(5){width:8%}
+.admin-page .activity-table th,.admin-page .activity-table td{padding:16px 12px;vertical-align:top}
+.activity-table thead th{background:#0e1520;color:var(--text2);font-size:10px;letter-spacing:.05em;text-transform:uppercase}
+.activity-table tbody tr:last-child td{border-bottom:0}
+.activity-table strong,.activity-table a{font-weight:550;font-size:12px;line-height:1.6;color:var(--text)}
+.activity-table a:hover{color:var(--accent)}
+.activity-table small{display:block;font-size:11px;line-height:1.5;color:var(--text2);margin-top:3px}
+.activity-status{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:5px;white-space:nowrap;font-size:11px;border:1px solid transparent}
+.activity-status::before{content:'';width:5px;height:5px;flex-shrink:0;border-radius:50%;background:currentColor}
+.activity-status.active{color:#80d9ed;background:#112831;border-color:#23434e}
+.activity-status.waiting{color:#e9c173;background:#2b2416;border-color:#4a3c24}
+.activity-status.error{color:#f39ba6;background:#301c24;border-color:#57303c}
+.activity-table progress,.storage-card progress{display:block;width:100%;height:5px;margin-top:9px;border:0;border-radius:4px;overflow:hidden;appearance:none;background:#192735}
+.activity-table progress::-webkit-progress-bar,.storage-card progress::-webkit-progress-bar{background:#192735;border-radius:4px}
+.activity-table progress::-webkit-progress-value,.storage-card progress::-webkit-progress-value{background:#43bad4;border-radius:4px}
+.activity-table progress::-moz-progress-bar,.storage-card progress::-moz-progress-bar{background:#43bad4;border-radius:4px}
+.activity-details{margin-top:7px;color:var(--text2);font-size:11px}
+.activity-details summary{cursor:pointer;width:max-content;color:#788fa1;font-size:11px}
+.activity-details p{margin:7px 0;line-height:1.5}.activity-details code{display:block;font:10px/1.6 var(--mono);word-break:break-all;margin-top:6px}
+.activity-elapsed{font:11px/1.7 var(--mono);color:var(--text2);white-space:nowrap!important}
+.activity-footer{font-size:11px;color:var(--text2);margin:12px 0 0}
+.storage-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.storage-card{padding:18px 16px;background:var(--panel);border:1px solid var(--border2);border-radius:8px}
+.storage-card h3{margin:0 0 12px;font-size:12px;font-weight:500;color:var(--text2)}
+.storage-amount{display:flex;align-items:baseline;flex-wrap:wrap;gap:3px;min-height:28px;font-variant-numeric:tabular-nums}
+.storage-amount strong{font-size:23px;font-weight:550;letter-spacing:-.6px}.storage-amount span{font-size:12px;color:var(--text2)}
+.storage-card p{margin:12px 0 0;font-size:11px;color:var(--text2);line-height:1.6}
+.storage-no-limit{height:14px;margin-top:2px;font-size:10px;color:var(--muted)}
+.storage-breakdown{margin-top:16px;color:var(--text2);font-size:12px}
+.storage-breakdown summary{cursor:pointer;width:max-content}
+.storage-breakdown dl{max-width:540px;display:grid;grid-template-columns:1fr auto;gap:8px 24px;margin:14px 0;padding:16px;border:1px solid var(--border2);border-radius:8px;background:var(--panel)}
+.storage-breakdown dd{margin:0;color:var(--text);font-variant-numeric:tabular-nums}
+.storage-timestamp{color:var(--muted);font-size:11px;margin:14px 0}
+@media(max-width:1000px){.storage-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.admin-page .activity-table th,.admin-page .activity-table td{padding:13px 9px}.activity-status{white-space:normal}}
+@media(max-width:700px){
+ .settings-operations,.settings-storage{margin-top:28px;padding-top:22px}
+ .settings-section-heading{align-items:flex-start;gap:10px}
+ .activity-table,.activity-table tbody{display:block}.activity-table thead{display:none}
+ .activity-table tbody tr{display:grid;grid-template-columns:1fr auto;padding:12px;border-bottom:1px solid var(--border2);gap:8px 14px}
+ .admin-page .activity-table td{display:block;padding:0;border:0!important;min-width:0}
+ .activity-table td:nth-child(1){grid-column:1;grid-row:1}.activity-table td:nth-child(2){grid-column:1/-1;grid-row:2}.activity-table td:nth-child(3){grid-column:2;grid-row:1}.activity-table td:nth-child(4){grid-column:1/-1;grid-row:3}.activity-table td:nth-child(5){grid-column:1/-1;grid-row:4}
+ .activity-table td:nth-child(1) small{display:inline;margin-left:8px}.activity-table td:nth-child(5)::before{content:'Elapsed ';color:var(--muted)}
+ .activity-status{white-space:nowrap}.storage-card{padding:14px 12px}.storage-amount strong{font-size:20px}
+ .activity-summary{flex-wrap:wrap}.activity-footer{line-height:1.7}
+}

@@ -130,3 +130,25 @@ The full example records the defaults as explicit integers.
 See [deployment](deployment.md) and [storage recovery](reference.md#storage-backup-and-recovery)
 for operating procedures. Increasing a limit changes resource requirements;
 it does not relax archive path, provenance or ownership checks.
+
+### Settings monitoring
+
+| Field | Default and purpose |
+| --- | --- |
+| `admin_activity_limit` | `100`; maximum visible upload, backup and refresh rows |
+| `storage_stats_max_objects` | `200000`; maximum objects in one S3 usage inventory |
+| `storage_stats_timeout_seconds` | `60`; inventory deadline, checked between objects and requests |
+
+All three values must be positive integers. An in-flight S3 SDK request retains
+its connection/read timeout; the inventory checks cancellation before another
+request. If the deadline or object cap is reached, partial totals are discarded.
+A previous complete snapshot remains visible with its timestamp and unavailable
+status until the next successful reload. S3 usage counts current objects beneath
+`prefix`, including backup copies and trash; object versions and provider billing
+quotas are not included. A changing bucket can change during enumeration.
+
+Settings requests resources on first load and **Reload settings**. Concurrent
+requests share one inventory. Activity polling and saving basket layout do not
+start an inventory. Mock storage omits the S3 card. Memory and CPU data are shown
+only when supported by the host. Local cache usage counts existing resident paths
+once across metadata revisions; disk usage covers the runtime filesystem.

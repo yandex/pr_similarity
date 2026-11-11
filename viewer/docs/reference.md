@@ -309,7 +309,8 @@ run-detail groups retain their seven-tag preview.
 | Admin | PATCH `/admin/users/{login}` | `{"enabled":false}` |
 | Admin | PUT `/admin/users/{login}/password` | new password; revoke unused grants |
 | Admin | GET / PUT `/admin/baskets/layout` | full layout and revision; PUT requires expected_revision |
-| Admin | GET `/admin/stats` | cached basket/run/user counts and last refresh |
+| Admin | GET `/admin/stats` | counts, refresh status and bounded active operation rows |
+| Admin | GET `/admin/resources` | last resource snapshot; `?refresh=1` requests a new snapshot |
 | Admin | PUT `/admin/baskets/order` | `{"items":["<hash>",...]}`; complete active set |
 | Admin | DELETE `/admin/runs/{run_id}` | delete the current publication; local mode records a tombstone |
 | Admin | POST `/admin/refresh` | queue new full verification; empty body or `{}` |
@@ -508,3 +509,23 @@ parser and schema checks without adding a separate model nesting limit.
 
 The Python modules are internal implementation details. HTTP endpoints, CLI
 commands and saved data are the integration boundaries.
+
+### Settings activity and resource snapshots
+
+The Activity table follows the basket layout controls. It shows active uploads,
+pending/backing-up/retrying/blocked backup jobs, and active or unsuccessful
+refreshes. Completed backups and the last successful refresh appear in the
+footer. Each row identifies its run and phase; upload bytes and elapsed time
+come from the active process. A restarted operation has no invented start time.
+Unknown transfer lengths do not produce a percentage. Backup retry timing comes
+from its durable job, and blocked jobs require operator attention.
+
+`GET /api/v1/admin/stats` adds `activity: {items, total, limit}`. The response
+includes only bounded operation details, never publication grants or local paths.
+`GET /api/v1/admin/resources?refresh=1` measures local resources and starts a
+background S3 metadata inventory. Poll the same endpoint without `refresh=1`
+while `object_storage.status` is `collecting`; ordinary reads start no work.
+Status becomes `ready` or `unavailable`. A failed inventory preserves its last
+complete values and their original `sampled_at`. Mock storage returns
+`object_storage: null`; unknown capacity remains null. See the
+[monitoring configuration](configuration.md#settings-monitoring) for bounds.

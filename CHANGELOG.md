@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.5.1
+
+- Make Settings easier to scan with operation progress below basket controls and
+  server/storage usage cards refreshed by Reload settings.
+- Hide unavailable storage metrics when using mock storage.
+
 ## 0.3.5
 
 - Save published runs locally before confirming success, then back them up to S3.
