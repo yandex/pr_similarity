@@ -512,7 +512,8 @@ commands and saved data are the integration boundaries.
 
 ### Settings activity and resource snapshots
 
-The Activity table follows the basket layout controls. It shows active uploads,
+The Activity table sits between Server & storage and the basket layout controls.
+It shows active uploads,
 pending/backing-up/retrying/blocked backup jobs, and active or unsuccessful
 refreshes. Completed backups and the last successful refresh appear in the
 footer. Each row identifies its run and phase; upload bytes and elapsed time

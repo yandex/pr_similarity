@@ -13,7 +13,7 @@
       const [layout, stats] = await Promise.all([window.viewerRequest('/admin/baskets/layout'), window.viewerRequest('/admin/stats')]);
       if (current !== version || window.viewerAccount.actor?.role !== 'admin') return;
       content.append(create('h1', 'Settings'));
-      const totals = create('p');totals.className='settings-totals';content.append(totals,create('h2','Baskets'));
+      const totals = create('p');totals.className='settings-totals';content.append(totals);
       const message = create('p');message.className='settings-message';message.setAttribute('role','status');
       const operations = create('section');operations.className='settings-operations';
       const activityHeader=create('div');activityHeader.className='settings-section-heading';
@@ -80,10 +80,11 @@
       async function pollStats(){if(!isCurrent())return;try{const value=await window.viewerRequest('/admin/stats');if(isCurrent())showStats(value);}catch(error){if(isCurrent()){summary.replaceChildren(create('span',error.message),control('Retry progress',pollStats));pollTimer=setTimeout(pollStats,5000);}}}
       showStats(stats);
       const resources=create('section');resources.className='settings-storage';
+      const resourceDetails=create('div');resources.append(resourceDetails);
       function showResources(snapshot){
-        resources.replaceChildren();
-        const heading=create('div');heading.className='settings-section-heading';const label=create('div');label.append(create('h2','Server & storage'),create('p','Updated when settings are loaded or reloaded.'));heading.append(label);resources.append(heading);
-        const grid=create('div');grid.className='storage-cards';resources.append(grid);
+        resourceDetails.replaceChildren();
+        const heading=create('div');heading.className='settings-section-heading';const label=create('div');label.append(create('h2','Server & storage'),create('p','Updated when settings are loaded or reloaded.'));heading.append(label);resourceDetails.append(heading);
+        const grid=create('div');grid.className='storage-cards';resourceDetails.append(grid);
         function card(title,used,total,note,target=grid,showCapacity=true){const card=create('div');card.className='storage-card';card.append(create('h3',title));const amount=create('div');amount.className='storage-amount';amount.append(create('strong',bytes(used)));if(total)amount.append(create('span',' / '+bytes(total)));card.append(amount);if(total&&used!=null){const meter=create('progress');meter.max=total;meter.value=used;meter.setAttribute('aria-label',title+' used');card.append(meter);}else if(showCapacity){const absent=create('div',total?'':'Capacity not reported');absent.className='storage-no-limit';card.append(absent);}if(note)card.append(create('p',note));target.append(card);}
         const {cache,disk,memory,cpu,object_storage:s3}=snapshot;
         if(cache)card('Local run cache',cache.used_bytes,cache.limit_bytes,cache.resident_versions+' resident versions · '+(cache.idle_ttl_seconds/3600).toLocaleString(undefined,{maximumFractionDigits:1})+'h idle retention');
@@ -97,23 +98,24 @@
             const categories=create('div');categories.className='storage-cards storage-category-cards';breakdown.append(categories);
             const labels={publications:'Publications',archives:'Run backups',backups:'Backup copies',trash:'Trash',indexes:'Checkpoints and indexes',other:'Other'};
             for(const [key,size] of Object.entries(s3.groups))card(labels[key]||key,size,null,null,categories,false);
-            resources.append(breakdown);
+            resourceDetails.append(breakdown);
           }
         }
         if(memory)card('Server memory',memory.used_bytes,memory.total_bytes,cpu?'CPU load '+cpu.load_1m.toFixed(2)+(cpu.cores?' · '+cpu.cores+' cores':''):'');
-        else if(cpu)resources.append(create('p','CPU load '+cpu.load_1m.toFixed(2)));
-        if(snapshot.sampled_at){const stamp=create('p','Server snapshot: '+humanTime(snapshot.sampled_at));stamp.className='storage-timestamp';resources.append(stamp);}
+        else if(cpu)resourceDetails.append(create('p','CPU load '+cpu.load_1m.toFixed(2)));
+        if(snapshot.sampled_at){const stamp=create('p','Server snapshot: '+humanTime(snapshot.sampled_at));stamp.className='storage-timestamp';resourceDetails.append(stamp);}
       }
       async function loadResources(refresh=false){
         if(!isCurrent())return;
         clearTimeout(resourceTimer);
         try{const value=await window.viewerRequest('/admin/resources'+(refresh?'?refresh=1':''));if(!isCurrent())return;showResources(value);if(value.object_storage?.status==='collecting')resourceTimer=setTimeout(()=>loadResources(),1000);}
-        catch(error){if(isCurrent()){showResources({});resources.append(create('p',error.message));}}
+        catch(error){if(isCurrent()){showResources({});resourceDetails.append(create('p',error.message));}}
       }
       const items = layout.items.map(item => ({...item}));
       let busy = false, drag = null, frame = null;
-      const hint=create('p','Drag baskets to reorder, or use ↑ / ↓ on a handle. Save to apply.');hint.id='basket-reorder-help';hint.className='admin-hint';content.append(hint);
-      const table = create('table');table.className='admin-table basket-layout-table';table.setAttribute('aria-describedby',hint.id);table.setAttribute('aria-live','off');content.append(table);
+      const baskets=create('section');baskets.className='settings-baskets';baskets.append(create('h2','Baskets'));
+      const hint=create('p','Drag baskets to reorder, or use ↑ / ↓ on a handle. Save to apply.');hint.id='basket-reorder-help';hint.className='admin-hint';baskets.append(hint);
+      const table = create('table');table.className='admin-table basket-layout-table';table.setAttribute('aria-describedby',hint.id);table.setAttribute('aria-live','off');baskets.append(table);
       const save = control('Save basket layout', async () => {
         busy = true; cancelDrag(); save.disabled = true; reload.disabled = true; refresh.disabled = true; message.textContent = 'Saving…';
         for (const input of table.querySelectorAll('input,button')) input.disabled = true;
@@ -203,7 +205,9 @@
           table.append(row);
         });
       }
-      draw();const actions=create('div');actions.className='admin-actions';actions.append(save,reload);content.append(actions,message,operations,resources);activityHeader.append(refresh);loadResources(refreshResources);
+      draw();const actions=create('div');actions.className='admin-actions';actions.append(save);baskets.append(actions,message);
+      const resourceActions=create('div');resourceActions.className='admin-actions';resourceActions.append(reload);resources.append(resourceActions);
+      content.append(resources,operations,baskets);activityHeader.append(refresh);loadResources(refreshResources);
     } catch (error) {if (current === version) content.append(create('p', error.message), control('Retry', () => window.viewerRenderSettings()));}
   };
 })();
