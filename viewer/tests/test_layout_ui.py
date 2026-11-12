@@ -126,10 +126,15 @@ def test_resources_refresh_only_on_reload_and_mock_hides_s3(browser_page: Browse
     page.get_by_role('button', name='Reload settings', exact=True).click()
     expect(page.locator('.storage-card h3', has_text='Server disk')).to_be_visible()
     assert sum('refresh=1' in url for url in requests) == 2
-    assert page.locator('.basket-layout-table').evaluate(
-        '(e)=>e.compareDocumentPosition(document.querySelector(".settings-operations"))'
+    assert page.locator('.settings-operations').evaluate(
+        '(e)=>e.compareDocumentPosition(document.querySelector(".basket-layout-table"))'
         '&Node.DOCUMENT_POSITION_FOLLOWING'
     )
+    expect(page.locator('#content h2')).to_have_text(['Server & storage', 'Activity', 'Baskets'])
+    expect(page.locator('.settings-storage').get_by_role('button', name='Reload settings', exact=True)).to_be_enabled()
+    expect(
+        page.locator('.settings-baskets').get_by_role('button', name='Save basket layout', exact=True)
+    ).to_be_enabled()
     page.set_viewport_size({'width': 390, 'height': 844})
     assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
     assert not errors, errors
@@ -247,4 +252,38 @@ def test_deleted_run_backup_has_no_run_link(browser_page: BrowserPage) -> None:
     expect(table).to_contain_text('Research basket')
     expect(table).to_contain_text('Deletion backup')
     expect(table.locator('a')).to_have_count(0)
+    assert not errors, errors
+
+
+def test_resource_polling_preserves_reload_keyboard_focus(browser_page: BrowserPage) -> None:
+    """Keep Reload keyboard focus while a pending storage inventory completes."""
+    page, origin, _, errors = browser_page
+    resource_reads = 0
+
+    def resources(route: Route) -> None:
+        """Complete the inventory on its second read and count explicit reloads."""
+        nonlocal resource_reads
+        resource_reads += 1
+        route.fulfill(
+            json={
+                'object_storage': {
+                    'status': 'collecting' if resource_reads == 1 else 'ready',
+                    'used_bytes': 1024,
+                    'object_count': resource_reads,
+                    'groups': {'archives': 1024},
+                },
+            },
+        )
+
+    page.route('**/api/v1/admin/resources*', resources)
+    login(page, origin)
+    storage = page.locator('.storage-card').filter(has=page.get_by_role('heading', name='S3 storage', exact=True))
+    expect(storage).to_contain_text('1 current objects')
+    reload = page.get_by_role('button', name='Reload settings', exact=True)
+    reload.focus()
+    expect(storage).to_contain_text('2 current objects')
+    expect(reload).to_be_focused()
+    page.keyboard.press('Enter')
+    expect(storage).to_contain_text('3 current objects')
+    assert resource_reads == 3
     assert not errors, errors

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.5.3
+
+- Arrange Settings as Server & storage, Activity, then Baskets.
+- Place Reload settings below storage usage and Save basket layout below baskets.
+
 ## 0.3.5.2
 
 - Show storage usage categories as cards that stay visible while measurements update.

@@ -1,6 +1,6 @@
 {
   "manifest_version": 1,
-  "release_version": "0.3.5.2",
+  "release_version": "0.3.5.3",
   "files": [
     {
       "path": ".agents/skills/prsim-analyze-run/SKILL.md",
@@ -64,8 +64,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "size_bytes": 9438,
-      "sha256": "b534d78e0f5332d842aeb58b19d6c99549a864c4fa5e7c626874a41f8f07d871",
+      "size_bytes": 9597,
+      "sha256": "2cbfa37aa83dbdf547750ab24d771da2832753090d4e1d3b33ecf9cdb02a67ff",
       "executable": false
     },
     {
@@ -95,7 +95,7 @@
     {
       "path": "README.md",
       "size_bytes": 10436,
-      "sha256": "ba5892ec49aedc251646c82e78f61a9f0e6c81a94017002d8af8b18db2f3d70e",
+      "sha256": "bb5f19c9b766246498ad54a9aa6e7df1fa7ea2c9ff9992666ce20d7911d97f8f",
       "executable": false
     },
     {
@@ -245,7 +245,7 @@
     {
       "path": "basket_collector/pyproject.toml",
       "size_bytes": 1419,
-      "sha256": "73ab425e6342761b74c43a19b8bf5e6b568c191036c7da0e7009a68fbfbf13a6",
+      "sha256": "7bb0c2e7c0850df84fe39cef7bb777573adba4fb78a421a78fadf907067e6dde",
       "executable": false
     },
     {
@@ -257,7 +257,7 @@
     {
       "path": "basket_collector/src/__init__.py",
       "size_bytes": 104,
-      "sha256": "a97fb879352778c100d4cc3111ff51124ab9daf67d54c7497761a09043a28eaa",
+      "sha256": "a5e01da22e3654bd8e3a0d070520703deebcd1069dda324762904ebb1a1a141b",
       "executable": false
     },
     {
@@ -1151,7 +1151,7 @@
     {
       "path": "benchmark/pyproject.toml",
       "size_bytes": 1884,
-      "sha256": "9fbbe18264c0cfdc95ec7e49fc9a7d2a9a7bc815658a83300917f1589fa461e6",
+      "sha256": "b1d57557aa6904c6e882f055df49072806fd3310f466d9b09172e5ca979b9875",
       "executable": false
     },
     {
@@ -1169,7 +1169,7 @@
     {
       "path": "benchmark/src/__init__.py",
       "size_bytes": 90,
-      "sha256": "db4f821e0029d3ef71c95ebe64b87b014517ec1b21e8fcf161fb0f9b91381d5c",
+      "sha256": "354ae4ddec557d016da3dff4f4cf5da444f6a31c268741d44fed75af2f1a2af2",
       "executable": false
     },
     {
@@ -1607,7 +1607,7 @@
     {
       "path": "benchmark/src/presentation/run_page_assets/style.css",
       "size_bytes": 61073,
-      "sha256": "b1730f802c92a068d39ec2a7de9a88344fd89b4bdecfd82a33618b204c9cb942",
+      "sha256": "86e7d98b834df9bc6d426c32cff37f0da75eb1b13afbe800f8169a05a5473dcd",
       "executable": false
     },
     {
@@ -2368,8 +2368,8 @@
     },
     {
       "path": "viewer/README.md",
-      "size_bytes": 10964,
-      "sha256": "8cacfdaf8b555b8fdcfd860b45b892009ccd3912ee484c135911064ea020eb48",
+      "size_bytes": 11040,
+      "sha256": "10da70dbfc16357d390bb406ca87f50e76b8bad19e539de1db4498a1bcd4e6ea",
       "executable": false
     },
     {
@@ -2398,8 +2398,8 @@
     },
     {
       "path": "viewer/docs/reference.md",
-      "size_bytes": 32185,
-      "sha256": "f3be37fb81b5ace10217708d9dd76fb1b14d639f2a9a31df2de57968ad1d848d",
+      "size_bytes": 32211,
+      "sha256": "ee6117065e56683ea2817818f91b15aa55a5d476d4de2601fc59f9a630b6ad1c",
       "executable": false
     },
     {
@@ -2435,7 +2435,7 @@
     {
       "path": "viewer/pyproject.toml",
       "size_bytes": 1083,
-      "sha256": "a4e6c8dfab19840bc372e533b455438882c222d88bbfbf7aedc7eacf69684b79",
+      "sha256": "ac616df0087fc78e8b83367eae6be35bc677b71c310a8fb9e1853272064c2960",
       "executable": false
     },
     {
@@ -2453,7 +2453,7 @@
     {
       "path": "viewer/src/__init__.py",
       "size_bytes": 92,
-      "sha256": "9c2097b4580954f4580d66b13f0490e7a47daef4486870c83ca0efedc73ee0c4",
+      "sha256": "854bf172d7d775231e81e17b780538a76ce347df0cdcd7139b65259abbb879bd",
       "executable": false
     },
     {
@@ -2872,14 +2872,14 @@
     },
     {
       "path": "viewer/src/static/settings.js",
-      "size_bytes": 19573,
-      "sha256": "58995df4ce688771976ac2269172776c354788f44eea2a16762ca757b14830d9",
+      "size_bytes": 19958,
+      "sha256": "a695e6231e4239f1a1aa475d91c2cff949368d1769535c6afc31b1f08cd69c89",
       "executable": false
     },
     {
       "path": "viewer/src/static/style.css",
       "size_bytes": 61073,
-      "sha256": "b1730f802c92a068d39ec2a7de9a88344fd89b4bdecfd82a33618b204c9cb942",
+      "sha256": "86e7d98b834df9bc6d426c32cff37f0da75eb1b13afbe800f8169a05a5473dcd",
       "executable": false
     },
     {
@@ -3244,8 +3244,8 @@
     },
     {
       "path": "viewer/tests/test_layout_ui.py",
-      "size_bytes": 11519,
-      "sha256": "3a9c7b7f8f307e7c46d58e723f372bbbd3d73528ab68a89c528fb5bbad597601",
+      "size_bytes": 13239,
+      "sha256": "d586f1fe4a877502c3c38341b252830f63aa211a1e8ecaed8a8a83f2a698595f",
       "executable": false
     },
     {

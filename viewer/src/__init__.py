@@ -1,3 +1,3 @@
 """PR Similarity viewer: independent benchmark report consumer."""
 
-__version__ = '0.3.5.2'
+__version__ = '0.3.5.3'
