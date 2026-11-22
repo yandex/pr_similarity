@@ -22,6 +22,12 @@ def test_task_metric_states(browser_page: BrowserPage) -> None:
         )
         assert task.locator('[title],.metric-note').count() == 0
         summary = task.locator(':scope > summary')
+        summary.locator('[data-metric="score"] .value-tip-anchor').focus()
+        tip = page.locator('.unified-popover:visible')
+        expect(tip.locator('dt')).to_have_text(['Weight in run score', 'Contribution to run score'])
+        expected = {'Agent A': ['100%', '0.800'], 'Agent B': ['100%', '0.500'], 'Agent C': ['Not included'] * 2}
+        expect(tip.locator('dd')).to_have_text(expected[name])
+        page.keyboard.press('Escape')
         summary.locator('[data-metric="tokens"] button').click()
         assert not task.evaluate('e=>e.open')
         expect(page.locator('.unified-popover:visible')).to_have_count(1)

@@ -355,6 +355,11 @@ Read endpoints accept `statuses=OK,no-op,timeout,fail`, `pr=Mpr|FCpr|LCpr`,
 value selects no tasks and produces null aggregates. Each task keeps its original
 outcome/score regardless of selection. LCpr weights PRs by sum `loc_weight`, with
 `max(1,human_LOC)` per human file. F1 is micro-F1 over selected scored tasks.
+Task rows expose these raw PR weights in `score_weights`, keyed by `Mpr`, `FCpr`
+and `LCpr`, or null when scoring is unavailable. The score tooltip shows the
+task's share of the total weight across selected, scored tasks. Its contribution
+is that share multiplied by the task score under the selected file aggregation.
+Both values are rounded only for display.
 
 Run filters use repeated `user`, `model`, `effort`, `setup`, `basket` values:
 OR within a filter, AND between filters. Other queries: `q` literal case-insensitive

@@ -11,7 +11,7 @@ from typing import Any
 
 from benchmark import __version__
 from benchmark.models.report import Report
-from benchmark.presentation.run_metrics import aggregate, aggregate_snapshot, tag_groups, task_status
+from benchmark.presentation.run_metrics import aggregate, aggregate_snapshot, tag_groups, task_score_weights, task_status
 from benchmark.presentation.visualize_data import display_metrics
 
 
@@ -81,6 +81,7 @@ def page_data(report: Report, basket: dict[str, Any], data: dict[str, Any]) -> d
                 'title': task.title,
                 'status': task_status(task),
                 'scoring_status': task.scoring.status,
+                'score_weights': task_score_weights(task.scoring),
                 'condition': task.agent_task,
                 'files': public_files,
                 'metrics': metrics,
