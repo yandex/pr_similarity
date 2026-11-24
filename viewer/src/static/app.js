@@ -575,7 +575,8 @@ function originalTaskLink(task) {
   } catch (_) {}
   return null;
 }
-function makeTask(task) {
+const scorePercent = new Intl.NumberFormat('en-US', {style: 'percent', maximumSignificantDigits: 3});
+function makeTask(task, weight, totalWeight) {
   const view = generation;
   const reportHash = runReportHash;
   const publicationHash = runPublicationHash;
@@ -585,7 +586,7 @@ function makeTask(task) {
   const title = node('span', caption, 'title');
   const expand = button('Expand task', event => {event.preventDefault(); event.stopPropagation(); details.open = !details.open;}, 'task-toggle');
   expand.setAttribute('aria-label', 'Expand task ' + task.repository + ' #' + task.number);
-  const score = taskMetric(task, 'score');
+  const score = taskMetric(task, 'score', () => taskScoreTooltip(task.score, weight, totalWeight));
   summary.append(node('span', task.status === 'OK' ? 'OK' : statusLabels[task.status], 'badge ' + task.status), title, expand);
   const telemetry = node('div', null, 'task-metrics');
   telemetry.append(score, taskMetric(task, 'f1_files'), taskMetric(task, 'time'), taskMetric(task, 'tokens'), taskMetric(task, 'cost'));
@@ -641,7 +642,11 @@ async function renderRun(version) {
   closeDiff();
   const taskControls = $('task-sorting'); taskControls.hidden = false;
   const focused = document.activeElement?.id;
-  $('content').replaceChildren(header, node('h2', 'Tasks (' + tasks.total + ')'), taskControls, ...tasks.items.map(makeTask));
+  const weights = tasks.items.map(task => row.selection.statuses.includes(task.status)
+    ? task.score_weights?.[row.selection.pr_aggregation] : null);
+  const totalWeight = weights.reduce((sum, weight) => sum + (weight ?? 0), 0);
+  const cards = tasks.items.map((task, index) => makeTask(task, weights[index], totalWeight));
+  $('content').replaceChildren(header, node('h2', 'Tasks (' + tasks.total + ')'), taskControls, ...cards);
   window.prsimLocal?.afterRender?.();
   if (previousRunFocus?.isConnected && previousRunFocus.closest('.controls')) previousRunFocus.focus({preventScroll: true});
   if (['task-sort', 'task-direction', 'task-order-reset'].includes(focused)) $(focused).focus({preventScroll: true});
@@ -1131,7 +1136,16 @@ function buildRunSummary(row) {
 
 
 // Task metrics share the run/catalogue tooltip owner and measurement semantics.
-function taskMetric(row, kind) {
+function taskScoreTooltip(score, weight, totalWeight) {
+  const fallback = weight == null ? 'Not included' : 'Unavailable';
+  const share = weight != null && totalWeight > 0 ? weight / totalWeight : null;
+  return tooltipRows([
+    ['Weight in run score', share == null ? fallback : scorePercent.format(share)],
+    ['Contribution to run score', share == null ? fallback : number(score * share)],
+  ]);
+}
+
+function taskMetric(row, kind, build = () => null) {
  const wrap=node('div',null,'task-metric');
  const labels={score:'Score',f1_files:'F1 files',tokens:'Tokens',time:'Agent time',cost:'Cost'};
  wrap.dataset.metric=kind;wrap.append(node('span',labels[kind],'task-metric-label'));
@@ -1140,7 +1154,7 @@ function taskMetric(row, kind) {
    value=metricControl({...row,auth_mode:row.auth_mode??runAuthMode},kind==='tokens'?'Tokens':'Cost');
    value.addEventListener('click',event=>event.preventDefault());
  } else {
-   let shown,state=null,title,build=()=>null;
+   let shown,state=null,title;
    if(kind==='time'){
      const t=row.time;const seconds=t.total_seconds??(t.known_tasks>0?t.known_subtotal_seconds:null);
      shown=time(seconds);state=seconds==null?'unavailable':t.total_seconds==null?'partial':null;title='Agent execution time';

@@ -76,6 +76,17 @@ def test_six_aggregations(pr: str, expected: float, file: str) -> None:
     assert aggregate([a, b], pr_aggregation=pr, file_aggregation=file)['score'] == pytest.approx(expected)
 
 
+def test_public_task_exposes_weights_only_for_available_scores() -> None:
+    """Expose all three aggregation weights for scored tasks and none for unavailable scores."""
+    row = task(score=0, loc=0)
+    assert row.scoring.counts is not None
+    row.scoring.counts.human_files = 3
+    assert public_task(row, 'LCf')['score_weights'] == {'Mpr': 1, 'FCpr': 3, 'LCpr': 0}
+    row.scoring.status = 'unavailable'
+    row.scoring.counts = None
+    assert public_task(row, 'LCf')['score_weights'] is None
+
+
 def test_empty_zero_weight_and_micro_f1() -> None:
     """Verify empty zero weight and micro f1."""
     assert aggregate([])['score'] is None

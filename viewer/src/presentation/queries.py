@@ -13,6 +13,7 @@ from viewer.presentation.metrics import (
     aggregate,
     displayed_amount,
     tag_groups,
+    task_score_weights,
     task_status,
 )
 from viewer.presentation.task_measurements import TaskMeasurements
@@ -317,6 +318,7 @@ def public_task(
         'title': task.title,
         'status': status,
         'scoring_status': task.scoring.status,
+        'score_weights': task_score_weights(task.scoring),
         'score': (
             (task.scoring.Mf_mlp if file_aggregation == 'Mf' else task.scoring.LCf_mlp)
             if task.scoring.status == 'available'

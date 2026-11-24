@@ -4,6 +4,7 @@ from collections import Counter
 from collections.abc import Sequence
 from decimal import Decimal
 from statistics import median
+from types import MappingProxyType
 
 from viewer.errors import ViewerError
 from viewer.models.report import ReportInference, ReportTask, ReportTaskScoring
@@ -17,6 +18,7 @@ from viewer.presentation.task_measurements import TaskMeasurements
 
 STATUSES = ('OK', 'no-op', 'timeout', 'fail')
 DEFAULT_STATUSES = STATUSES[:-1]
+PR_WEIGHT_FIELDS = MappingProxyType({'Mpr': None, 'FCpr': 'human_files', 'LCpr': 'loc_weight'})
 TOKEN_CATEGORIES = ('cache_read', 'input', 'output', 'cache_write', 'reasoning')
 
 
@@ -91,6 +93,13 @@ def score_weight(scoring: ReportTaskScoring, field: str | None) -> float:
     return counts.loc_weight
 
 
+def task_score_weights(scoring: ReportTaskScoring) -> dict[str, float] | None:
+    """Expose the raw weights used by each PR aggregation for a scored task."""
+    if scoring.status != 'available':
+        return None
+    return {mode: score_weight(scoring, field) for mode, field in PR_WEIGHT_FIELDS.items()}
+
+
 def aggregate(
     tasks: list[ReportTask],
     statuses: Sequence[str] | None = None,
@@ -100,15 +109,11 @@ def aggregate(
 ) -> dict:
     """Compute selected task metrics without treating unknown values as zero."""
     statuses = list(DEFAULT_STATUSES if statuses is None else statuses)
-    if (
-        set(statuses) - set(STATUSES)
-        or pr_aggregation not in ('Mpr', 'FCpr', 'LCpr')
-        or file_aggregation not in ('Mf', 'LCf')
-    ):
+    if set(statuses) - set(STATUSES) or pr_aggregation not in PR_WEIGHT_FIELDS or file_aggregation not in ('Mf', 'LCf'):
         raise ViewerError('invalid_selection', 'Invalid aggregation selection.')
     selected = [t for t in tasks if task_status(t) in statuses]
     scored = [t.scoring for t in selected if t.scoring.status == 'available']
-    weight_field = {'Mpr': None, 'FCpr': 'human_files', 'LCpr': 'loc_weight'}[pr_aggregation]
+    weight_field = PR_WEIGHT_FIELDS[pr_aggregation]
     pairs = [(score_value(t, file_aggregation), score_weight(t, weight_field)) for t in scored]
     weight = sum(w for _, w in pairs)
     denominator = sum(score_weight(t, 'human_files') + score_weight(t, 'agent_files') for t in scored)
@@ -187,7 +192,7 @@ def aggregate_snapshot(
         common = aggregate(tasks, statuses, 'Mpr', 'Mf', measurements)
         scored = [t.scoring for t in tasks if task_status(t) in statuses and t.scoring.status == 'available']
         scores = {}
-        for pr, field in [('Mpr', None), ('FCpr', 'human_files'), ('LCpr', 'loc_weight')]:
+        for pr, field in PR_WEIGHT_FIELDS.items():
             weights = [score_weight(s, field) for s in scored]
             denominator = sum(weights)
             for file in ('Mf', 'LCf'):

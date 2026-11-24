@@ -28,6 +28,9 @@ Partially known cost/usage shows the known subtotal with a Partial status.
 Unavailable measurements have an explicit status. Click or focus the metric to
 inspect coverage and cost provenance.
 Completely unknown measurements remain a dash; measured zero remains zero.
+Hover over or focus a task's Score to see its percentage weight in the run score
+and its contribution in score points. For example, a task scoring 0.400 with a
+25% weight contributes 0.100 to the run score.
 Score and time also mark incomplete coverage. Repriced cost is an API-equivalent estimate;
 native zero with OAuth is not measured API cost, and API-key zero can indicate
 missing model pricing configuration. A timeout may still have a scored diff.

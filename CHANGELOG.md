@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.5.4
+
+- Show each task's weight and contribution to the run score in the Task Score
+  tooltip in the viewer and standalone HTML reports.
+
 ## 0.3.5.3
 
 - Arrange Settings as Server & storage, Activity, then Baskets.
