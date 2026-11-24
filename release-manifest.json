@@ -94,8 +94,8 @@
     },
     {
       "path": "README.md",
-      "size_bytes": 10436,
-      "sha256": "bb5f19c9b766246498ad54a9aa6e7df1fa7ea2c9ff9992666ce20d7911d97f8f",
+      "size_bytes": 10431,
+      "sha256": "961032b1b8458ac7d20028fa4e13db9b386eb132e106aa807bed24fa8a8e39f5",
       "executable": false
     },
     {
@@ -1564,14 +1564,14 @@
     },
     {
       "path": "benchmark/src/presentation/run_metrics.py",
-      "size_bytes": 8624,
-      "sha256": "6e9ebf2f50a3875591c9f91a00d28bec77f182eed7ec54ab34f6b1b01b4044b6",
+      "size_bytes": 8645,
+      "sha256": "e239234ef0b6bbaa04ed1a724838eb4b80280b0f7d0de9ea107ee559d25682af",
       "executable": false
     },
     {
       "path": "benchmark/src/presentation/run_page.py",
-      "size_bytes": 5616,
-      "sha256": "c9a8cbd83b62db8cc961b503887616cebef2b3b620868133cea0b93ce7c99374",
+      "size_bytes": 5641,
+      "sha256": "11db475d5b7ad8e2f56a929e7de0ac9ef2bebe1f985787dd505358b9bffebfce",
       "executable": false
     },
     {
@@ -2710,8 +2710,8 @@
     },
     {
       "path": "viewer/src/presentation/metrics.py",
-      "size_bytes": 8591,
-      "sha256": "5fa9e93e09ca3be1ae220a6be82b76188eda3364614ae528ccaf1f5e194c5113",
+      "size_bytes": 8612,
+      "sha256": "1b621c1b1dd0a8be7a1efd980c8920dea3d98523f56a202e93b57886c57fbeb8",
       "executable": false
     },
     {
@@ -3286,8 +3286,8 @@
     },
     {
       "path": "viewer/tests/test_local_html.py",
-      "size_bytes": 9893,
-      "sha256": "023c06b17734f0b1fa3378eccee328975cca76da767385164ff5e3a82e033209",
+      "size_bytes": 10073,
+      "sha256": "a507639e77016e761e8aa27ea09207a9ea0b49feaddad17a710164d36f9973c5",
       "executable": false
     },
     {
@@ -3382,8 +3382,8 @@
     },
     {
       "path": "viewer/tests/test_metrics.py",
-      "size_bytes": 9058,
-      "sha256": "cff38c3b58901d85614704466fb00212545126bc11e8e7137d71420874eed892",
+      "size_bytes": 9155,
+      "sha256": "e49e2fbd6f68ed6c2c801c2db24ac07560f72864a1f94c5150f9c65425360108",
       "executable": false
     },
     {

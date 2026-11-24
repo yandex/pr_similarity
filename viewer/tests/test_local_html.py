@@ -19,6 +19,7 @@ def _local_report_page(tmp_path: Path) -> Path:
         pytest.skip('requires the sibling benchmark module venv')
     report = Report.model_validate(documents()[0])
     healthy = task('OK', score=0.8, cost=1)
+    healthy.scoring.Mf_mlp = 0.2
     healthy.id, healthy.title = 'healthy', 'Healthy task'
     failed = task('fail', score=0, loc=3, cost=100)
     failed.id, failed.title = 'failed', 'Failed task'
@@ -114,6 +115,10 @@ def test_status_selection_keeps_all_local_tasks_and_diagnostics(tmp_path: Path) 
             expect(score).to_have_text('0.400')
             healthy_score.focus()
             expect(score_details).to_have_text(['50%', '0.400'])
+            page.locator('#file').select_option('Mf')
+            expect(score).to_have_text('0.100')
+            healthy_score.focus()
+            expect(score_details).to_have_text(['50%', '0.100'])
             for checkbox in page.locator('#statuses input').all():
                 checkbox.uncheck()
             expect(selected).to_have_text('0 / 2 selected for metrics')
@@ -134,7 +139,6 @@ def test_status_selection_keeps_all_local_tasks_and_diagnostics(tmp_path: Path) 
             page.locator('#local-search').fill('')
             expect(rows).to_have_count(2)
             expect(diagnostic).to_be_visible()
-            page.locator('#file').select_option('Mf')
             page.locator('#task-sort').select_option('score')
             page.locator('#task-direction').select_option('desc')
             expect(rows.first).to_contain_text('Healthy task')

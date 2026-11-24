@@ -77,6 +77,7 @@ def test_six_aggregations(pr: str, expected: float, file: str) -> None:
 
 
 def test_public_task_exposes_weights_only_for_available_scores() -> None:
+    """Expose all three aggregation weights for scored tasks and none for unavailable scores."""
     row = task(score=0, loc=0)
     assert row.scoring.counts is not None
     row.scoring.counts.human_files = 3

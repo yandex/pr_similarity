@@ -4,6 +4,7 @@ from collections import Counter
 from collections.abc import Sequence
 from decimal import Decimal
 from statistics import median
+from types import MappingProxyType
 
 from benchmark.errors import BenchmarkError as ViewerError
 from benchmark.models.report import ReportInference, ReportTask, ReportTaskScoring
@@ -17,7 +18,7 @@ from benchmark.presentation.task_measurements import TaskMeasurements
 
 STATUSES = ('OK', 'no-op', 'timeout', 'fail')
 DEFAULT_STATUSES = STATUSES[:-1]
-PR_WEIGHT_FIELDS = {'Mpr': None, 'FCpr': 'human_files', 'LCpr': 'loc_weight'}
+PR_WEIGHT_FIELDS = MappingProxyType({'Mpr': None, 'FCpr': 'human_files', 'LCpr': 'loc_weight'})
 TOKEN_CATEGORIES = ('cache_read', 'input', 'output', 'cache_write', 'reasoning')
 
 
@@ -108,11 +109,7 @@ def aggregate(
 ) -> dict:
     """Compute selected task metrics without treating unknown values as zero."""
     statuses = list(DEFAULT_STATUSES if statuses is None else statuses)
-    if (
-        set(statuses) - set(STATUSES)
-        or pr_aggregation not in PR_WEIGHT_FIELDS
-        or file_aggregation not in ('Mf', 'LCf')
-    ):
+    if set(statuses) - set(STATUSES) or pr_aggregation not in PR_WEIGHT_FIELDS or file_aggregation not in ('Mf', 'LCf'):
         raise ViewerError('invalid_selection', 'Invalid aggregation selection.')
     selected = [t for t in tasks if task_status(t) in statuses]
     scored = [t.scoring for t in selected if t.scoring.status == 'available']
